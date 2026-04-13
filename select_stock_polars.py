@@ -116,42 +116,30 @@ def load_strategies_from_config(cfg_path: Path) -> Dict[str, Dict[str, Any]]:
 # ─────────────────────────── 数据加载 ─────────────────────────── #
 
 def load_data_polars(data_dir: str, tickers: Optional[List[str]] = None) -> Dict[str, pl.DataFrame]:
-    """使用 Polars 直接读取数据（支持 CSV 和 Parquet）"""
-    data = {}
+    """使用 Polars 批量读取 Parquet 文件"""
     data_path = Path(data_dir)
     
-    # 检测数据格式
-    parquet_files = list(data_path.glob("*.parquet"))
-    csv_files = list(data_path.glob("*.csv"))
-    is_parquet = len(parquet_files) > 0
-    
+    # 获取 parquet 文件列表
     if tickers:
-        if is_parquet:
-            files = [data_path / f"{t}.parquet" for t in tickers if (data_path / f"{t}.parquet").exists()]
-        else:
-            files = [data_path / f"{t}.csv" for t in tickers if (data_path / f"{t}.csv").exists()]
+        files = [str(data_path / f"{t}.parquet") for t in tickers if (data_path / f"{t}.parquet").exists()]
     else:
-        files = parquet_files if is_parquet else csv_files
+        files = [str(f) for f in data_path.glob("*.parquet")]
     
-    for f in files:
-        code = f.stem
-        try:
-            if is_parquet:
-                df = pl.read_parquet(f)
-            else:
-                df = pl.read_csv(
-                    f,
-                    try_parse_dates=True,
-                    infer_schema_length=1000,
-                )
-            # 确保列名标准化
-            df = df.rename({col: col.lower() for col in df.columns})
-            # 确保 date 列是日期类型
-            if df["date"].dtype == pl.Utf8:
-                df = df.with_columns(pl.col("date").str.to_date())
-            data[code] = df
-        except Exception as e:
-            console.print(f"[yellow]⚠️  读取 {f.name} 失败: {e}[/yellow]")
+    if not files:
+        return {}
+    
+    # 批量读取，包含文件路径
+    df_all = pl.read_parquet(files, include_file_paths="file_path")
+    
+    # 提取股票代码
+    df_all = df_all.with_columns(
+        pl.col("file_path").str.extract(r"([^/]+)\.parquet$").alias("code")
+    ).drop("file_path")
+    
+    # 使用 partition_by 快速分割成 Dict
+    data = {}
+    for code, df in df_all.partition_by("code", as_dict=True).items():
+        data[code[0]] = df.drop("code").sort("date")
     
     return data
 

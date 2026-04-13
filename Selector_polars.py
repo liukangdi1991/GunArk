@@ -1,6 +1,6 @@
 """
 Selector 的 Polars 版本
-- 使用 Polars 计算指标（更快）
+- 使用 Polars + numba 计算指标（更快）
 - 结果与原版完全一致
 """
 
@@ -9,11 +9,28 @@ from typing import Dict, List, Optional, Any
 from scipy.signal import find_peaks
 import numpy as np
 import polars as pl
+from numba import njit
+
+# numba JIT 编译 KDJ 计算
+@njit
+def _compute_kdj_numba(rsv):
+    n = len(rsv)
+    K = np.zeros(n)
+    D = np.zeros(n)
+    K[0] = D[0] = 50.0
+    for i in range(1, n):
+        K[i] = 2/3 * K[i-1] + 1/3 * rsv[i]
+        D[i] = 2/3 * D[i-1] + 1/3 * K[i]
+    J = 3 * K - 2 * D
+    return K, D, J
+
+# 预热 numba
+_compute_kdj_numba(np.array([50.0, 60.0, 70.0]))
 
 # --------------------------- 通用指标 --------------------------- #
 
 def compute_kdj(df: pl.DataFrame, n: int = 9) -> pl.DataFrame:
-    """使用 Polars 计算 KDJ"""
+    """使用 Polars + numba 计算 KDJ"""
     if df.is_empty():
         return df.with_columns([
             pl.lit(None).alias("K"),
@@ -21,23 +38,13 @@ def compute_kdj(df: pl.DataFrame, n: int = 9) -> pl.DataFrame:
             pl.lit(None).alias("J"),
         ])
 
-    # 计算 RSV
-    low_n = df.select(pl.col("low").rolling_min(window_size=n, min_periods=1)).to_series()
-    high_n = df.select(pl.col("high").rolling_max(window_size=n, min_periods=1)).to_series()
-    close = df["close"]
-    rsv = (close - low_n) / (high_n - low_n + 1e-9) * 100
+    # Polars 计算 RSV
+    low_n = df["low"].rolling_min(n, min_samples=1)
+    high_n = df["high"].rolling_max(n, min_samples=1)
+    rsv = ((df["close"] - low_n) / (high_n - low_n + 1e-9) * 100).to_numpy()
 
-    # 计算 K, D（需要迭代）
-    K = np.zeros(len(df), dtype=float)
-    D = np.zeros(len(df), dtype=float)
-    rsv_arr = rsv.to_numpy()
-    for i in range(len(df)):
-        if i == 0:
-            K[i] = D[i] = 50.0
-        else:
-            K[i] = 2 / 3 * K[i - 1] + 1 / 3 * rsv_arr[i]
-            D[i] = 2 / 3 * D[i - 1] + 1 / 3 * K[i]
-    J = 3 * K - 2 * D
+    # numba 计算 K, D, J
+    K, D, J = _compute_kdj_numba(rsv)
 
     return df.with_columns([
         pl.Series("K", K),
@@ -70,6 +77,44 @@ def compute_dif(df: pl.DataFrame, fast: int = 12, slow: int = 26) -> pl.Series:
     return ema_fast - ema_slow
 
 
+@njit
+def _quantile_linear(arr, q):
+    """numba 版线性插值分位数"""
+    sorted_arr = np.sort(arr)
+    n = len(sorted_arr)
+    idx = q * (n - 1)
+    lower = int(idx)
+    upper = lower + 1
+    if upper >= n:
+        return sorted_arr[n - 1]
+    frac = idx - lower
+    return sorted_arr[lower] * (1 - frac) + sorted_arr[upper] * frac
+
+@njit
+def _bbi_deriv_uptrend_numba(bbi_arr, min_window, max_window, q_threshold):
+    n = len(bbi_arr)
+    if n < min_window:
+        return False
+    
+    longest = n if max_window is None else min(n, max_window)
+    
+    for w in range(longest, min_window - 1, -1):
+        seg = bbi_arr[n-w:]
+        if seg[0] == 0:
+            continue
+        
+        norm = seg / seg[0]
+        diffs = np.empty(len(norm) - 1)
+        for i in range(len(norm) - 1):
+            diffs[i] = norm[i+1] - norm[i]
+        
+        if _quantile_linear(diffs, q_threshold) >= 0:
+            return True
+    return False
+
+# 预热
+_bbi_deriv_uptrend_numba(np.array([1.0, 2.0, 3.0]), 2, 3, 0.0)
+
 def bbi_deriv_uptrend(
     bbi: pl.Series,
     *,
@@ -77,7 +122,7 @@ def bbi_deriv_uptrend(
     max_window: int | None = None,
     q_threshold: float = 0.0,
 ) -> bool:
-    """判断 BBI 是否"整体上升" """
+    """判断 BBI 是否"整体上升" (numba 优化版)"""
     if not 0.0 <= q_threshold <= 1.0:
         raise ValueError("q_threshold 必须位于 [0, 1] 区间内")
 
@@ -85,16 +130,7 @@ def bbi_deriv_uptrend(
     if len(bbi_arr) < min_window:
         return False
 
-    longest = min(len(bbi_arr), max_window or len(bbi_arr))
-
-    # 自最长窗口向下搜索，找到任一满足条件的区间即通过
-    for w in range(longest, min_window - 1, -1):
-        seg = bbi_arr[-w:]                # 区间 [T-w+1, T]
-        norm = seg / seg[0]               # 归一化
-        diffs = np.diff(norm)             # 一阶差分
-        if np.quantile(diffs, q_threshold) >= 0:
-            return True
-    return False
+    return _bbi_deriv_uptrend_numba(bbi_arr, min_window, max_window, q_threshold)
 
 
 def _find_peaks(
@@ -276,7 +312,7 @@ class BBIKDJSelector:
         j_window = kdj["J"].tail(self.max_window).drop_nulls()
         if len(j_window) == 0:
             return False
-        j_quantile = float(j_window.quantile(self.j_q_threshold))
+        j_quantile = float(j_window.quantile(self.j_q_threshold, interpolation="linear"))
 
         if not (j_today < self.j_threshold or j_today <= j_quantile):
             return False
@@ -387,7 +423,7 @@ class SuperB1Selector:
         kdj = compute_kdj(hist)
         j_today = float(kdj["J"][-1])
         j_window = kdj["J"].tail(self.lookback_n).drop_nulls()
-        j_q_val = float(j_window.quantile(self.j_q_threshold)) if len(j_window) > 0 else float("nan")
+        j_q_val = float(j_window.quantile(self.j_q_threshold, interpolation="linear")) if len(j_window) > 0 else float("nan")
         if not (j_today < self.j_threshold or j_today <= j_q_val):
             return False
 
@@ -491,7 +527,7 @@ class PeakKDJSelector:
         j_window = kdj["J"].tail(self.max_window).drop_nulls()
         if len(j_window) == 0:
             return False
-        j_quantile = float(j_window.quantile(self.j_q_threshold))
+        j_quantile = float(j_window.quantile(self.j_q_threshold, interpolation="linear"))
         if not (j_today < self.j_threshold or j_today <= j_quantile):
             return False
 
@@ -666,7 +702,7 @@ class MA60CrossVolumeWaveSelector:
         j_window = kdj["J"].tail(self.max_window).drop_nulls()
         if len(j_window) == 0:
             return False
-        j_q_val = float(j_window.quantile(self.j_q_threshold))
+        j_q_val = float(j_window.quantile(self.j_q_threshold, interpolation="linear"))
 
         if not (j_today < self.j_threshold or j_today <= j_q_val):
             return False
