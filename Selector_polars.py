@@ -54,27 +54,41 @@ def compute_kdj(df: pl.DataFrame, n: int = 9) -> pl.DataFrame:
 
 
 def compute_bbi(df: pl.DataFrame) -> pl.Series:
-    ma3 = df.select(pl.col("close").rolling_mean(window_size=3)).to_series()
-    ma6 = df.select(pl.col("close").rolling_mean(window_size=6)).to_series()
-    ma12 = df.select(pl.col("close").rolling_mean(window_size=12)).to_series()
-    ma24 = df.select(pl.col("close").rolling_mean(window_size=24)).to_series()
-    return (ma3 + ma6 + ma12 + ma24) / 4
+    return df.select(
+        (
+            pl.col("close").rolling_mean(window_size=3)
+            + pl.col("close").rolling_mean(window_size=6)
+            + pl.col("close").rolling_mean(window_size=12)
+            + pl.col("close").rolling_mean(window_size=24)
+        )
+        .truediv(4.0)
+        .alias("BBI")
+    ).to_series()
 
 
 def compute_rsv(df: pl.DataFrame, n: int) -> pl.Series:
     """计算 RSV"""
-    low_n = df.select(pl.col("low").rolling_min(window_size=n, min_periods=1)).to_series()
-    high_close_n = df.select(pl.col("close").rolling_max(window_size=n, min_periods=1)).to_series()
-    close = df["close"]
-    rsv = (close - low_n) / (high_close_n - low_n + 1e-9) * 100.0
-    return rsv
+    return df.select(
+        (
+            (pl.col("close") - pl.col("low").rolling_min(window_size=n, min_periods=1))
+            / (
+                pl.col("close").rolling_max(window_size=n, min_periods=1)
+                - pl.col("low").rolling_min(window_size=n, min_periods=1)
+                + 1e-9
+            )
+            * 100.0
+        ).alias("RSV")
+    ).to_series()
 
 
 def compute_dif(df: pl.DataFrame, fast: int = 12, slow: int = 26) -> pl.Series:
     """计算 MACD 指标中的 DIF (EMA fast - EMA slow)"""
-    ema_fast = df.select(pl.col("close").ewm_mean(span=fast, adjust=False)).to_series()
-    ema_slow = df.select(pl.col("close").ewm_mean(span=slow, adjust=False)).to_series()
-    return ema_fast - ema_slow
+    return df.select(
+        (
+            pl.col("close").ewm_mean(span=fast, adjust=False)
+            - pl.col("close").ewm_mean(span=slow, adjust=False)
+        ).alias("DIF")
+    ).to_series()
 
 
 @njit
@@ -217,14 +231,15 @@ def passes_day_constraints_today(df: pl.DataFrame, pct_limit: float = 0.02, amp_
     """所有战法的统一当日过滤"""
     if len(df) < 2:
         return False
-    
-    last = df.tail(1)
-    prev = df.tail(2).head(1)
-    
-    close_today = float(last["close"][0])
-    close_yest = float(prev["close"][0])
-    high_today = float(last["high"][0])
-    low_today = float(last["low"][0])
+
+    close = df["close"]
+    high = df["high"]
+    low = df["low"]
+
+    close_today = float(close[-1])
+    close_yest = float(close[-2])
+    high_today = float(high[-1])
+    low_today = float(low[-1])
     
     if close_yest <= 0 or low_today <= 0:
         return False
@@ -286,8 +301,7 @@ class BBIKDJSelector:
         self.j_q_threshold = j_q_threshold
 
     def _passes_filters(self, hist: pl.DataFrame) -> bool:
-        hist = hist.clone()
-        hist = hist.with_columns(compute_bbi(hist).alias("BBI"))
+        bbi = compute_bbi(hist)
         
         if not passes_day_constraints_today(hist):
             return False
@@ -299,17 +313,17 @@ class BBIKDJSelector:
             return False
 
         if not bbi_deriv_uptrend(
-            hist["BBI"],
+            bbi,
             min_window=self.bbi_min_window,
             max_window=self.max_window,
             q_threshold=self.bbi_q_threshold,
         ):            
             return False
 
-        kdj = compute_kdj(hist)
-        j_today = float(kdj["J"][-1])
+        j_series = compute_kdj(hist)["J"]
+        j_today = float(j_series[-1])
 
-        j_window = kdj["J"].tail(self.max_window).drop_nulls()
+        j_window = j_series.tail(self.max_window).drop_nulls()
         if len(j_window) == 0:
             return False
         j_quantile = float(j_window.quantile(self.j_q_threshold, interpolation="linear"))
@@ -317,19 +331,17 @@ class BBIKDJSelector:
         if not (j_today < self.j_threshold or j_today <= j_quantile):
             return False
         
-        hist = hist.with_columns(
-            pl.col("close").rolling_mean(window_size=60, min_periods=1).alias("MA60")
-        )
+        ma60 = hist["close"].rolling_mean(window_size=60, min_periods=1)
 
-        if hist["close"][-1] < hist["MA60"][-1]:
+        if hist["close"][-1] < ma60[-1]:
             return False
 
-        t_pos = last_valid_ma_cross_up(hist["close"], hist["MA60"], lookback_n=self.max_window)
+        t_pos = last_valid_ma_cross_up(hist["close"], ma60, lookback_n=self.max_window)
         if t_pos is None:
             return False        
 
-        hist = hist.with_columns(compute_dif(hist).alias("DIF"))
-        if hist["DIF"][-1] <= 0:
+        dif = compute_dif(hist)
+        if dif[-1] <= 0:
             return False
        
         if not zx_condition_at_positions(hist, require_close_gt_long=True, require_short_gt_long=True, pos=None):
@@ -577,32 +589,30 @@ class BBIShortLongSelector:
         self.lower_rsv_threshold = lower_rsv_threshold
 
     def _passes_filters(self, hist: pl.DataFrame) -> bool:
-        hist = hist.clone()
-        hist = hist.with_columns(compute_bbi(hist).alias("BBI"))
+        bbi = compute_bbi(hist)
         
         if not passes_day_constraints_today(hist):
             return False      
 
         if not bbi_deriv_uptrend(
-            hist["BBI"],
+            bbi,
             min_window=self.bbi_min_window,
             max_window=self.max_window,
             q_threshold=self.bbi_q_threshold,
         ):
             return False
 
-        hist = hist.with_columns([
-            compute_rsv(hist, self.n_short).alias("RSV_short"),
-            compute_rsv(hist, self.n_long).alias("RSV_long"),
-        ])
+        rsv_short = compute_rsv(hist, self.n_short)
+        rsv_long = compute_rsv(hist, self.n_long)
 
         if len(hist) < self.m:
             return False
 
-        win = hist.tail(self.m)
-        long_ok = (win["RSV_long"] >= self.upper_rsv_threshold).all()
+        win_short = rsv_short.tail(self.m)
+        win_long = rsv_long.tail(self.m)
+        long_ok = (win_long >= self.upper_rsv_threshold).all()
 
-        short_series = win["RSV_short"]
+        short_series = win_short
 
         mask_upper = short_series >= self.upper_rsv_threshold
         mask_lower = short_series < self.lower_rsv_threshold
@@ -620,8 +630,8 @@ class BBIShortLongSelector:
         if not (long_ok and has_upper_then_lower and end_ok):
             return False
 
-        hist = hist.with_columns(compute_dif(hist).alias("DIF"))
-        if hist["DIF"][-1] <= 0:
+        dif = compute_dif(hist)
+        if dif[-1] <= 0:
             return False
 
         if not zx_condition_at_positions(hist, require_close_gt_long=True, require_short_gt_long=True, pos=None):
@@ -707,13 +717,11 @@ class MA60CrossVolumeWaveSelector:
         if not (j_today < self.j_threshold or j_today <= j_q_val):
             return False
 
-        hist = hist.with_columns(
-            pl.col("close").rolling_mean(window_size=60, min_periods=1).alias("MA60")
-        )
-        if hist["close"][-1] < hist["MA60"][-1]:
+        ma60 = hist["close"].rolling_mean(window_size=60, min_periods=1)
+        if hist["close"][-1] < ma60[-1]:
             return False
 
-        t_pos = last_valid_ma_cross_up(hist["close"], hist["MA60"], lookback_n=self.lookback_n)
+        t_pos = last_valid_ma_cross_up(hist["close"], ma60, lookback_n=self.lookback_n)
         if t_pos is None:
             return False
 
@@ -749,7 +757,7 @@ class MA60CrossVolumeWaveSelector:
         if wave_avg_vol < self.vol_multiple * pre_avg_vol:
             return False
 
-        if not self._ma_slope_positive(hist["MA60"], self.ma60_slope_days):
+        if not self._ma_slope_positive(ma60, self.ma60_slope_days):
             return False
         
         if not zx_condition_at_positions(hist, require_close_gt_long=True, require_short_gt_long=True, pos=None):
