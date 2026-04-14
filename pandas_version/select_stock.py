@@ -12,13 +12,15 @@ from typing import Any, Dict, Iterable, List
 
 import pandas as pd
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 # ---------- 日志 ----------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("select_results.log", encoding="utf-8"),
+        logging.FileHandler(PROJECT_ROOT / "select_results.log", encoding="utf-8"),
     ],
 )
 logger = logging.getLogger("select")
@@ -80,8 +82,8 @@ def instantiate_selector(cfg: Dict[str, Any]):
 
 def main():
     p = argparse.ArgumentParser(description="Run selectors defined in configs.json")
-    p.add_argument("--data-dir", default="./data", help="CSV 行情目录")
-    p.add_argument("--config", default="./configs.json", help="Selector 配置文件")
+    p.add_argument("--data-dir", default=str(PROJECT_ROOT / "data"), help="CSV 行情目录")
+    p.add_argument("--config", default=str(PROJECT_ROOT / "configs.json"), help="Selector 配置文件")
     p.add_argument("--date", help="交易日 YYYY-MM-DD；缺省=数据最新日期")
     p.add_argument("--tickers", default="all", help="'all' 或逗号分隔股票代码列表")
     args = p.parse_args()
@@ -140,7 +142,7 @@ def main():
         logger.info("%s", ", ".join(picks) if picks else "无符合条件股票")
 
         # 保存结果到 backtest_results 目录（JSON 格式）
-        backtest_dir = Path("backtest_results")
+        backtest_dir = PROJECT_ROOT / "backtest_results"
         backtest_dir.mkdir(exist_ok=True)
         
         date_str = trade_date.strftime("%Y%m%d")

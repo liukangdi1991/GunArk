@@ -9,14 +9,17 @@ from typing import Dict
 import pandas as pd
 import polars as pl
 
-sys.path.insert(0, ".")
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "pandas_version"))
 import Selector as selector_pd
-import Selector_polars as selector_pl
+
+sys.path.insert(0, str(ROOT / "polars_version"))
+import Selector as selector_pl
 
 TEST_DATES = ["2025-04-07", "2025-07-07", "2025-09-30"]
-CONFIG_PATH = Path("configs.json")
-DATA_DIR = Path("data")
-DB_DIR = Path("db")
+CONFIG_PATH = ROOT / "configs.json"
+DATA_DIR = ROOT / "data"
+DB_DIR = ROOT / "db"
 SAMPLE_SIZE = 500
 
 random.seed(42)

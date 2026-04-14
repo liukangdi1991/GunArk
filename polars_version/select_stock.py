@@ -7,6 +7,7 @@
 
 import argparse
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import sys
@@ -15,13 +16,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+import numpy as np
 import polars as pl
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 from rich.table import Table
 
-from Selector_polars import (
+from Selector import (
     BBIKDJSelector,
     SuperB1Selector,
     PeakKDJSelector,
@@ -31,6 +35,7 @@ from Selector_polars import (
     compute_kdj,
     compute_bbi,
     bbi_deriv_uptrend,
+    _compute_kdj_numba,
 )
 
 console = Console()
@@ -118,10 +123,9 @@ def load_strategies_from_config(cfg_path: Path) -> Dict[str, Dict[str, Any]]:
 # ─────────────────────────── 数据加载 ─────────────────────────── #
 
 def load_data_polars_table(data_dir: str, tickers: Optional[List[str]] = None) -> pl.DataFrame:
-    """读取并返回按 code/date 排序的大表"""
+    """读取并返回按 code/date 排序的大表，使用 scan_parquet 延迟加载 + 列裁剪"""
     data_path = Path(data_dir)
     
-    # 获取 parquet 文件列表
     if tickers:
         files = [str(data_path / f"{t}.parquet") for t in tickers if (data_path / f"{t}.parquet").exists()]
     else:
@@ -130,13 +134,16 @@ def load_data_polars_table(data_dir: str, tickers: Optional[List[str]] = None) -
     if not files:
         return pl.DataFrame()
     
-    # 批量读取，包含文件路径
-    df_all = pl.read_parquet(files, include_file_paths="file_path")
-    
-    # 提取股票代码
-    return df_all.with_columns(
-        pl.col("file_path").str.extract(r"([^/]+)\.parquet$").alias("code")
-    ).drop("file_path").sort(["code", "date"])
+    cols = ["date", "open", "close", "high", "low", "volume"]
+    return (
+        pl.scan_parquet(files, include_file_paths="file_path")
+        .select([
+            pl.col("file_path").str.extract(r"([^/]+)\.parquet$").alias("code"),
+            *[pl.col(c) for c in cols],
+        ])
+        .sort(["code", "date"])
+        .collect()
+    )
 
 
 def table_to_data_dict(df_all: pl.DataFrame) -> Dict[str, pl.DataFrame]:
@@ -197,8 +204,117 @@ class StrategySelectionRunner(ABC):
 class DefaultSelectionRunner(StrategySelectionRunner):
     """通用 Runner：不做预筛，直接沿用策略原生 select。"""
 
+    _has_zx_prefilter: bool = False
+    _prefetch_indicators: List[str] = []
+
     def run_prefilter(self, *, date_obj, data_table: pl.DataFrame) -> Optional[List[str]]:
         return None
+
+    def _prefetch(
+        self,
+        data_table: pl.DataFrame,
+        candidates: List[str],
+        date_obj,
+        need_len: int,
+    ) -> pl.DataFrame:
+        close = pl.col("close").cast(pl.Float64)
+        high = pl.col("high").cast(pl.Float64)
+        low = pl.col("low").cast(pl.Float64)
+
+        cols_to_add = []
+
+        if "KDJ" in self._prefetch_indicators:
+            cols_to_add.extend([
+                pl.col("low").rolling_min(window_size=9, min_samples=1).over("code").alias("_low_n"),
+                pl.col("high").rolling_max(window_size=9, min_samples=1).over("code").alias("_high_n"),
+            ])
+
+        if "MA60" in self._prefetch_indicators:
+            cols_to_add.append(close.rolling_mean(window_size=60, min_periods=1).over("code").alias("MA60"))
+
+        if "DIF" in self._prefetch_indicators:
+            cols_to_add.append(
+                (close.ewm_mean(span=12, adjust=False).over("code")
+                 - close.ewm_mean(span=26, adjust=False).over("code")).alias("DIF")
+            )
+
+        if "BBI" in self._prefetch_indicators:
+            cols_to_add.append(
+                (
+                    close.rolling_mean(window_size=3).over("code")
+                    + close.rolling_mean(window_size=6).over("code")
+                    + close.rolling_mean(window_size=12).over("code")
+                    + close.rolling_mean(window_size=24).over("code")
+                ).truediv(4.0).alias("BBI")
+            )
+
+        if "ZX" in self._prefetch_indicators:
+            cols_to_add.extend([
+                close.ewm_mean(span=10, adjust=False).ewm_mean(span=10, adjust=False).over("code").alias("ZXDQ"),
+                (
+                    close.rolling_mean(window_size=14, min_periods=14).over("code")
+                    + close.rolling_mean(window_size=28, min_periods=28).over("code")
+                    + close.rolling_mean(window_size=57, min_periods=57).over("code")
+                    + close.rolling_mean(window_size=114, min_periods=114).over("code")
+                ).truediv(4.0).alias("ZXDKX"),
+            ])
+
+        if "RSV" in self._prefetch_indicators:
+            sel = self.selector
+            n_short = sel.n_short if hasattr(sel, "n_short") else 3
+            n_long = sel.n_long if hasattr(sel, "n_long") else 21
+            low_short = low.rolling_min(window_size=n_short, min_samples=1).over("code")
+            high_close_short = close.rolling_max(window_size=n_short, min_samples=1).over("code")
+            low_long = low.rolling_min(window_size=n_long, min_samples=1).over("code")
+            high_close_long = close.rolling_max(window_size=n_long, min_samples=1).over("code")
+            cols_to_add.extend([
+                ((close - low_short) / (high_close_short - low_short + 1e-9) * 100.0).alias(f"RSV_{n_short}"),
+                ((close - low_long) / (high_close_long - low_long + 1e-9) * 100.0).alias(f"RSV_{n_long}"),
+            ])
+
+        if not cols_to_add:
+            return data_table.filter(pl.col("code").is_in(candidates))
+
+        result = (
+            data_table.lazy()
+            .filter((pl.col("date") <= date_obj) & (pl.col("code").is_in(candidates)))
+            .group_by("code", maintain_order=True)
+            .tail(need_len)
+            .sort(["code", "date"])
+            .with_columns(cols_to_add)
+        )
+
+        has_rsv = "RSV" in self._prefetch_indicators
+        has_kdj = "KDJ" in self._prefetch_indicators
+        if has_kdj:
+            result = result.with_columns(
+                ((close - pl.col("_low_n")) / (pl.col("_high_n") - pl.col("_low_n") + 1e-9) * 100).alias("_rsv")
+            )
+
+        result = result.collect()
+
+        if has_kdj:
+            kdj_cache = {}
+            for key, df in result.partition_by("code", as_dict=True).items():
+                code = key[0]
+                rsv = df["_rsv"].to_numpy()
+                K, D, J = _compute_kdj_numba(rsv)
+                kdj_cache[code] = (K, D, J)
+            result = result.drop(["_low_n", "_high_n", "_rsv"])
+
+            new_rows = []
+            for key, df in result.partition_by("code", as_dict=True).items():
+                code = key[0]
+                K, D, J = kdj_cache[code]
+                df = df.with_columns([
+                    pl.Series("K", K),
+                    pl.Series("D", D),
+                    pl.Series("J", J),
+                ])
+                new_rows.append(df)
+            result = pl.concat(new_rows)
+
+        return result
 
     def run_final_filter(
         self,
@@ -208,13 +324,38 @@ class DefaultSelectionRunner(StrategySelectionRunner):
         candidates: Optional[List[str]],
         get_data_dict: Callable[[], Dict[str, pl.DataFrame]],
     ) -> List[str]:
-        data = get_data_dict()
+        skip_day = candidates is not None
+        skip_zx = skip_day and self._has_zx_prefilter
         if candidates is None:
+            data = get_data_dict()
             return self.selector.select(date_obj, data)
-        subset = {code: data[code] for code in candidates if code in data}
-        if not subset:
+        if not candidates:
             return []
-        return self.selector.select(date_obj, subset)
+
+        if self._prefetch_indicators:
+            need_len = getattr(self, '_get_need_len', lambda: 150)()
+            subset_table = self._prefetch(data_table, candidates, date_obj, need_len)
+        else:
+            subset_table = data_table.filter(pl.col("code").is_in(candidates))
+
+        subset = {}
+        for code, df in subset_table.partition_by("code", as_dict=True).items():
+            subset[code[0]] = df.drop("code")
+
+        if len(subset) > 50:
+            return self._parallel_select(date_obj, subset, skip_day, skip_zx)
+        return self.selector.select(date_obj, subset, skip_day_check=skip_day, skip_zx_check=skip_zx)
+
+    def _parallel_select(self, date_obj, subset, skip_day, skip_zx):
+        selector = self.selector
+        def check_one(item):
+            code, hist = item
+            if selector._passes_filters(hist, skip_day_check=skip_day, skip_zx_check=skip_zx):
+                return code
+            return None
+        with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as pool:
+            results = pool.map(check_one, subset.items())
+        return [r for r in results if r is not None]
 
 
 class BBIKDJSelectionRunner(StrategySelectionRunner):
@@ -302,43 +443,85 @@ class BBIKDJSelectionRunner(StrategySelectionRunner):
             return []
 
         need_len = self.selector.max_window + 20
+        close = pl.col("close").cast(pl.Float64)
+
         candidates_hist = (
-            data_table.filter((pl.col("date") <= date_obj) & (pl.col("code").is_in(candidates)))
+            data_table.lazy()
+            .filter((pl.col("date") <= date_obj) & (pl.col("code").is_in(candidates)))
             .group_by("code", maintain_order=True)
             .tail(need_len)
             .sort(["code", "date"])
+            .with_columns([
+                (
+                    close.rolling_mean(window_size=3).over("code")
+                    + close.rolling_mean(window_size=6).over("code")
+                    + close.rolling_mean(window_size=12).over("code")
+                    + close.rolling_mean(window_size=24).over("code")
+                ).truediv(4.0).alias("BBI"),
+                pl.col("low").rolling_min(window_size=9, min_samples=1).over("code").alias("_low_n"),
+                pl.col("high").rolling_max(window_size=9, min_samples=1).over("code").alias("_high_n"),
+            ])
+            .with_columns([
+                ((close - pl.col("_low_n")) / (pl.col("_high_n") - pl.col("_low_n") + 1e-9) * 100).alias("_rsv"),
+            ])
+            .collect()
         )
 
-        picks: List[str] = []
-        for code in candidates:
-            hist = candidates_hist.filter(pl.col("code") == code).drop("code")
-            if hist.is_empty():
-                continue
+        rsv_by_code = candidates_hist.partition_by("code", as_dict=True)
+        kdj_cache = {}
+        for key, df in rsv_by_code.items():
+            code = key[0]
+            rsv = df["_rsv"].to_numpy()
+            K, D, J = _compute_kdj_numba(rsv)
+            kdj_cache[code] = (K, D, J)
 
-            # 精筛阶段保留复杂指标，确保策略行为与旧版一致
+        candidates_hist = candidates_hist.drop(["_low_n", "_high_n", "_rsv"])
+
+        hist_by_code = {}
+        for key, df in candidates_hist.partition_by("code", as_dict=True).items():
+            hist_by_code[key[0]] = df.drop("code")
+
+        def check_bbikdj(item):
+            code, hist = item
+            if hist.is_empty():
+                return None
             if not bbi_deriv_uptrend(
-                compute_bbi(hist),
+                hist["BBI"],
                 min_window=self.selector.bbi_min_window,
                 max_window=self.selector.max_window,
                 q_threshold=self.selector.bbi_q_threshold,
             ):
-                continue
-
-            j_series = compute_kdj(hist)["J"]
-            j_today = float(j_series[-1])
-            j_window = j_series.tail(self.selector.max_window).drop_nulls()
-            if len(j_window) == 0:
-                continue
-            j_quantile = float(j_window.quantile(self.selector.j_q_threshold, interpolation="linear"))
+                return None
+            K, D, J = kdj_cache[code]
+            j_today = float(J[-1])
+            j_arr = J[self.selector.max_window * -1 or len(J):]
+            j_arr = j_arr[np.isfinite(j_arr)]
+            if len(j_arr) == 0:
+                return None
+            j_quantile = float(np.percentile(j_arr, self.selector.j_q_threshold * 100, interpolation="linear"))
             if not (j_today < self.selector.j_threshold or j_today <= j_quantile):
-                continue
+                return None
+            return code
 
-            picks.append(code)
+        if len(hist_by_code) > 50:
+            with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as pool:
+                results = pool.map(check_bbikdj, hist_by_code.items())
+            return [r for r in results if r is not None]
+
+        picks: List[str] = []
+        for code in candidates:
+            hist = hist_by_code.get(code)
+            if hist is None or hist.is_empty():
+                continue
+            r = check_bbikdj((code, hist))
+            if r is not None:
+                picks.append(r)
         return picks
 
 
 class SuperB1SelectionRunner(DefaultSelectionRunner):
     """SuperB1 Runner：Polars 预筛 + 原逻辑精筛。"""
+    _prefetch_indicators: List[str] = []
 
     selector: SuperB1Selector
 
@@ -381,8 +564,13 @@ class SuperB1SelectionRunner(DefaultSelectionRunner):
 
 class PeakKDJSelectionRunner(DefaultSelectionRunner):
     """PeakKDJ Runner：Polars 预筛 + 原逻辑精筛。"""
+    _has_zx_prefilter: bool = True
+    _prefetch_indicators: List[str] = ["KDJ"]
 
     selector: PeakKDJSelector
+
+    def _get_need_len(self) -> int:
+        return self.selector.max_window + 20
 
     def run_prefilter(self, *, date_obj, data_table: pl.DataFrame) -> Optional[List[str]]:
         if data_table.is_empty():
@@ -430,8 +618,17 @@ class PeakKDJSelectionRunner(DefaultSelectionRunner):
 
 class BBIShortLongSelectionRunner(DefaultSelectionRunner):
     """BBIShortLong Runner：Polars 预筛 + 原逻辑精筛。"""
+    _has_zx_prefilter: bool = True
+    _prefetch_indicators: List[str] = ["BBI", "RSV", "DIF"]
 
     selector: BBIShortLongSelector
+
+    def _get_need_len(self) -> int:
+        sel = self.selector
+        return max(
+            max(sel.n_short, sel.n_long) + sel.bbi_min_window + sel.m,
+            sel.max_window,
+        )
 
     def run_prefilter(self, *, date_obj, data_table: pl.DataFrame) -> Optional[List[str]]:
         if data_table.is_empty():
@@ -514,8 +711,14 @@ class BBIShortLongSelectionRunner(DefaultSelectionRunner):
 
 class MA60CrossVolumeWaveSelectionRunner(DefaultSelectionRunner):
     """MA60CrossVolumeWave Runner：Polars 预筛 + 原逻辑精筛。"""
+    _has_zx_prefilter: bool = True
+    _prefetch_indicators: List[str] = ["KDJ", "MA60"]
 
     selector: MA60CrossVolumeWaveSelector
+
+    def _get_need_len(self) -> int:
+        sel = self.selector
+        return max(60 + sel.lookback_n + sel.ma60_slope_days, sel.max_window + 20)
 
     def run_prefilter(self, *, date_obj, data_table: pl.DataFrame) -> Optional[List[str]]:
         if data_table.is_empty():
@@ -655,6 +858,26 @@ def build_strategy_runner(selector: Any) -> StrategySelectionRunner:
 
 # ─────────────────────────── 结果输出 ─────────────────────────── #
 
+def _load_stock_names() -> Dict[str, str]:
+    """从 stocklist.csv 加载 code→name 映射"""
+    stocklist_path = PROJECT_ROOT / "stocklist.csv"
+    if not stocklist_path.exists():
+        return {}
+    try:
+        df = pl.read_csv(stocklist_path, columns=["symbol", "name"])
+        return {str(row[0]).zfill(6): str(row[1]) for row in df.iter_rows()}
+    except Exception:
+        return {}
+
+_stock_name_cache: Optional[Dict[str, str]] = None
+
+def get_stock_names() -> Dict[str, str]:
+    global _stock_name_cache
+    if _stock_name_cache is None:
+        _stock_name_cache = _load_stock_names()
+    return _stock_name_cache
+
+
 def print_strategy_result(
     strategy_name: str,
     emoji: str,
@@ -663,7 +886,8 @@ def print_strategy_result(
     date: str,
 ) -> None:
     """打印单个策略的选股结果"""
-    # 创建结果表格
+    stock_names = get_stock_names()
+
     table = Table(
         show_header=True,
         header_style="bold cyan",
@@ -674,13 +898,15 @@ def print_strategy_result(
     )
     table.add_column("序号", justify="center", style="bold", width=6)
     table.add_column("股票代码", justify="center", style="bold cyan", width=12)
+    table.add_column("股票名称", justify="center", style="bold green", width=14)
     table.add_column("状态", justify="center", width=6)
     
     if picks:
         for i, code in enumerate(picks, 1):
-            table.add_row(str(i), code, "✅")
+            name = stock_names.get(code, "")
+            table.add_row(str(i), code, name, "✅")
     else:
-        table.add_row("-", "无符合条件的股票", "-")
+        table.add_row("-", "无符合条件的股票", "", "-")
     
     console.print(table)
     
@@ -727,9 +953,9 @@ def save_results(results: Dict, date: str, output_dir: str) -> str:
 def main():
     parser = argparse.ArgumentParser(description="选股程序 - Polars 版本")
     parser.add_argument("--date", required=True, help="选股日期 (YYYY-MM-DD)")
-    parser.add_argument("--data-dir", default="db", help="Parquet 数据目录")
-    parser.add_argument("--config", default="configs.json", help="Selector 配置文件")
-    parser.add_argument("--output-dir", default="backtest_results", help="结果输出目录")
+    parser.add_argument("--data-dir", default=str(PROJECT_ROOT / "db"), help="Parquet 数据目录")
+    parser.add_argument("--config", default=str(PROJECT_ROOT / "configs.json"), help="Selector 配置文件")
+    parser.add_argument("--output-dir", default=str(PROJECT_ROOT / "backtest_results"), help="结果输出目录")
     parser.add_argument("--tickers", nargs="+", help="指定股票代码")
     parser.add_argument("--strategies", nargs="+", help="指定策略名称")
     

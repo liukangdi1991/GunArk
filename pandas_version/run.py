@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-一键选股程序：自动拉取数据 + 运行选股
+一键选股程序：自动拉取数据 + 运行选股 (Pandas 版)
 """
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ from typing import Any, Dict, Iterable, List
 
 import pandas as pd
 import tushare as ts
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 from tqdm import tqdm
 from rich.console import Console
 from rich.table import Table
@@ -383,7 +385,7 @@ def load_stock_names(stocklist_csv: Path) -> Dict[str, str]:
 
 
 def run_selection(data_dir: Path, config_path: Path, trade_date_str: str = None, 
-                  results_dir: Path = Path("./results")):
+                  results_dir: Path = PROJECT_ROOT / "results"):
     """运行选股"""
     print_section("开始选股分析", "🔍")
     
@@ -419,7 +421,7 @@ def run_selection(data_dir: Path, config_path: Path, trade_date_str: str = None,
     selector_cfgs = load_config(config_path)
     
     # 加载股票名称
-    stock_names = load_stock_names(Path("./stocklist.csv"))
+    stock_names = load_stock_names(PROJECT_ROOT / "stocklist.csv")
     
     # 运行选股
     all_results = {}
@@ -469,7 +471,7 @@ def main():
     # 数据拉取参数
     parser.add_argument("--start", default="20190101", help="数据拉取起始日期 YYYYMMDD")
     parser.add_argument("--end", default="today", help="数据拉取结束日期 YYYYMMDD")
-    parser.add_argument("--stocklist", type=Path, default=Path("./stocklist.csv"), help="股票清单CSV路径")
+    parser.add_argument("--stocklist", type=Path, default=PROJECT_ROOT / "stocklist.csv", help="股票清单CSV路径")
     parser.add_argument(
         "--exclude-boards",
         nargs="*",
@@ -477,13 +479,13 @@ def main():
         choices=["gem", "star", "bj"],
         help="排除板块：gem(创业板) star(科创板) bj(北交所)"
     )
-    parser.add_argument("--data-dir", default="./data", help="数据保存目录")
+    parser.add_argument("--data-dir", default=str(PROJECT_ROOT / "data"), help="数据保存目录")
     parser.add_argument("--skip-fetch", action="store_true", help="跳过数据拉取")
     
     # 选股参数
-    parser.add_argument("--config", default="./configs.json", help="选股器配置文件")
+    parser.add_argument("--config", default=str(PROJECT_ROOT / "configs.json"), help="选股器配置文件")
     parser.add_argument("--date", help="选股日期 YYYY-MM-DD（默认使用数据最新日期）")
-    parser.add_argument("--results-dir", default="./results", help="结果保存目录")
+    parser.add_argument("--results-dir", default=str(PROJECT_ROOT / "results"), help="结果保存目录")
     
     args = parser.parse_args()
     

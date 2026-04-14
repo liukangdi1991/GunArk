@@ -30,7 +30,7 @@ _compute_kdj_numba(np.array([50.0, 60.0, 70.0]))
 # --------------------------- 通用指标 --------------------------- #
 
 def compute_kdj(df: pl.DataFrame, n: int = 9) -> pl.DataFrame:
-    """使用 Polars + numba 计算 KDJ"""
+    """使用 Polars + numba 计算 KDJ，若已有 K/D/J 列则跳过"""
     if df.is_empty():
         return df.with_columns([
             pl.lit(None).alias("K"),
@@ -38,12 +38,13 @@ def compute_kdj(df: pl.DataFrame, n: int = 9) -> pl.DataFrame:
             pl.lit(None).alias("J"),
         ])
 
-    # Polars 计算 RSV
+    if "J" in df.columns and "K" in df.columns and "D" in df.columns:
+        return df
+
     low_n = df["low"].rolling_min(n, min_samples=1)
     high_n = df["high"].rolling_max(n, min_samples=1)
     rsv = ((df["close"] - low_n) / (high_n - low_n + 1e-9) * 100).to_numpy()
 
-    # numba 计算 K, D, J
     K, D, J = _compute_kdj_numba(rsv)
 
     return df.with_columns([
@@ -54,6 +55,8 @@ def compute_kdj(df: pl.DataFrame, n: int = 9) -> pl.DataFrame:
 
 
 def compute_bbi(df: pl.DataFrame) -> pl.Series:
+    if "BBI" in df.columns:
+        return df["BBI"]
     return df.select(
         (
             pl.col("close").rolling_mean(window_size=3)
@@ -68,6 +71,9 @@ def compute_bbi(df: pl.DataFrame) -> pl.Series:
 
 def compute_rsv(df: pl.DataFrame, n: int) -> pl.Series:
     """计算 RSV"""
+    col_name = f"RSV_{n}"
+    if col_name in df.columns:
+        return df[col_name]
     return df.select(
         (
             (pl.col("close") - pl.col("low").rolling_min(window_size=n, min_periods=1))
@@ -77,12 +83,14 @@ def compute_rsv(df: pl.DataFrame, n: int) -> pl.Series:
                 + 1e-9
             )
             * 100.0
-        ).alias("RSV")
+        ).alias(col_name)
     ).to_series()
 
 
 def compute_dif(df: pl.DataFrame, fast: int = 12, slow: int = 26) -> pl.Series:
     """计算 MACD 指标中的 DIF (EMA fast - EMA slow)"""
+    if "DIF" in df.columns:
+        return df["DIF"]
     return df.select(
         (
             pl.col("close").ewm_mean(span=fast, adjust=False)
@@ -185,21 +193,14 @@ def _find_peaks(
     return peaks_df
 
 
-def last_valid_ma_cross_up(
-    close: pl.Series,
-    ma: pl.Series,
-    lookback_n: int | None = None,
-) -> Optional[int]:
-    """查找"有效上穿 MA"的最后一个交易日 T"""
-    n = len(close)
+@njit
+def _last_valid_ma_cross_up_numba(close_arr, ma_arr, lookback_n):
+    n = len(close_arr)
     start = 1
-    if lookback_n is not None:
-        start = max(start, n - lookback_n)
-
-    close_arr = close.to_numpy()
-    ma_arr = ma.to_numpy()
-
-    # 自后向前找最后一次有效上穿
+    if lookback_n > 0:
+        s = n - lookback_n
+        if s > start:
+            start = s
     for i in range(n - 1, start - 1, -1):
         if i - 1 < 0:
             continue
@@ -208,7 +209,23 @@ def last_valid_ma_cross_up(
         if np.isfinite(c_prev) and np.isfinite(c_now) and np.isfinite(m_prev) and np.isfinite(m_now):
             if c_prev < m_prev and c_now >= m_now:
                 return i
-    return None
+    return -1
+
+
+_last_valid_ma_cross_up_numba(np.array([1.0, 2.0]), np.array([1.5, 1.5]), 0)
+
+
+def last_valid_ma_cross_up(
+    close: pl.Series,
+    ma: pl.Series,
+    lookback_n: int | None = None,
+) -> Optional[int]:
+    """查找"有效上穿 MA"的最后一个交易日 T"""
+    close_arr = close.to_numpy()
+    ma_arr = ma.to_numpy()
+    lb = lookback_n if lookback_n is not None else 0
+    result = _last_valid_ma_cross_up_numba(close_arr, ma_arr, lb)
+    return result if result >= 0 else None
 
 
 def compute_zx_lines(
@@ -216,6 +233,8 @@ def compute_zx_lines(
     m1: int = 14, m2: int = 28, m3: int = 57, m4: int = 114
 ) -> tuple[pl.Series, pl.Series]:
     """返回 (ZXDQ, ZXDKX)"""
+    if "ZXDQ" in df.columns and "ZXDKX" in df.columns:
+        return df["ZXDQ"], df["ZXDKX"]
     close = df["close"].cast(pl.Float64)
     zxdq = close.ewm_mean(span=10, adjust=False).ewm_mean(span=10, adjust=False)
 
@@ -300,10 +319,10 @@ class BBIKDJSelector:
         self.bbi_q_threshold = bbi_q_threshold
         self.j_q_threshold = j_q_threshold
 
-    def _passes_filters(self, hist: pl.DataFrame) -> bool:
+    def _passes_filters(self, hist: pl.DataFrame, skip_day_check: bool = False, skip_zx_check: bool = False) -> bool:
         bbi = compute_bbi(hist)
         
-        if not passes_day_constraints_today(hist):
+        if not skip_day_check and not passes_day_constraints_today(hist):
             return False
 
         win = hist.tail(self.max_window)
@@ -331,7 +350,10 @@ class BBIKDJSelector:
         if not (j_today < self.j_threshold or j_today <= j_quantile):
             return False
         
-        ma60 = hist["close"].rolling_mean(window_size=60, min_periods=1)
+        if "MA60" in hist.columns:
+            ma60 = hist["MA60"]
+        else:
+            ma60 = hist["close"].rolling_mean(window_size=60, min_periods=1)
 
         if hist["close"][-1] < ma60[-1]:
             return False
@@ -339,18 +361,18 @@ class BBIKDJSelector:
         t_pos = last_valid_ma_cross_up(hist["close"], ma60, lookback_n=self.max_window)
         if t_pos is None:
             return False        
-
+        
         dif = compute_dif(hist)
         if dif[-1] <= 0:
             return False
        
-        if not zx_condition_at_positions(hist, require_close_gt_long=True, require_short_gt_long=True, pos=None):
+        if not skip_zx_check and not zx_condition_at_positions(hist, require_close_gt_long=True, require_short_gt_long=True, pos=None):
             return False
 
         return True
 
     def select(
-        self, date, data: Dict[str, pl.DataFrame]
+        self, date, data: Dict[str, pl.DataFrame], skip_day_check: bool = False, skip_zx_check: bool = False
     ) -> List[str]:
         picks: List[str] = []
         for code, df in data.items():
@@ -358,7 +380,7 @@ class BBIKDJSelector:
             if hist.is_empty():
                 continue
             hist = hist.tail(self.max_window + 20)
-            if self._passes_filters(hist):
+            if self._passes_filters(hist, skip_day_check=skip_day_check, skip_zx_check=skip_zx_check):
                 picks.append(code)
         return picks
     
@@ -397,17 +419,16 @@ class SuperB1Selector:
 
         self._extra_for_bbi = self.bbi_selector.max_window + 20
 
-    def _passes_filters(self, hist: pl.DataFrame) -> bool:
+    def _passes_filters(self, hist: pl.DataFrame, skip_day_check: bool = False, skip_zx_check: bool = False) -> bool:
         if len(hist) < 2:
             return False
 
-        if not passes_day_constraints_today(hist):
+        if not skip_day_check and not passes_day_constraints_today(hist):
             return False
 
         if len(hist) < self.lookback_n + self._extra_for_bbi:
             return False
 
-        # 简化版：检查最近是否有满足条件的日期
         tm_found = False
         for i in range(len(hist) - 2, max(0, len(hist) - self.lookback_n - 1), -1):
             sub_hist = hist.head(i + 1)
@@ -439,12 +460,12 @@ class SuperB1Selector:
         if not (j_today < self.j_threshold or j_today <= j_q_val):
             return False
 
-        if not zx_condition_at_positions(hist, require_close_gt_long=False, require_short_gt_long=True, pos=None):
+        if not skip_zx_check and not zx_condition_at_positions(hist, require_close_gt_long=False, require_short_gt_long=True, pos=None):
             return False
 
         return True
 
-    def select(self, date, data: Dict[str, pl.DataFrame]) -> List[str]:        
+    def select(self, date, data: Dict[str, pl.DataFrame], skip_day_check: bool = False, skip_zx_check: bool = False) -> List[str]:        
         picks: List[str] = []
         min_len = self.lookback_n + self._extra_for_bbi
 
@@ -452,7 +473,7 @@ class SuperB1Selector:
             hist = df.filter(pl.col("date") <= date).tail(min_len)
             if len(hist) < min_len:
                 continue
-            if self._passes_filters(hist):
+            if self._passes_filters(hist, skip_day_check=skip_day_check, skip_zx_check=skip_zx_check):
                 picks.append(code)
 
         return picks
@@ -475,11 +496,11 @@ class PeakKDJSelector:
         self.gap_threshold = gap_threshold
         self.j_q_threshold = j_q_threshold
 
-    def _passes_filters(self, hist: pl.DataFrame) -> bool:
+    def _passes_filters(self, hist: pl.DataFrame, skip_day_check: bool = False, skip_zx_check: bool = False) -> bool:
         if hist.is_empty():
             return False
         
-        if not passes_day_constraints_today(hist):
+        if not skip_day_check and not passes_day_constraints_today(hist):
             return False
 
         hist = hist.sort("date")
@@ -543,7 +564,7 @@ class PeakKDJSelector:
         if not (j_today < self.j_threshold or j_today <= j_quantile):
             return False
 
-        if not zx_condition_at_positions(hist, require_close_gt_long=True, require_short_gt_long=True, pos=None):
+        if not skip_zx_check and not zx_condition_at_positions(hist, require_close_gt_long=True, require_short_gt_long=True, pos=None):
             return False
 
         return True
@@ -552,6 +573,8 @@ class PeakKDJSelector:
         self,
         date,
         data: Dict[str, pl.DataFrame],
+        skip_day_check: bool = False,
+        skip_zx_check: bool = False,
     ) -> List[str]:
         picks: List[str] = []
         for code, df in data.items():
@@ -559,7 +582,7 @@ class PeakKDJSelector:
             if hist.is_empty():
                 continue
             hist = hist.tail(self.max_window + 20)
-            if self._passes_filters(hist):
+            if self._passes_filters(hist, skip_day_check=skip_day_check, skip_zx_check=skip_zx_check):
                 picks.append(code)
         return picks
     
@@ -588,10 +611,10 @@ class BBIShortLongSelector:
         self.upper_rsv_threshold = upper_rsv_threshold
         self.lower_rsv_threshold = lower_rsv_threshold
 
-    def _passes_filters(self, hist: pl.DataFrame) -> bool:
+    def _passes_filters(self, hist: pl.DataFrame, skip_day_check: bool = False, skip_zx_check: bool = False) -> bool:
         bbi = compute_bbi(hist)
         
-        if not passes_day_constraints_today(hist):
+        if not skip_day_check and not passes_day_constraints_today(hist):
             return False      
 
         if not bbi_deriv_uptrend(
@@ -634,7 +657,7 @@ class BBIShortLongSelector:
         if dif[-1] <= 0:
             return False
 
-        if not zx_condition_at_positions(hist, require_close_gt_long=True, require_short_gt_long=True, pos=None):
+        if not skip_zx_check and not zx_condition_at_positions(hist, require_close_gt_long=True, require_short_gt_long=True, pos=None):
             return False
 
         return True
@@ -643,6 +666,8 @@ class BBIShortLongSelector:
         self,
         date,
         data: Dict[str, pl.DataFrame],
+        skip_day_check: bool = False,
+        skip_zx_check: bool = False,
     ) -> List[str]:
         picks: List[str] = []
         for code, df in data.items():
@@ -655,7 +680,7 @@ class BBIShortLongSelector:
                 + self.m
             )
             hist = hist.tail(max(need_len, self.max_window))
-            if self._passes_filters(hist):
+            if self._passes_filters(hist, skip_day_check=skip_day_check, skip_zx_check=skip_zx_check):
                 picks.append(code)
         return picks
     
@@ -695,7 +720,7 @@ class MA60CrossVolumeWaveSelector:
         k, _ = np.polyfit(x, seg.to_numpy().astype(float), 1)
         return bool(k > 0)
 
-    def _passes_filters(self, hist: pl.DataFrame) -> bool:
+    def _passes_filters(self, hist: pl.DataFrame, skip_day_check: bool = False, skip_zx_check: bool = False) -> bool:
         if hist.is_empty():
             return False
 
@@ -704,7 +729,7 @@ class MA60CrossVolumeWaveSelector:
         if len(hist) < min_len:
             return False
         
-        if not passes_day_constraints_today(hist):
+        if not skip_day_check and not passes_day_constraints_today(hist):
             return False
 
         kdj = compute_kdj(hist)
@@ -717,7 +742,10 @@ class MA60CrossVolumeWaveSelector:
         if not (j_today < self.j_threshold or j_today <= j_q_val):
             return False
 
-        ma60 = hist["close"].rolling_mean(window_size=60, min_periods=1)
+        if "MA60" in hist.columns:
+            ma60 = hist["MA60"]
+        else:
+            ma60 = hist["close"].rolling_mean(window_size=60, min_periods=1)
         if hist["close"][-1] < ma60[-1]:
             return False
 
@@ -760,19 +788,19 @@ class MA60CrossVolumeWaveSelector:
         if not self._ma_slope_positive(ma60, self.ma60_slope_days):
             return False
         
-        if not zx_condition_at_positions(hist, require_close_gt_long=True, require_short_gt_long=True, pos=None):
+        if not skip_zx_check and not zx_condition_at_positions(hist, require_close_gt_long=True, require_short_gt_long=True, pos=None):
             return False
 
         return True
 
-    def select(self, date, data: Dict[str, pl.DataFrame]) -> List[str]:
+    def select(self, date, data: Dict[str, pl.DataFrame], skip_day_check: bool = False, skip_zx_check: bool = False) -> List[str]:
         picks: List[str] = []
         need_len = max(60 + self.lookback_n + self.ma60_slope_days, self.max_window + 20)
         for code, df in data.items():
             hist = df.filter(pl.col("date") <= date).tail(need_len)
             if len(hist) < need_len:
                 continue
-            if self._passes_filters(hist):
+            if self._passes_filters(hist, skip_day_check=skip_day_check, skip_zx_check=skip_zx_check):
                 picks.append(code)
         return picks
 
@@ -894,7 +922,7 @@ class BigBullishVolumeSelector:
 
         return True
 
-    def select(self, date, data: Dict[str, pl.DataFrame]) -> List[str]:
+    def select(self, date, data: Dict[str, pl.DataFrame], skip_day_check: bool = False, skip_zx_check: bool = False) -> List[str]:
         picks: List[str] = []
         need_len = max(self.min_history, self.vol_lookback_n + 2)
 

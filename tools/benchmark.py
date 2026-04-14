@@ -1,5 +1,6 @@
 """Pandas vs Polars 选股性能对比"""
 import json
+import sys
 import time
 from pathlib import Path
 from datetime import date
@@ -7,14 +8,19 @@ from datetime import date
 import pandas as pd
 import polars as pl
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pandas_version"))
 import Selector as selector_pd
-import Selector_polars as selector_pl
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "polars_version"))
+import Selector as selector_pl
+
+ROOT = Path(__file__).resolve().parent.parent
 
 TRADE_DATE_STR = "2026-03-25"
 TRADE_DATE_PD = pd.Timestamp(TRADE_DATE_STR)
 TRADE_DATE_PL = date.fromisoformat(TRADE_DATE_STR)
-DATA_DIR = Path("data")
-DB_DIR = Path("db")
+DATA_DIR = ROOT / "data"
+DB_DIR = ROOT / "db"
 
 def load_pd_data():
     frames = {}
@@ -36,7 +42,7 @@ def load_pl_data():
     return data
 
 def load_config():
-    with open("configs.json", encoding="utf-8") as f:
+    with open(ROOT / "configs.json", encoding="utf-8") as f:
         raw = json.load(f)
     return raw.get("selectors", raw) if isinstance(raw, dict) else raw
 
