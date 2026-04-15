@@ -1,0 +1,14 @@
+{
+  "total_return_pct": -8.540511961595188,
+  "annual_return_pct": -1.2679599697801747,
+  "max_drawdown_pct": -14.53717372493667,
+  "sharpe": -0.6945277359733565,
+  "trade_count": 19,
+  "win_rate_pct": 15.789473684210526,
+  "strategy": "上穿60放量战法",
+  "start_date": "2026-03-12",
+  "end_date": "2026-03-15",
+  "initial_cash": 1000000.0,
+  "final_cash": 914594.8803840481,
+  "open_positions": 0
+}

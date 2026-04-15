@@ -20,6 +20,7 @@ import numpy as np
 import polars as pl
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+POLARS_RESULTS_DIR = str(PROJECT_ROOT / "results" / "polars")
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
@@ -32,8 +33,6 @@ from Selector import (
     BBIShortLongSelector,
     MA60CrossVolumeWaveSelector,
     BigBullishVolumeSelector,
-    compute_kdj,
-    compute_bbi,
     bbi_deriv_uptrend,
     _compute_kdj_numba,
 )
@@ -103,7 +102,7 @@ def instantiate_selector(cfg: Dict[str, Any]):
 
 
 def load_strategies_from_config(cfg_path: Path) -> Dict[str, Dict[str, Any]]:
-    """从配置文件加载策略，返回与 STRATEGIES 相同格式的字典"""
+    """从配置文件加载策略，返回 {策略名: {selector, emoji}} 结构。"""
     cfgs = load_config(cfg_path)
     strategies = {}
     for cfg in cfgs:
@@ -147,7 +146,12 @@ def load_data_polars_table(data_dir: str, tickers: Optional[List[str]] = None) -
 
 
 def table_to_data_dict(df_all: pl.DataFrame) -> Dict[str, pl.DataFrame]:
-    """将大表转换为旧版 Dict[code, DataFrame] 结构"""
+    """将大表转换为旧版 Dict[code, DataFrame] 结构。
+
+    说明：
+    - 为兼容历史 selector 的接口，这里保留 code->DataFrame 的字典形态。
+    - 每个子表会移除重复的 code 列，只保留原始行情数据列。
+    """
     data = {}
     for code, df in df_all.partition_by("code", as_dict=True).items():
         data[code[0]] = df.drop("code")
@@ -176,6 +180,10 @@ class StrategySelectionRunner(ABC):
         模板方法：
         1) run_prefilter：先做快速预筛，缩小候选范围
         2) run_final_filter：再执行策略核心指标判断
+
+        这样做可以保证：
+        - 逻辑行为与旧版一致
+        - 大部分耗时在向量化预筛阶段被消化
         """
         candidates = self.run_prefilter(date_obj=date_obj, data_table=data_table)
         return self.run_final_filter(
@@ -955,7 +963,6 @@ def main():
     parser.add_argument("--date", required=True, help="选股日期 (YYYY-MM-DD)")
     parser.add_argument("--data-dir", default=str(PROJECT_ROOT / "db"), help="Parquet 数据目录")
     parser.add_argument("--config", default=str(PROJECT_ROOT / "configs.json"), help="Selector 配置文件")
-    parser.add_argument("--output-dir", default=str(PROJECT_ROOT / "backtest_results"), help="结果输出目录")
     parser.add_argument("--tickers", nargs="+", help="指定股票代码")
     parser.add_argument("--strategies", nargs="+", help="指定策略名称")
     
@@ -975,7 +982,7 @@ def main():
             f"[bold cyan]选股日期:[/bold cyan] {args.date}\n"
             f"[bold cyan]数据目录:[/bold cyan] {args.data_dir}\n"
             f"[bold cyan]配置文件:[/bold cyan] {args.config}\n"
-            f"[bold cyan]结果目录:[/bold cyan] {args.output_dir}",
+            f"[bold cyan]结果目录:[/bold cyan] {POLARS_RESULTS_DIR}",
             title="🚀 选股程序 (Polars 版本)",
             border_style="bright_blue",
             expand=False,
@@ -1054,7 +1061,7 @@ def main():
     total_elapsed = time.time() - total_start
     
     # 保存所有结果
-    filepath = save_results(all_results, args.date, args.output_dir)
+    filepath = save_results(all_results, args.date, POLARS_RESULTS_DIR)
     console.print(f"[green]💾 结果已保存到: {filepath}[/green]")
     console.print()
     

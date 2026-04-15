@@ -1,0 +1,14 @@
+{
+  "total_return_pct": -3.7777135191077837,
+  "annual_return_pct": -0.5489311215330139,
+  "max_drawdown_pct": -7.950130676237799,
+  "sharpe": -1.1783429626337034,
+  "trade_count": 12,
+  "win_rate_pct": 25.0,
+  "strategy": "B1战法",
+  "start_date": "2026-03-16",
+  "end_date": "2026-03-20",
+  "initial_cash": 1000000.0,
+  "final_cash": 962222.8648089222,
+  "open_positions": 0
+}

@@ -1,0 +1,14 @@
+{
+  "total_return_pct": -3.1532480041850164,
+  "annual_return_pct": -0.456931546745698,
+  "max_drawdown_pct": -6.585313153121808,
+  "sharpe": -0.8525327807556871,
+  "trade_count": 12,
+  "win_rate_pct": 50.0,
+  "strategy": "暴力K战法",
+  "start_date": "2026-03-16",
+  "end_date": "2026-03-20",
+  "initial_cash": 1000000.0,
+  "final_cash": 968467.5199581499,
+  "open_positions": 0
+}

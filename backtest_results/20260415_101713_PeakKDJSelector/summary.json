@@ -1,0 +1,14 @@
+{
+  "total_return_pct": -1.4167809273942011,
+  "annual_return_pct": -0.20375249207362778,
+  "max_drawdown_pct": -3.403323389966939,
+  "sharpe": -1.6928685225103572,
+  "trade_count": 5,
+  "win_rate_pct": 40.0,
+  "strategy": "填坑战法",
+  "start_date": "2026-03-26",
+  "end_date": "2026-03-30",
+  "initial_cash": 1000000.0,
+  "final_cash": 985832.190726058,
+  "open_positions": 0
+}

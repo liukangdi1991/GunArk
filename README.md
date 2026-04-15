@@ -47,6 +47,8 @@ stock_selector/
 
 两个版本的**选股结果完全一致**。
 
+Polars 版本详细文档请见：`polars_version/README.md`
+
 ## 安装依赖
 
 ```bash
@@ -89,6 +91,12 @@ python polars_version/run.py
 # 跳过数据更新，直接选最新交易日
 python polars_version/run.py --skip-fetch
 
+# 交互式菜单（方向键选择）
+python polars_version/cli.py
+
+# 全屏交互工作台（Textual）
+python polars_version/cli_textual.py
+
 # 计算 2025年3月 所有交易日（方便回测）
 python polars_version/run.py 202503
 
@@ -96,7 +104,7 @@ python polars_version/run.py 202503
 python polars_version/run.py 202501-202503
 
 # 只运行指定策略
-python polars_version/run.py --strategies 少妇战法 暴力K战法
+python polars_version/run.py --strategies B1战法 暴力K战法
 ```
 
 ### Polars 版 - 单独拉取数据
@@ -115,7 +123,7 @@ python polars_version/select_stock.py --date 2024-01-15
 
 | 战法 | 类名 | 核心指标 |
 |---|---|---|
-| 少妇战法 | BBIKDJSelector | BBI 上升 + KDJ J 低位 + DIF>0 + MA60 + 知行线 |
+| B1战法 | BBIKDJSelector | BBI 上升 + KDJ J 低位 + DIF>0 + MA60 + 知行线 |
 | SuperB1战法 | SuperB1Selector | 历史匹配少妇 + 盘整 + 当日下跌 + J 极低 |
 | 填坑战法 | PeakKDJSelector | 峰值检测 + KDJ J 低位 + 知行线 |
 | 补票战法 | BBIShortLongSelector | BBI 上升 + RSV 条件 + DIF>0 |

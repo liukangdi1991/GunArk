@@ -69,7 +69,30 @@ def _cool_sleep(base_seconds: int) -> None:
 pro: Optional[ts.pro_api] = None
 
 
+def _resolve_date_arg(value: str) -> str:
+    """将命令行日期参数标准化为 YYYYMMDD。"""
+    return dt.date.today().strftime("%Y%m%d") if str(value).lower() == "today" else value
+
+
+def _setup_network_env() -> None:
+    """统一设置 Tushare 访问相关环境变量。"""
+    os.environ["NO_PROXY"] = "api.waditu.com,.waditu.com,waditu.com"
+    os.environ["no_proxy"] = os.environ["NO_PROXY"]
+
+
+def _setup_tushare_client() -> None:
+    """初始化 Tushare 客户端并写入全局 pro。"""
+    ts_token = os.environ.get("TUSHARE_TOKEN")
+    if not ts_token:
+        # 兼容旧行为：环境变量未设置时使用默认 token
+        ts_token = "8a835a0cbcf32855a41cfe05457833bfd081de082a2699db11a2c484"
+    ts.set_token(ts_token)
+    global pro
+    pro = ts.pro_api()
+
+
 def _to_ts_code(code: str) -> str:
+    """将 6 位股票代码转换为 Tushare ts_code。"""
     code = str(code).zfill(6)
     if code.startswith(("60", "68", "9")):
         return f"{code}.SH"
@@ -80,6 +103,7 @@ def _to_ts_code(code: str) -> str:
 
 
 def _get_kline_tushare(code: str, start: str, end: str) -> pd.DataFrame:
+    """从 Tushare 拉取单只股票日线数据。"""
     ts_code = _to_ts_code(code)
     try:
         df = ts.pro_bar(
@@ -145,6 +169,7 @@ def load_codes_from_stocklist(stocklist_csv: Path, exclude_boards: set[str]) -> 
 
 
 def fetch_one(code: str, start: str, end: str, out_dir: Path):
+    """抓取并落盘单只股票日线数据（最多重试 3 次）。"""
     parquet_path = out_dir / f"{code}.parquet"
 
     for attempt in range(1, 4):
@@ -186,17 +211,11 @@ def main():
     parser.add_argument("--out", default=str(PROJECT_ROOT / "db"), help="Parquet 输出目录")
     args = parser.parse_args()
 
-    os.environ["NO_PROXY"] = "api.waditu.com,.waditu.com,waditu.com"
-    os.environ["no_proxy"] = os.environ["NO_PROXY"]
-    ts_token = os.environ.get("TUSHARE_TOKEN")
-    if not ts_token:
-        ts_token = "8a835a0cbcf32855a41cfe05457833bfd081de082a2699db11a2c484"
-    ts.set_token(ts_token)
-    global pro
-    pro = ts.pro_api()
+    _setup_network_env()
+    _setup_tushare_client()
 
-    start = dt.date.today().strftime("%Y%m%d") if str(args.start).lower() == "today" else args.start
-    end = dt.date.today().strftime("%Y%m%d") if str(args.end).lower() == "today" else args.end
+    start = _resolve_date_arg(args.start)
+    end = _resolve_date_arg(args.end)
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -14,6 +14,7 @@ from numba import njit
 # numba JIT 编译 KDJ 计算
 @njit
 def _compute_kdj_numba(rsv):
+    """KDJ 的纯数值内核，供 Polars 侧批量调用。"""
     n = len(rsv)
     K = np.zeros(n)
     D = np.zeros(n)
@@ -55,6 +56,7 @@ def compute_kdj(df: pl.DataFrame, n: int = 9) -> pl.DataFrame:
 
 
 def compute_bbi(df: pl.DataFrame) -> pl.Series:
+    """计算 BBI（若已有 BBI 列则直接复用）。"""
     if "BBI" in df.columns:
         return df["BBI"]
     return df.select(
@@ -232,7 +234,11 @@ def compute_zx_lines(
     df: pl.DataFrame,
     m1: int = 14, m2: int = 28, m3: int = 57, m4: int = 114
 ) -> tuple[pl.Series, pl.Series]:
-    """返回 (ZXDQ, ZXDKX)"""
+    """返回 (ZXDQ, ZXDKX)。
+
+    ZXDQ：双重平滑线
+    ZXDKX：多周期均线组合
+    """
     if "ZXDQ" in df.columns and "ZXDKX" in df.columns:
         return df["ZXDQ"], df["ZXDKX"]
     close = df["close"].cast(pl.Float64)

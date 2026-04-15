@@ -20,6 +20,15 @@ from rich import box
 
 console = Console()
 
+COLUMN_SCHEMA = {
+    "date": pl.Utf8,
+    "open": pl.Float64,
+    "close": pl.Float64,
+    "high": pl.Float64,
+    "low": pl.Float64,
+    "volume": pl.Float64,
+}
+
 
 class PolarsDataManager:
     """使用 Polars 管理股票数据"""
@@ -36,6 +45,13 @@ class PolarsDataManager:
         self.data_dir = Path(data_dir)
         self.parquet_dir = Path(parquet_dir)
         self.parquet_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _normalize_date_column(df: pl.DataFrame) -> pl.DataFrame:
+        """确保 date 列为 pl.Date 并保持按日期排序。"""
+        if "date" in df.columns and df["date"].dtype == pl.Utf8:
+            df = df.with_columns(pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
+        return df.sort("date")
     
     def csv_to_parquet_single(self, code: str) -> bool:
         """将单个 CSV 文件转换为 Parquet 格式"""
@@ -47,25 +63,8 @@ class PolarsDataManager:
         
         try:
             # 使用 Polars 读取 CSV
-            df = pl.read_csv(
-                csv_path,
-                try_parse_dates=True,
-                schema_overrides={
-                    "date": pl.Utf8,
-                    "open": pl.Float64,
-                    "close": pl.Float64,
-                    "high": pl.Float64,
-                    "low": pl.Float64,
-                    "volume": pl.Float64,
-                }
-            )
-            
-            # 确保日期列正确解析
-            if df["date"].dtype == pl.Utf8:
-                df = df.with_columns(pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
-            
-            # 按日期排序
-            df = df.sort("date")
+            df = pl.read_csv(csv_path, try_parse_dates=True, schema_overrides=COLUMN_SCHEMA)
+            df = self._normalize_date_column(df)
             
             # 写入 Parquet（压缩格式，读取更快）
             df.write_parquet(parquet_path, compression="zstd")
@@ -112,9 +111,7 @@ class PolarsDataManager:
         csv_path = self.data_dir / f"{code}.csv"
         if csv_path.exists():
             df = pl.read_csv(csv_path, try_parse_dates=True)
-            if df["date"].dtype == pl.Utf8:
-                df = df.with_columns(pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
-            return df.sort("date")
+            return self._normalize_date_column(df)
         
         return None
     
@@ -154,6 +151,12 @@ class PolarsDataManager:
                 return [f.stem for f in parquet_files]
         
         return [f.stem for f in self.data_dir.glob("*.csv")]
+
+    def resolve_target_codes(self, codes: Optional[List[str]]) -> List[str]:
+        """解析命令行指定代码；为空时返回 data_dir 下全部 CSV 代码。"""
+        if codes is None:
+            return self.get_stock_codes(use_parquet=False)
+        return codes
     
     def get_data_stats(self) -> Dict:
         """获取数据统计信息"""
@@ -198,9 +201,7 @@ def main():
         return
     
     # 显示转换信息
-    codes = args.codes
-    if codes is None:
-        codes = manager.get_stock_codes(use_parquet=False)
+    codes = manager.resolve_target_codes(args.codes)
     
     info_panel = Panel(
         f"[bold cyan]🔄 开始转换[/bold cyan]\n\n"

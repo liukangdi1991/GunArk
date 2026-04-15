@@ -3,4 +3,6 @@ tqdm==4.66.4
 tushare==1.4.21
 scipy==1.14.1
 rich==13.7.0
+questionary==2.1.1
+textual==8.2.3
 backtrader==1.9.76.123

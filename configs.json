@@ -1,9 +1,12 @@
 {
+  "_comment": "统一策略配置。支持 Pandas/Polars 共用；Polars 版本会按 alias 展示策略名。",
+  "_comment_fields": "activate 控制是否启用；params 为策略参数字典；可追加自定义 _comment 字段做说明。",
   "selectors": [
     {
       "class": "BBIKDJSelector",
-      "alias": "少妇战法",
+      "alias": "B1战法",
       "activate": true,
+      "_comment": "核心思路：BBI 上行 + KDJ 低位 + 趋势过滤。",
       "params": {
         "j_threshold": 15,
         "bbi_min_window": 20,
@@ -17,6 +20,7 @@
       "class": "SuperB1Selector",
       "alias": "SuperB1战法",
       "activate": true,
+      "_comment": "在B1战法基础上增加末日跌幅和形态过滤，更偏短线反转。",
       "params": {
         "lookback_n": 10,
         "close_vol_pct": 0.02,
@@ -37,6 +41,7 @@
       "class": "BBIShortLongSelector",
       "alias": "补票战法",
       "activate": true,
+      "_comment": "RSV 短长周期配合 + BBI 斜率过滤。",
       "params": {
         "n_short": 5,
         "n_long": 21,
@@ -51,7 +56,8 @@
     {
       "class": "PeakKDJSelector",        
       "alias": "填坑战法",
-      "activate": true,                 
+      "activate": true,
+      "_comment": "先识别峰值回撤，再结合 KDJ 做低位筛选。",                
       "params": {
         "j_threshold": 10,                 
         "max_window": 120,                
@@ -64,6 +70,7 @@
       "class": "MA60CrossVolumeWaveSelector",
       "alias": "上穿60放量战法",
       "activate": true,
+      "_comment": "MA60 有效上穿 + 放量 + 低位动量。",
       "params": {
         "lookback_n": 25,
         "vol_multiple": 1.8,
@@ -77,6 +84,7 @@
       "class": "BigBullishVolumeSelector",
       "alias": "暴力K战法",
       "activate": true,
+      "_comment": "大阳线 + 放量 + 价格位置约束（避免追高）。",
       "params": {
         "up_pct_threshold": 0.06,
         "upper_wick_pct_max": 0.02,            

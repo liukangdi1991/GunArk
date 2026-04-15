@@ -18,6 +18,13 @@ from pathlib import Path
 from typing import List, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+POLARS_RESULTS_DIR = str(PROJECT_ROOT / "results" / "polars")
+DEFAULT_TUSHARE_TOKEN = "8a835a0cbcf32855a41cfe05457833bfd081de082a2699db11a2c484"
+
+
+def _resolve_today_arg(value: str) -> str:
+    """统一处理 'today' 参数，避免散落在各处的重复判断。"""
+    return datetime.today().strftime("%Y%m%d") if str(value).lower() == "today" else value
 
 
 def _parse_month_range(s: str) -> List[date]:
@@ -55,7 +62,7 @@ def _fetch_full(data_dir: str, console, args, start: str, end: str):
     os.environ["no_proxy"] = os.environ["NO_PROXY"]
     ts_token = os.environ.get("TUSHARE_TOKEN")
     if not ts_token:
-        ts_token = "8a835a0cbcf32855a41cfe05457833bfd081de082a2699db11a2c484"
+        ts_token = DEFAULT_TUSHARE_TOKEN
     ts.set_token(ts_token)
     fetch_kline.pro = ts.pro_api()
 
@@ -170,6 +177,28 @@ def _get_latest_trade_date(data_dir: str) -> Optional[date]:
         return None
 
 
+def _load_all_trade_dates(data_dir: str) -> List[date]:
+    """读取 db 目录中所有可用交易日并排序。"""
+    import polars as pl
+
+    return pl.scan_parquet(str(Path(data_dir) / "*.parquet")).select(
+        pl.col("date").unique().sort()
+    ).collect()["date"].to_list()
+
+
+def _collect_month_trade_dates(months: List[date], all_trade_dates: List[date]) -> List[date]:
+    """根据月份范围筛选交易日。"""
+    selected_dates: List[date] = []
+    for month_start in months:
+        if month_start.month == 12:
+            month_end = date(month_start.year, 12, 31)
+        else:
+            month_end = date(month_start.year, month_start.month + 1, 1) - timedelta(days=1)
+        selected_dates.extend(d for d in all_trade_dates if month_start <= d <= month_end)
+    selected_dates.sort()
+    return selected_dates
+
+
 def main():
     from rich.console import Console
     from rich.panel import Panel
@@ -186,7 +215,7 @@ def main():
   python run.py 202503              计算 2025年3月 所有交易日
   python run.py 202501-202503       计算 2025年1月~3月 所有交易日
   python run.py --skip-fetch        跳过数据拉取，直接选最新交易日
-  python run.py --strategies 少妇战法  只运行指定策略
+  python run.py --strategies B1战法  只运行指定策略
         """,
     )
     parser.add_argument("month", nargs="?", default=None,
@@ -198,10 +227,11 @@ def main():
                         help="排除板块：gem(创业板) star(科创板) bj(北交所)")
     parser.add_argument("--data-dir", default=str(PROJECT_ROOT / "db"), help="Parquet 数据目录")
     parser.add_argument("--config", default=str(PROJECT_ROOT / "configs.json"), help="选股配置文件")
-    parser.add_argument("--output-dir", default=str(PROJECT_ROOT / "backtest_results"), help="结果输出目录")
     parser.add_argument("--skip-fetch", action="store_true", help="跳过数据拉取")
     parser.add_argument("--strategies", nargs="+", help="指定策略名称")
     args = parser.parse_args()
+    fetch_start = _resolve_today_arg(args.start)
+    fetch_end = _resolve_today_arg(args.end)
 
     console.print()
     console.print(
@@ -215,7 +245,7 @@ def main():
 
     # Step 1: 数据拉取
     if not args.skip_fetch:
-        _fetch_full(args.data_dir, console, args, args.start, args.end)
+        _fetch_full(args.data_dir, console, args, fetch_start, fetch_end)
     else:
         console.print("[dim]⏭️  跳过数据拉取[/dim]")
         console.print()
@@ -223,19 +253,7 @@ def main():
     # Step 2: 确定选股日期
     if args.month:
         months = _parse_month_range(args.month)
-        import polars as pl
-        data_table_dates = pl.scan_parquet(str(Path(args.data_dir) / "*.parquet")).select(
-            pl.col("date").unique().sort()
-        ).collect()["date"].to_list()
-
-        all_trade_dates = []
-        for m in months:
-            if m.month == 12:
-                m_end = date(m.year, 12, 31)
-            else:
-                m_end = date(m.year, m.month + 1, 1) - timedelta(days=1)
-            m_start = date(m.year, m.month, 1)
-            all_trade_dates.extend(d for d in data_table_dates if m_start <= d <= m_end)
+        all_trade_dates = _collect_month_trade_dates(months, _load_all_trade_dates(args.data_dir))
 
         if not all_trade_dates:
             console.print(f"[red]❌ 指定月份范围内无交易数据: {args.month}[/red]")
@@ -249,7 +267,7 @@ def main():
         console.print()
 
         total_elapsed = _run_selection_for_dates(
-            all_trade_dates, args.data_dir, args.config, args.output_dir, console, args.strategies
+            all_trade_dates, args.data_dir, args.config, POLARS_RESULTS_DIR, console, args.strategies
         )
 
         console.print(
@@ -272,7 +290,7 @@ def main():
         console.print()
 
         total_elapsed = _run_selection_for_dates(
-            [latest], args.data_dir, args.config, args.output_dir, console, args.strategies
+            [latest], args.data_dir, args.config, POLARS_RESULTS_DIR, console, args.strategies
         )
 
         console.print(
