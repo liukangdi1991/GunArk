@@ -348,6 +348,12 @@ class DailyTrendApp(App):
         min-width: 12;
     }
 
+    #board-hint {
+        color: #9fb2d6;
+        margin-left: 2;
+        margin-bottom: 0;
+    }
+
     #board_list {
         max-width: 28;
         margin-left: 2;
@@ -476,14 +482,15 @@ class DailyTrendApp(App):
                         yield Static("结束日期：", id="fetch-end-hint", classes="inline-hint")
                         yield Input("today", id="end_input", classes="inline-input")
                     yield Checkbox("跳过数据拉取（仅选股流程）", value=True, id="skip_fetch", classes="field")
-                    yield Checkbox("指定策略多选", value=False, id="strategy_custom", classes="field")
+                    yield Checkbox("指定策略（可多选）", value=False, id="strategy_custom", classes="field")
                     selections = [(name, name, False) for name in self.strategy_names]
                     yield SelectionList[str](*selections, id="strategy_list")
                     board_options = [
-                        ("gem 创业板", "gem", False),
-                        ("star 科创板", "star", False),
-                        ("bj 北交所", "bj", False),
+                        ("创业板", "gem", False),
+                        ("科创板", "star", False),
+                        ("北交所", "bj", False),
                     ]
+                    yield Static("可选排除的板块：", id="board-hint", classes="inline-hint")
                     yield SelectionList[str](*board_options, id="board_list")
                 yield Button("🚀 执行当前任务", id="run-button", variant="success")
                 yield Static("状态：空闲", id="run-state-hint")
@@ -571,12 +578,14 @@ class DailyTrendApp(App):
         strategy_custom = self.query_one("#strategy_custom", Checkbox)
         strategy_list = self.query_one("#strategy_list", SelectionList)
         board_list = self.query_one("#board_list", SelectionList)
+        board_hint = self.query_one("#board-hint", Static)
 
         month_row.display = self.current_action == "month"
         day_row.display = self.current_action == "day"
         fetch_start_row.display = self.current_action == "fetch"
         fetch_end_row.display = self.current_action == "fetch"
         board_list.display = self.current_action == "fetch"
+        board_hint.display = self.current_action == "fetch"
 
         if self.current_action == "fetch":
             # 拉取行情模式信息更多，单独放宽，避免局促
