@@ -51,6 +51,7 @@ class SkipRecord:
     strategy: str
     code: str
     signal_date: date
+    buy_date: Optional[date]
     stage: str
     reason: str
     date_ref: Optional[date] = None

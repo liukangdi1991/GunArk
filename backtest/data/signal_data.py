@@ -14,7 +14,11 @@ def _date_from_filename(path: Path) -> date:
 
 def list_signal_files(signal_dir: Path, start: date, end: date) -> List[Path]:
     if not signal_dir.exists():
-        return []
+        legacy_dir = signal_dir.parent / "polars"
+        if legacy_dir.exists():
+            signal_dir = legacy_dir
+        else:
+            return []
     files: List[Path] = []
     for p in signal_dir.glob("*.json"):
         try:
@@ -30,8 +34,7 @@ def load_signals(
     signal_files: Iterable[Path],
     strategy_names: List[str],
     calendar: List[date],
-    buy_delay_days: int,
-    sell_delay_days: int,
+    fixed_hold_n_days: int,
 ) -> Dict[date, List[Signal]]:
     calendar_index = {d: i for i, d in enumerate(calendar)}
     by_day: Dict[date, List[Signal]] = {}
@@ -41,8 +44,10 @@ def load_signals(
         if signal_date not in calendar_index:
             continue
         signal_idx = calendar_index[signal_date]
-        buy_idx = signal_idx + buy_delay_days
-        sell_idx = signal_idx + sell_delay_days
+        # Trade rule:
+        # signal at T, buy at T+1 open, sell at T+N+1 close.
+        buy_idx = signal_idx + 1
+        sell_idx = signal_idx + fixed_hold_n_days + 1
         if buy_idx >= len(calendar) or sell_idx >= len(calendar):
             continue
         buy_date = calendar[buy_idx]

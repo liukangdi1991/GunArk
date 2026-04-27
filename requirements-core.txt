@@ -1,0 +1,12 @@
+polars>=1.0.0
+numpy>=1.24.0
+numba>=0.58.0
+scipy==1.14.1
+rich>=14.2.0
+questionary==2.1.1
+textual==8.2.3
+pandas>=2.0.0
+tushare>=1.4.0
+tqdm>=4.66.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0

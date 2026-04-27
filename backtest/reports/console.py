@@ -80,9 +80,14 @@ def print_strategy_report(
 
     if not skips.empty:
         skip_msgs = []
+        stock_names = _load_stock_names()
         for _, s in skips.sort_values(["signal_date", "code"]).iterrows():
-            date_ref = str(s["date_ref"]) if pd.notna(s["date_ref"]) else "-"
-            skip_msgs.append(f"{s['code']}-{s['stage']}-{date_ref}-{s['reason']}")
+            code = str(s["code"]).zfill(6)
+            name = stock_names.get(code, "")
+            signal_date = str(s["signal_date"]) if pd.notna(s["signal_date"]) else "-"
+            buy_date = str(s["buy_date"]) if pd.notna(s.get("buy_date")) else "-"
+            reason = str(s.get("reason", ""))
+            skip_msgs.append(f"{code}{name and f'({name})'} 选出:{signal_date} 买入:{buy_date} 原因:{reason}")
         console.print(f"  ⚠️ 跳过: {', '.join(skip_msgs)}")
 
 

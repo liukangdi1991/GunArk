@@ -1,6 +1,10 @@
 {
   "_comment": "统一策略配置。支持 Pandas/Polars 共用；Polars 版本会按 alias 展示策略名。",
   "_comment_fields": "activate 控制是否启用；params 为策略参数字典；可追加自定义 _comment 字段做说明。",
+  "default_strategies": [
+    "B1战法",
+    "B1战法（V2）"
+  ],
   "selectors": [
     {
       "class": "BBIKDJSelector",
@@ -81,6 +85,50 @@
       }
     },
     {
+      "class": "ZXDKXBalanceSelector",
+      "alias": "多空平衡选股策略",
+      "activate": true,
+      "_comment": "条件：|长期多空线-短期趋势线| 小于黏合阈值；当日成交量为最近一周新低；收盘价不低于 长期多空线 * 偏离阈值。",
+      "params": {
+        "zx_stick_limit_threshold": 0.04,
+        "close_vs_long_term_bull_bear_line_limit_threshold": 0.95,
+        "recent_volume_window": 5
+      }
+    },
+    {
+      "class": "PerfectB1Selector",
+      "alias": "B1战法（V2）",
+      "activate": true,
+      "_comment": "J<13；振幅<7%；涨幅在(-2%,2%)；收盘价大于MA60和长期多空线；20日内存在上涨倍量柱；且长期多空线<短期趋势线。",
+      "params": {
+        "j_threshold": 13,
+        "amplitude_limit": 0.07,
+        "pct_chg_upper": 0.02,
+        "pct_chg_lower": -0.02,
+        "ma_window": 60,
+        "volume_spike_lookback": 20,
+        "volume_spike_multiple": 1.8
+      }
+    },
+    {
+      "class": "PerfectB1Selector",
+      "alias": "完美B1",
+      "activate": true,
+      "_comment": "基于B1战法（V2）追加条件：最近5个交易日内至少4个交易日缩量，且选股当日成交量为最近5日新低。",
+      "params": {
+        "j_threshold": 13,
+        "amplitude_limit": 0.07,
+        "pct_chg_upper": 0.02,
+        "pct_chg_lower": -0.02,
+        "ma_window": 60,
+        "volume_spike_lookback": 20,
+        "volume_spike_multiple": 1.8,
+        "volume_step_down_window": 5,
+        "min_volume_step_down_days": 4,
+        "recent_volume_new_low_window": 5
+      }
+    },
+    {
       "class": "BigBullishVolumeSelector",
       "alias": "暴力K战法",
       "activate": true,
@@ -89,7 +137,7 @@
         "up_pct_threshold": 0.06,
         "upper_wick_pct_max": 0.02,            
         "require_bullish_close": true,
-        "close_lt_zxdq_mult": 1.15,
+        "close_lt_short_term_trend_line_mult": 1.15,
         "vol_lookback_n": 20,
         "vol_multiple": 2.5
       }

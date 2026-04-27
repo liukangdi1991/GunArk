@@ -1,6 +1,0 @@
-pandas==2.3.0
-tqdm==4.66.4
-tushare==1.4.21
-scipy==1.14.1
-rich==13.7.0
-backtrader==1.9.76.123

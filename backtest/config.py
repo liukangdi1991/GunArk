@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal, Optional
 
 
 @dataclass(frozen=True)
@@ -12,16 +12,21 @@ class CapitalConfig:
     position_budget_cash: float = 100_000.0
     # 不填表示不做现金约束；填 0~1 表示最多可使用现金比例
     max_cash_usage_pct: Optional[float] = None
+    # realistic: 受现金约束；unlimited_cash: 固定每票金额，不受现金约束
+    mode: Literal["realistic", "unlimited_cash"] = "unlimited_cash"
+    # unlimited_cash 模式下每笔名义买入金额
+    fixed_cash_per_trade: float = 50_000.0
 
 
 @dataclass(frozen=True)
 class ExecutionConfig:
-    buy_delay_days: int = 1
-    sell_delay_days: int = 8
+    fixed_hold_n_days: int = 5
     max_sell_postpone_days: int = 10
     reject_if_limit_up_on_buy: bool = True
     postpone_if_limit_down_on_sell: bool = True
     skip_if_suspended: bool = True
+    # 若连续两日收盘价均低于长期多空线，则在第二日触发强制卖出（仍受跌停顺延约束）
+    force_sell_on_two_day_close_below_long_term_bull_bear_line: bool = True
 
 
 @dataclass(frozen=True)
@@ -53,10 +58,11 @@ class RiskConfig:
 
 @dataclass(frozen=True)
 class PathConfig:
-    signal_dir: str = "results/polars"
+    signal_dir: str = "results/signals"
     parquet_dir: str = "db"
     csv_dir: str = "data"
-    output_root: str = "backtest_results"
+    storage_root: str = "storage"
+    output_root: str = "storage/objects/backtests"
 
 
 @dataclass(frozen=True)
