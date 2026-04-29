@@ -60,9 +60,8 @@ class RiskConfig:
 class PathConfig:
     signal_dir: str = "results/signals"
     parquet_dir: str = "db"
-    csv_dir: str = "data"
     storage_root: str = "storage"
-    output_root: str = "storage/objects/backtests"
+    output_root: str = "storage/objects/executions"
 
 
 @dataclass(frozen=True)

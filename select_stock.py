@@ -1,19 +1,11 @@
-"""
-选股程序 - Polars 版本
-- 使用 Polars 直接读取 CSV（不转换）
-- 保持与原版完全一致的选股逻辑
-- 美观的 Rich 输出界面
-"""
+"""选股核心服务：策略加载、行情加载、预筛与精筛执行。"""
 
-import argparse
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 import inspect
 import json
+import logging
 import os
-import sys
-import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -21,11 +13,7 @@ import numpy as np
 import polars as pl
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-RESULTS_DIR = str(PROJECT_ROOT / "results" / "signals")
-from rich.console import Console
-from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
-from rich.table import Table
+logger = logging.getLogger(__name__)
 
 from Selector import (
     BBIKDJSelector,
@@ -39,8 +27,6 @@ from Selector import (
     bbi_deriv_uptrend,
     _compute_kdj_numba,
 )
-
-console = Console()
 
 # ─────────────────────────── 配置 ─────────────────────────── #
 
@@ -74,8 +60,7 @@ FALLBACK_DEFAULT_STRATEGY_ALIASES = ["B1战法", "B1战法（V2）"]
 def load_config_raw(cfg_path: Path) -> Any:
     """读取 configs.json 原始结构。"""
     if not cfg_path.exists():
-        console.print(f"[red]❌ 配置文件 {cfg_path} 不存在[/red]")
-        sys.exit(1)
+        raise FileNotFoundError(f"配置文件不存在: {cfg_path}")
     with cfg_path.open(encoding="utf-8") as f:
         return json.load(f)
 
@@ -105,8 +90,7 @@ def load_config(cfg_path: Path) -> List[Dict[str, Any]]:
         cfgs = [cfg_raw]
 
     if not cfgs:
-        console.print("[red]❌ configs.json 未定义任何 Selector[/red]")
-        sys.exit(1)
+        raise ValueError("configs.json 未定义任何 Selector")
 
     return cfgs
 
@@ -141,7 +125,7 @@ def load_strategies_from_config(cfg_path: Path) -> Dict[str, Dict[str, Any]]:
                 "emoji": emoji,
             }
         except Exception as e:
-            console.print(f"[yellow]⚠️  跳过配置 {cfg}: {e}[/yellow]")
+            logger.warning("跳过无效策略配置 %s: %s", cfg, e)
     return strategies
 
 
@@ -1091,7 +1075,7 @@ def build_strategy_runner(selector: Any) -> StrategySelectionRunner:
     return DefaultSelectionRunner(selector)
 
 
-# ─────────────────────────── 结果输出 ─────────────────────────── #
+# ─────────────────────────── 股票名称 ─────────────────────────── #
 
 def _load_stock_names() -> Dict[str, str]:
     """从 stocklist.csv 加载 code→name 映射"""
@@ -1111,212 +1095,3 @@ def get_stock_names() -> Dict[str, str]:
     if _stock_name_cache is None:
         _stock_name_cache = _load_stock_names()
     return _stock_name_cache
-
-
-def print_strategy_result(
-    strategy_name: str,
-    emoji: str,
-    picks: List[str],
-    elapsed: float,
-    date: str,
-) -> None:
-    """打印单个策略的选股结果"""
-    stock_names = get_stock_names()
-
-    table = Table(
-        show_header=True,
-        header_style="bold cyan",
-        border_style="bright_blue",
-        title=f"{emoji} {strategy_name} 选股结果",
-        title_style="bold magenta",
-        show_lines=True,
-    )
-    table.add_column("序号", justify="center", style="bold", width=6)
-    table.add_column("股票代码", justify="center", style="bold cyan", width=12)
-    table.add_column("股票名称", justify="center", style="bold green", width=14)
-    table.add_column("状态", justify="center", width=6)
-    
-    if picks:
-        for i, code in enumerate(picks, 1):
-            name = stock_names.get(code, "")
-            table.add_row(str(i), code, name, "✅")
-    else:
-        table.add_row("-", "无符合条件的股票", "", "-")
-    
-    console.print(table)
-    
-    # 打印统计信息
-    stats_panel = Panel(
-        f"[bold]策略名称:[/bold] {strategy_name}\n"
-        f"[bold]交易日期:[/bold] {date}\n"
-        f"[bold]选中数量:[/bold] {len(picks)} 只\n"
-        f"[bold]耗时:[/bold] {elapsed:.3f} 秒",
-        title="📈 选股统计",
-        border_style="green",
-        expand=False,
-    )
-    console.print(stats_panel)
-    console.print()
-
-
-def save_results(results: Dict, date: str, output_dir: str) -> str:
-    """保存结果到 JSON 文件"""
-    os.makedirs(output_dir, exist_ok=True)
-    date_str = date.replace("-", "")
-    filepath = os.path.join(output_dir, f"{date_str}.json")
-    
-    # 读取已有结果（如果有）
-    existing = {}
-    if os.path.exists(filepath):
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                existing = json.load(f)
-        except Exception:
-            pass
-    
-    # 合并结果
-    existing.update(results)
-    
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(existing, f, ensure_ascii=False, indent=2)
-    
-    return filepath
-
-
-# ─────────────────────────── 主程序 ─────────────────────────── #
-
-def main():
-    parser = argparse.ArgumentParser(description="选股程序 - Polars 版本")
-    parser.add_argument("--date", required=True, help="选股日期 (YYYY-MM-DD)")
-    parser.add_argument("--data-dir", default=str(PROJECT_ROOT / "db"), help="Parquet 数据目录")
-    parser.add_argument("--config", default=str(PROJECT_ROOT / "configs.json"), help="Selector 配置文件")
-    parser.add_argument("--tickers", nargs="+", help="指定股票代码")
-    parser.add_argument(
-        "--strategies",
-        nargs="+",
-        help="指定策略名称（默认策略从 configs.json 的 default_strategies 读取）",
-    )
-    
-    args = parser.parse_args()
-    
-    # 验证日期格式
-    try:
-        date_obj = datetime.strptime(args.date, "%Y-%m-%d").date()
-    except ValueError:
-        console.print("[red]❌ 日期格式错误，请使用 YYYY-MM-DD 格式[/red]")
-        sys.exit(1)
-    
-    # 打印标题
-    console.print()
-    console.print(
-        Panel(
-            f"[bold cyan]选股日期:[/bold cyan] {args.date}\n"
-            f"[bold cyan]数据目录:[/bold cyan] {args.data_dir}\n"
-            f"[bold cyan]配置文件:[/bold cyan] {args.config}\n"
-            f"[bold cyan]结果目录:[/bold cyan] {RESULTS_DIR}",
-            title="🚀 选股程序 (Polars 版本)",
-            border_style="bright_blue",
-            expand=False,
-        )
-    )
-    console.print()
-    
-    # 加载数据
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TimeElapsedColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("📊 加载数据...", total=None)
-        start_time = time.time()
-        data_table = load_data_table(args.data_dir, args.tickers)
-        load_time = time.time() - start_time
-        progress.update(task, completed=True)
-    
-    stock_count = data_table["code"].n_unique() if not data_table.is_empty() else 0
-    console.print(f"[green]✅ 成功加载 {stock_count} 只股票的数据 (耗时: {load_time:.2f} 秒)[/green]")
-    console.print()
-
-    # 从配置文件加载策略
-    config_path = Path(args.config)
-    strategies = load_strategies_from_config(config_path)
-    default_aliases = load_default_strategy_aliases(config_path)
-    
-    # 确定要运行的策略
-    if args.strategies:
-        strategies_to_run = {k: v for k, v in strategies.items() if k in args.strategies}
-    else:
-        strategies_to_run = {
-            k: v for k, v in strategies.items() if k in default_aliases
-        }
-        missing_defaults = [
-            name for name in default_aliases if name not in strategies_to_run
-        ]
-        if missing_defaults:
-            console.print(
-                f"[yellow]⚠️ 默认策略在配置中不存在: {', '.join(missing_defaults)}[/yellow]"
-            )
-    
-    if not strategies_to_run:
-        console.print("[red]❌ 没有可运行的策略[/red]")
-        sys.exit(1)
-    
-    # 运行选股
-    all_results = {}
-    total_start = time.time()
-    data_dict_cache: Optional[Dict[str, pl.DataFrame]] = None
-
-    def get_data_dict() -> Dict[str, pl.DataFrame]:
-        """懒加载旧版 Dict 结构，避免不必要的数据拆分开销。"""
-        nonlocal data_dict_cache
-        if data_dict_cache is None:
-            data_dict_cache = table_to_data_dict(data_table)
-        return data_dict_cache
-    
-    for strategy_name, config in strategies_to_run.items():
-        emoji = config["emoji"]
-        selector = config["selector"]
-        runner = build_strategy_runner(selector)
-        
-        console.print(f"[bold]正在运行: {emoji} {strategy_name}...[/bold]")
-        
-        start = time.time()
-        picks = runner.run_selection(
-            date_obj=date_obj,
-            data_table=data_table,
-            get_data_dict=get_data_dict,
-        )
-        elapsed = time.time() - start
-        
-        # 打印结果
-        print_strategy_result(strategy_name, emoji, picks, elapsed, args.date)
-        
-        # 保存结果
-        all_results[strategy_name] = {
-            "date": args.date,
-            "stocks": picks,
-            "count": len(picks),
-        }
-    
-    total_elapsed = time.time() - total_start
-    
-    # 保存所有结果
-    filepath = save_results(all_results, args.date, RESULTS_DIR)
-    console.print(f"[green]💾 结果已保存到: {filepath}[/green]")
-    console.print()
-    
-    # 打印总结
-    console.print(
-        Panel(
-            f"[bold green]✅ 选股完成[/bold green]\n"
-            f"[bold]总耗时:[/bold] {total_elapsed:.2f} 秒",
-            border_style="green",
-            expand=False,
-        )
-    )
-
-
-if __name__ == "__main__":
-    main()

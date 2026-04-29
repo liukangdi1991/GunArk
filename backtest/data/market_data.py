@@ -9,9 +9,8 @@ import polars as pl
 
 
 class MarketDataProvider:
-    def __init__(self, parquet_dir: Path, csv_dir: Path) -> None:
+    def __init__(self, parquet_dir: Path) -> None:
         self.parquet_dir = parquet_dir
-        self.csv_dir = csv_dir
         self._cache: Dict[str, pd.DataFrame] = {}
 
     def preload(self, codes: Iterable[str]) -> None:
@@ -24,14 +23,11 @@ class MarketDataProvider:
             return self._cache[code]
 
         parquet_file = self.parquet_dir / f"{code}.parquet"
-        csv_file = self.csv_dir / f"{code}.csv"
         df: Optional[pd.DataFrame] = None
 
         if parquet_file.exists():
             pl_df = pl.read_parquet(parquet_file).select(["date", "open", "close", "high", "low", "volume"])
             df = pd.DataFrame(pl_df.to_dict(as_series=False))
-        elif csv_file.exists():
-            df = pd.read_csv(csv_file, usecols=["date", "open", "close", "high", "low", "volume"])
 
         if df is None or df.empty:
             return None

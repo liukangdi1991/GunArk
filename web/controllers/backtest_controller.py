@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from web.schemas.backtest import BacktestRequest
+from web.schemas.backtest import BacktestRequest, DeleteBacktestResultsRequest
 from web.services import backtest_service
 
 
@@ -19,15 +19,27 @@ def list_backtests(limit: int = 50) -> dict[str, Any]:
     return backtest_service.list_backtests(limit=limit)
 
 
-def get_backtest(run_id: str) -> dict[str, Any]:
-    result = backtest_service.get_backtest(run_id)
+def get_backtest(execution_key: str) -> dict[str, Any]:
+    result = backtest_service.get_backtest(execution_key)
     if result is None:
-        raise HTTPException(status_code=404, detail="run 不存在")
+        raise HTTPException(status_code=404, detail="execution 不存在")
     return result
 
 
-def get_backtest_report(run_id: str) -> dict[str, Any]:
-    result = backtest_service.get_backtest_report(run_id)
+def get_backtest_report(execution_key: str) -> dict[str, Any]:
+    result = backtest_service.get_backtest_report(execution_key)
     if result is None:
-        raise HTTPException(status_code=404, detail="run 不存在")
+        raise HTTPException(status_code=404, detail="execution 不存在")
     return result
+
+
+def delete_backtest(execution_key: str) -> dict[str, Any]:
+    result = backtest_service.delete_backtest(execution_key)
+    if result["deleted"] == 0:
+        raise HTTPException(status_code=404, detail="execution 不存在")
+    return result
+
+
+def delete_backtests(payload: DeleteBacktestResultsRequest | None = None) -> dict[str, Any]:
+    execution_keys = payload.execution_keys if payload else None
+    return backtest_service.delete_backtests(execution_keys=execution_keys)

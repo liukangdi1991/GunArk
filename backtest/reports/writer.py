@@ -93,6 +93,46 @@ def _load_stock_names() -> dict[str, str]:
     return {str(row["symbol"]).zfill(6): str(row["name"]) for _, row in df.iterrows()}
 
 
+def _load_stock_meta() -> dict[str, dict[str, str]]:
+    root = Path(__file__).resolve().parents[2]
+    stocklist = root / "stocklist.csv"
+    if not stocklist.exists():
+        return {}
+    try:
+        df = pd.read_csv(stocklist, usecols=["symbol", "name", "industry"])
+    except Exception:
+        return {}
+    return {
+        str(row["symbol"]).zfill(6): {
+            "name": str(row.get("name", "")),
+            "industry": str(row.get("industry", "")),
+        }
+        for _, row in df.iterrows()
+    }
+
+
+def _with_stock_meta(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "code" not in df.columns:
+        return df
+    stock_meta = _load_stock_meta()
+    out = df.copy()
+    codes = out["code"].astype(str).str.zfill(6)
+    out["code"] = codes
+    if "name" not in out.columns:
+        out["name"] = codes.map(lambda code: stock_meta.get(code, {}).get("name", ""))
+    else:
+        out["name"] = out["name"].fillna("").astype(str)
+        missing = out["name"].str.len() == 0
+        out.loc[missing, "name"] = codes[missing].map(lambda code: stock_meta.get(code, {}).get("name", ""))
+    if "industry" not in out.columns:
+        out["industry"] = codes.map(lambda code: stock_meta.get(code, {}).get("industry", ""))
+    else:
+        out["industry"] = out["industry"].fillna("").astype(str)
+        missing = out["industry"].str.len() == 0
+        out.loc[missing, "industry"] = codes[missing].map(lambda code: stock_meta.get(code, {}).get("industry", ""))
+    return out
+
+
 @lru_cache(maxsize=1)
 def _load_strategy_meta() -> dict[str, dict[str, Any]]:
     root = Path(__file__).resolve().parents[2]
@@ -551,19 +591,21 @@ def _write_parquet(path: Path, df: pd.DataFrame) -> None:
     pl.DataFrame(_to_json_records(df)).write_parquet(path, compression="zstd")
 
 
-def _with_run_id(df: pd.DataFrame, run_id: str) -> pd.DataFrame:
+def _with_execution_key(df: pd.DataFrame, execution_key: str) -> pd.DataFrame:
     if df.empty:
         return df
     out = df.copy()
-    if "run_id" not in out.columns:
-        out.insert(0, "run_id", run_id)
+    if "execution_key" not in out.columns:
+        out.insert(0, "execution_key", execution_key)
+    if "run_id" in out.columns:
+        out = out.drop(columns=["run_id"])
     return out
 
 
 def _build_log_text(meta: Mapping[str, Any], summaries: list[dict[str, Any]]) -> str:
     lines = [
         "回测运行日志",
-        f"run_id: {meta.get('run_id', '-')}",
+        f"execution_key: {meta.get('execution_key') or meta.get('run_id', '-')}",
         f"created_at: {meta.get('created_at', '-')}",
         f"range: {meta.get('from', '-')} ~ {meta.get('to', '-')}",
         f"strategies: {', '.join(str(s) for s in meta.get('strategies', []))}",
@@ -618,23 +660,24 @@ def save_run_outputs(
     summaries.sort(key=lambda x: float(x.get("total_return_pct", 0.0) or 0.0), reverse=True)
 
     equity_df = pd.concat(all_equity, ignore_index=True) if all_equity else pd.DataFrame()
-    trades_df = pd.concat(all_trades, ignore_index=True) if all_trades else pd.DataFrame()
-    skips_df = pd.concat(all_skips, ignore_index=True) if all_skips else pd.DataFrame()
+    trades_df = _with_stock_meta(pd.concat(all_trades, ignore_index=True) if all_trades else pd.DataFrame())
+    skips_df = _with_stock_meta(pd.concat(all_skips, ignore_index=True) if all_skips else pd.DataFrame())
     run_id = str(meta.get("run_id") or run_dir.name)
     meta["run_id"] = run_id
+    meta["execution_key"] = run_id
 
     equity_path = run_dir / "equity.parquet"
     trades_path = run_dir / "trades.parquet"
     skips_path = run_dir / "skips.parquet"
     log_path = run_dir / "log.txt"
 
-    _write_parquet(equity_path, _with_run_id(equity_df, run_id))
-    _write_parquet(trades_path, _with_run_id(trades_df, run_id))
-    _write_parquet(skips_path, _with_run_id(skips_df, run_id))
+    _write_parquet(equity_path, _with_execution_key(equity_df, run_id))
+    _write_parquet(trades_path, _with_execution_key(trades_df, run_id))
+    _write_parquet(skips_path, _with_execution_key(skips_df, run_id))
     log_path.write_text(_build_log_text(meta, summaries), encoding="utf-8")
 
     storage = BacktestStorage(storage_root or run_dir.parents[2])
-    storage.record_backtest_run(
+    storage.record_backtest_result(
         run_id=run_id,
         meta=meta,
         summaries=summaries,

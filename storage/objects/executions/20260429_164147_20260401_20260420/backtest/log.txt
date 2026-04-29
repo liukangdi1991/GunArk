@@ -1,0 +1,11 @@
+回测运行日志
+execution_key: 20260429_164147_20260401_20260420
+created_at: 2026-04-29T16:41:47
+range: 2026-04-01 ~ 2026-04-20
+strategies: 完美B1, B1战法（V2）
+capital_mode: unlimited_cash
+cash_per_trade: 50000
+
+summary:
+- B1战法（V2）: trades=162, skips=7, total_return=0.72%, max_drawdown=-1.10%
+- 完美B1: trades=61, skips=4, total_return=-0.90%, max_drawdown=-2.20%

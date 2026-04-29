@@ -12,6 +12,34 @@ def _date_from_filename(path: Path) -> date:
     return datetime.strptime(path.stem, "%Y%m%d").date()
 
 
+def signal_file_date(path: Path) -> date:
+    try:
+        return _date_from_filename(path)
+    except ValueError:
+        return _date_from_payload(path)
+
+
+def _date_from_payload(path: Path) -> date:
+    with path.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if not isinstance(payload, dict):
+        raise ValueError(f"信号文件格式无效: {path}")
+    for item in payload.values():
+        if not isinstance(item, dict):
+            continue
+        raw_date = item.get("date")
+        if raw_date:
+            return _parse_signal_date(str(raw_date))
+    raise ValueError(f"信号文件缺少 date 字段: {path}")
+
+
+def _parse_signal_date(value: str) -> date:
+    text = value.strip()
+    if "-" in text:
+        return datetime.strptime(text, "%Y-%m-%d").date()
+    return datetime.strptime(text, "%Y%m%d").date()
+
+
 def list_signal_files(signal_dir: Path, start: date, end: date) -> List[Path]:
     if not signal_dir.exists():
         legacy_dir = signal_dir.parent / "polars"
@@ -22,12 +50,12 @@ def list_signal_files(signal_dir: Path, start: date, end: date) -> List[Path]:
     files: List[Path] = []
     for p in signal_dir.glob("*.json"):
         try:
-            d = _date_from_filename(p)
+            d = signal_file_date(p)
         except ValueError:
             continue
         if start <= d <= end:
             files.append(p)
-    return sorted(files, key=lambda x: x.stem)
+    return sorted(files, key=signal_file_date)
 
 
 def load_signals(
@@ -40,7 +68,7 @@ def load_signals(
     by_day: Dict[date, List[Signal]] = {}
 
     for file_path in signal_files:
-        signal_date = _date_from_filename(file_path)
+        signal_date = signal_file_date(file_path)
         if signal_date not in calendar_index:
             continue
         signal_idx = calendar_index[signal_date]

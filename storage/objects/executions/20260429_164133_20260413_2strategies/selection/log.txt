@@ -1,0 +1,10 @@
+选股运行日志
+execution_key: 20260429_164133_20260413_2strategies
+date: 2026-04-13
+strategies: 完美B1, B1战法（V2）
+signal_file: /workspace/github/GunArk/storage/objects/executions/20260429_164133_20260413_2strategies/selection/signals.json
+elapsed_seconds: 1.765
+
+summary:
+- 完美B1: count=9, elapsed=0.672s
+- B1战法（V2）: count=22, elapsed=1.089s

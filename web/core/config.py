@@ -6,7 +6,7 @@ from backtest.storage import BacktestStorage
 
 
 ROOT = Path(__file__).resolve().parents[2]
-STATIC_DIR = ROOT / "web" / "static"
+FRONTEND_DIST_DIR = ROOT / "frontend" / "dist"
 STORAGE_ROOT = ROOT / "storage"
 
 storage = BacktestStorage(STORAGE_ROOT)

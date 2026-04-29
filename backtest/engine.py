@@ -11,7 +11,7 @@ import pandas as pd
 from backtest.analytics.metrics import compute_summary
 from backtest.config import BacktestConfig
 from backtest.data.market_data import MarketDataProvider
-from backtest.data.signal_data import list_signal_files, load_signals
+from backtest.data.signal_data import list_signal_files, load_signals, signal_file_date
 from backtest.execution import FillResult, calc_buy_fill, calc_sell_fill, is_limit_down, is_limit_up
 from backtest.models import Position, SkipRecord, TradeRecord
 from backtest.portfolio import (
@@ -27,17 +27,17 @@ from backtest.portfolio import (
 
 
 class BacktestEngine:
-    def __init__(self, config: BacktestConfig) -> None:
+    def __init__(self, config: BacktestConfig, signal_files: List[Path] | None = None) -> None:
         self.config = config
         self.signal_dir = Path(config.paths.signal_dir)
+        self._explicit_signal_files = [Path(path) for path in signal_files] if signal_files else None
         self.market = MarketDataProvider(
             parquet_dir=Path(config.paths.parquet_dir),
-            csv_dir=Path(config.paths.csv_dir),
         )
         self._long_term_bull_bear_line_two_day_below_cache: Dict[str, Dict[date, bool]] = {}
 
     def list_available_strategies(self, start: date, end: date) -> List[str]:
-        files = list_signal_files(self.signal_dir, start, end)
+        files = self._list_signal_files(start, end)
         names = set()
         for p in files:
             with p.open("r", encoding="utf-8") as f:
@@ -48,9 +48,9 @@ class BacktestEngine:
         return sorted(names)
 
     def run(self, start: date, end: date, strategy_name: str) -> Dict[str, object]:
-        signal_files = list_signal_files(self.signal_dir, start, end)
+        signal_files = self._list_signal_files(start, end)
         if not signal_files:
-            raise ValueError(f"未找到区间内信号文件: {self.signal_dir} [{start} ~ {end}]")
+            raise ValueError(f"未找到区间内信号文件: {self._signal_source_label()} [{start} ~ {end}]")
 
         codes = self._collect_codes(signal_files, strategy_name)
         if not codes:
@@ -101,6 +101,13 @@ class BacktestEngine:
         daily_equity = pd.DataFrame(daily_rows)
         trades_df = pd.DataFrame([asdict(t) for t in trades])
         skips_df = pd.DataFrame([asdict(s) for s in skips])
+        capital_base = self.config.capital.initial_cash
+        if self.config.capital.mode == "unlimited_cash":
+            daily_equity, capital_base = self._normalize_unlimited_cash_equity(
+                daily_equity=daily_equity,
+                trades_df=trades_df,
+                state=state,
+            )
         summary = compute_summary(daily_equity, trades_df, self.config.risk)
         summary.update(
             {
@@ -109,8 +116,10 @@ class BacktestEngine:
                 "end_date": end.isoformat(),
                 "simulation_end_date": calendar[-1].isoformat(),
                 "capital_mode": self.config.capital.mode,
+                "capital_base": float(capital_base),
                 "fixed_cash_per_trade": float(self.config.capital.fixed_cash_per_trade),
                 "initial_cash": self.config.capital.initial_cash,
+                "final_equity": float(daily_equity["equity"].iloc[-1]) if not daily_equity.empty else self.config.capital.initial_cash,
                 "final_cash": float(state.cash),
                 "open_positions": len(state.positions),
             }
@@ -122,6 +131,24 @@ class BacktestEngine:
             "summary": summary,
         }
 
+    def _list_signal_files(self, start: date, end: date) -> List[Path]:
+        if self._explicit_signal_files is None:
+            return list_signal_files(self.signal_dir, start, end)
+        files: List[Path] = []
+        for path in self._explicit_signal_files:
+            try:
+                signal_date = signal_file_date(path)
+            except ValueError:
+                continue
+            if start <= signal_date <= end:
+                files.append(path)
+        return sorted(files, key=signal_file_date)
+
+    def _signal_source_label(self) -> str:
+        if self._explicit_signal_files is not None:
+            return "指定选股结果"
+        return str(self.signal_dir)
+
     def _build_empty_result(
         self,
         start: date,
@@ -132,7 +159,7 @@ class BacktestEngine:
         daily_rows = []
         for p in signal_files:
             try:
-                d = datetime.strptime(p.stem, "%Y%m%d").date()
+                d = signal_file_date(p)
             except ValueError:
                 continue
             daily_rows.append(
@@ -154,8 +181,10 @@ class BacktestEngine:
                 "end_date": end.isoformat(),
                 "simulation_end_date": end.isoformat(),
                 "capital_mode": self.config.capital.mode,
+                "capital_base": self.config.capital.initial_cash,
                 "fixed_cash_per_trade": float(self.config.capital.fixed_cash_per_trade),
                 "initial_cash": self.config.capital.initial_cash,
+                "final_equity": self.config.capital.initial_cash,
                 "final_cash": self.config.capital.initial_cash,
                 "open_positions": 0,
             }
@@ -178,6 +207,32 @@ class BacktestEngine:
             for code in s_data.get("stocks", []):
                 codes.add(str(code).zfill(6))
         return sorted(codes)
+
+    def _normalize_unlimited_cash_equity(
+        self,
+        *,
+        daily_equity: pd.DataFrame,
+        trades_df: pd.DataFrame,
+        state: PortfolioState,
+    ) -> Tuple[pd.DataFrame, float]:
+        """Use total deployed capital as the denominator in unlimited-cash mode."""
+        if daily_equity.empty:
+            return daily_equity, self.config.capital.initial_cash
+
+        closed_cost = 0.0
+        if not trades_df.empty and "total_cost" in trades_df.columns:
+            closed_cost = float(trades_df["total_cost"].astype(float).sum())
+        open_cost = float(sum(pos.entry_cost for pos in state.positions.values()))
+        capital_base = closed_cost + open_cost
+        if capital_base <= 0:
+            capital_base = self.config.capital.initial_cash
+
+        normalized = daily_equity.copy()
+        raw_initial_equity = float(normalized["equity"].astype(float).iloc[0])
+        normalized["raw_equity"] = normalized["equity"].astype(float)
+        normalized["capital_base"] = capital_base
+        normalized["equity"] = capital_base + (normalized["raw_equity"] - raw_initial_equity)
+        return normalized, capital_base
 
     def _process_entries(
         self,
