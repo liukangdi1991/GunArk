@@ -1,1 +1,1 @@
-"""Local web app for GunArk."""
+"""TrendRadar web application."""

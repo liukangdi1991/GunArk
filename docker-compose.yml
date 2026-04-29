@@ -1,10 +1,10 @@
 services:
-  daily-watch:
+  trend-radar:
     build:
       context: .
       dockerfile: Dockerfile
-    image: daily-watch:latest
-    container_name: daily-watch
+    image: trend-radar:latest
+    container_name: trend-radar
     env_file:
       - ./deploy/.env
     environment:

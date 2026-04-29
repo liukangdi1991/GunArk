@@ -3,6 +3,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+APP_NAME="趋势雷达"
+APP_EN_NAME="TrendRadar"
+APP_SLUG="trend-radar"
+
+print_banner() {
+  local action="${1:-A股日线级高性能量化选股系统}"
+  cat <<EOF
+==================================================
+  ${APP_NAME} ${APP_EN_NAME}
+  ${action}
+==================================================
+EOF
+}
 
 compose() {
   if docker compose version >/dev/null 2>&1; then
@@ -22,6 +35,22 @@ compose() {
 require_docker() {
   if ! command -v docker >/dev/null 2>&1; then
     echo "未找到 docker。请先安装 Docker。" >&2
+    exit 1
+  fi
+}
+
+require_tushare_token() {
+  local env_file="${PROJECT_ROOT}/deploy/.env"
+
+  if [ ! -f "${env_file}" ]; then
+    echo "缺少 deploy/.env，请先复制 deploy/.env.example 并填写 TUSHARE_TOKEN。" >&2
+    exit 1
+  fi
+
+  local token
+  token="$(grep -E '^TUSHARE_TOKEN=' "${env_file}" | tail -1 | cut -d= -f2- | tr -d '[:space:]' || true)"
+  if [ -z "${token}" ]; then
+    echo "缺少 TUSHARE_TOKEN。请编辑 deploy/.env 后再启动。" >&2
     exit 1
   fi
 }

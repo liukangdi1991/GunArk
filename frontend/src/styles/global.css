@@ -81,6 +81,64 @@ body,
   font-weight: 900;
 }
 
+.trend-radar-logo {
+  display: block;
+  width: 34px;
+  height: 34px;
+}
+
+.trend-radar-ring {
+  fill: none;
+  stroke: rgba(103, 216, 255, 0.88);
+  stroke-width: 1.6;
+}
+
+.trend-radar-ring-soft {
+  stroke: rgba(94, 228, 155, 0.52);
+  stroke-dasharray: 3 3;
+}
+
+.trend-radar-sweep {
+  fill: url("#trend-radar-sweep");
+  stroke: rgba(103, 216, 255, 0.72);
+  stroke-width: 1.2;
+}
+
+.trend-radar-axis {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.22);
+  stroke-width: 1;
+  stroke-linecap: round;
+}
+
+.trend-radar-tick {
+  fill: none;
+  stroke: url("#trend-radar-line");
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.trend-radar-candle {
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+.trend-radar-up {
+  stroke: #ff6b6b;
+}
+
+.trend-radar-down {
+  stroke: #2da44e;
+}
+
+.trend-radar-dot {
+  fill: #ffffff;
+  stroke: #67d8ff;
+  stroke-width: 1.2;
+}
+
 .brand-title {
   color: var(--ink-strong);
   font-size: 22px;
@@ -834,9 +892,13 @@ body {
 .brand-mark {
   border: 1px solid #d0d7de !important;
   border-radius: 8px !important;
-  background: #24292f !important;
+  background:
+    radial-gradient(circle at 72% 22%, rgba(103, 216, 255, 0.28), transparent 35%),
+    linear-gradient(135deg, #0f172a 0%, #1f2937 55%, #0f3d35 100%) !important;
   color: #ffffff !important;
-  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.12);
+  box-shadow:
+    inset 0 -1px 0 rgba(255, 255, 255, 0.16),
+    0 8px 20px rgba(9, 105, 218, 0.12);
 }
 
 .brand-title {

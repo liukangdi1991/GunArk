@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import re
 import shutil
 import sqlite3
 from datetime import datetime
@@ -1026,6 +1028,7 @@ def _item_to_strategy_snapshot(item: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _serialize_value(value: Any) -> tuple[str | None, str]:
+    value = _native_scalar(value)
     if value is None:
         return None, "null"
     if isinstance(value, bool):
@@ -1033,7 +1036,7 @@ def _serialize_value(value: Any) -> tuple[str | None, str]:
     if isinstance(value, int) and not isinstance(value, bool):
         return str(value), "integer"
     if isinstance(value, float):
-        return repr(value), "number"
+        return repr(float(value)), "number"
     if isinstance(value, (list, dict)):
         return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str), "json"
     return str(value), "string"
@@ -1056,13 +1059,49 @@ def _deserialize_value(value: Any, value_type: Any) -> Any:
         try:
             return float(text)
         except ValueError:
-            return text
+            parsed = _parse_legacy_numpy_scalar(text)
+            return parsed if parsed is not None else text
     if value_type == "json":
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             return text
-    return text
+    parsed = _parse_legacy_numpy_scalar(text)
+    return parsed if parsed is not None else text
+
+
+def _native_scalar(value: Any) -> Any:
+    if _is_numpy_scalar(value):
+        try:
+            return value.item()
+        except Exception:
+            return value
+    return value
+
+
+def _is_numpy_scalar(value: Any) -> bool:
+    module = type(value).__module__
+    return module == "numpy" or module.startswith("numpy.")
+
+
+def _parse_legacy_numpy_scalar(text: str) -> float | int | bool | None:
+    normalized = text.strip()
+    if normalized in {"np.True_", "np.bool_(True)"}:
+        return True
+    if normalized in {"np.False_", "np.bool_(False)"}:
+        return False
+
+    match = re.fullmatch(r"np\.(?:float\d*|int\d*)\(([-+0-9.eE]+)\)", normalized)
+    if not match:
+        return None
+    raw = match.group(1)
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    if not math.isfinite(value):
+        return None
+    return int(value) if normalized.startswith("np.int") and value.is_integer() else value
 
 
 def _coerce_metric(value: Any, fallback: Any) -> Any:

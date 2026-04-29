@@ -13,7 +13,7 @@ import type { BacktestResult } from "../../types/backtest";
 import type { SelectionResult } from "../../types/selection";
 import type { Strategy } from "../../types/strategy";
 import { firstTradingDateOfLatestMonth, formatPickerDate, latestTradingDate, makeDisabledNonTradingDate, toDayjs } from "../../utils/date";
-import { compactStrategyNames, formatPercent, signedClassName } from "../../utils/format";
+import { compactStrategyNames, formatPercent, parseFiniteNumber, signedClassName } from "../../utils/format";
 
 const { Paragraph, Text, Title } = Typography;
 
@@ -40,7 +40,10 @@ function selectedStrategies(values?: string[]) {
 }
 
 function bestReturn(result: BacktestResult) {
-  return result.summary?.[0]?.total_return_pct;
+  const values = (result.summary || [])
+    .map((item) => parseFiniteNumber(item.total_return_pct))
+    .filter((value): value is number => value !== null);
+  return values.length ? Math.max(...values) : null;
 }
 
 interface BacktestWorkspacePageProps {

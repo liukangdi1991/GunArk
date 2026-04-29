@@ -14,7 +14,7 @@ from web.routes import (
 )
 
 
-app = FastAPI(title="日线观势 API")
+app = FastAPI(title="趋势雷达 TrendRadar API")
 
 
 if (FRONTEND_DIST_DIR / "assets").exists():

@@ -24,24 +24,21 @@ import {
 import { ParamsSnapshot, StrategySnapshots } from "../../components/StrategySnapshots";
 import { getBacktestReport } from "../../services/backtests";
 import type { BacktestReportResponse, BacktestSkip, BacktestSummary, BacktestTrade } from "../../types/backtest";
-import { formatMoney, formatNumber, formatPercent, signedClassName } from "../../utils/format";
+import { formatMoney, formatNumber, formatPercent, parseFiniteNumber, signedClassName } from "../../utils/format";
 
 const { Paragraph, Text, Title } = Typography;
 
 function formatPlainPercent(value: unknown): string {
-  if (value === null || value === undefined || value === "") {
-    return "-";
-  }
-  const num = Number(value);
-  if (!Number.isFinite(num)) {
+  const num = parseFiniteNumber(value);
+  if (num === null) {
     return "-";
   }
   return `${num.toFixed(2)}%`;
 }
 
 function winRateClassName(value: unknown): string {
-  const num = Number(value);
-  if (!Number.isFinite(num)) {
+  const num = parseFiniteNumber(value);
+  if (num === null) {
     return "";
   }
   if (num >= 50) {
@@ -60,8 +57,8 @@ function SignedValue({
   value: unknown;
   type: "money" | "percent";
 }) {
-  const num = Number(value);
-  const Icon = !Number.isFinite(num) || num === 0 ? MinusOutlined : num > 0 ? ArrowUpOutlined : ArrowDownOutlined;
+  const num = parseFiniteNumber(value);
+  const Icon = num === null || num === 0 ? MinusOutlined : num > 0 ? ArrowUpOutlined : ArrowDownOutlined;
   return (
     <span className={`signed-value ${signedClassName(value)}`}>
       <Icon />
@@ -75,7 +72,7 @@ function selectedStrategySet(selectedStrategies: string[]) {
 }
 
 function totalTrades(summaries: BacktestSummary[]) {
-  return summaries.reduce((sum, item) => sum + Number(item.trade_count || 0), 0);
+  return summaries.reduce((sum, item) => sum + (parseFiniteNumber(item.trade_count) || 0), 0);
 }
 
 function weightedWinRate(summaries: BacktestSummary[]) {
@@ -84,7 +81,7 @@ function weightedWinRate(summaries: BacktestSummary[]) {
     return null;
   }
   const weighted = summaries.reduce(
-    (sum, item) => sum + Number(item.win_rate_pct || 0) * Number(item.trade_count || 0),
+    (sum, item) => sum + (parseFiniteNumber(item.win_rate_pct) || 0) * (parseFiniteNumber(item.trade_count) || 0),
     0,
   );
   return weighted / trades;
@@ -95,10 +92,14 @@ function bestTotalReturn(summaries: BacktestSummary[]) {
     return null;
   }
   return summaries.reduce((best, item) => {
-    if (best === null) {
-      return Number(item.total_return_pct || 0);
+    const totalReturn = parseFiniteNumber(item.total_return_pct);
+    if (totalReturn === null) {
+      return best;
     }
-    return Math.max(best, Number(item.total_return_pct || 0));
+    if (best === null) {
+      return totalReturn;
+    }
+    return Math.max(best, totalReturn);
   }, null as number | null);
 }
 

@@ -1,11 +1,11 @@
-# 日线观势
+# 趋势雷达 TrendRadar
 
 A 股日线级高性能量化选股系统。当前项目以 `FastAPI + React + TypeScript + Polars` 为主，CLI 入口已移除，选股、行情拉取、回测都通过 Web 工作台执行。
 
 ## 项目结构
 
 ```text
-GunArk/
+TrendRadar/
 ├── Selector.py               # 选股策略实现
 ├── select_stock.py           # 选股核心服务：策略加载、行情加载、预筛与精筛
 ├── fetch_kline.py            # Tushare 行情访问基础能力
@@ -49,6 +49,8 @@ cp deploy/.env.example deploy/.env
 # 编辑 deploy/.env，填写 TUSHARE_TOKEN
 ./scripts/install.sh
 ```
+
+`TUSHARE_TOKEN` 是必填项。`install/start/restart/update` 会在启动前校验该配置，未填写时直接失败，避免启动一个无法拉取行情的半可用服务。
 
 常用命令：
 

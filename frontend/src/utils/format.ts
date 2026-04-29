@@ -1,14 +1,26 @@
-export function formatNumber(value: unknown, fractionDigits = 2): string {
+export function parseFiniteNumber(value: unknown): number | null {
+  if (typeof value === "string") {
+    const text = value.trim();
+    const numpyMatch = text.match(/^np\.(?:float\d*|int\d*)\(([-+0-9.eE]+)\)$/);
+    const num = Number(numpyMatch ? numpyMatch[1] : text);
+    return Number.isFinite(num) ? num : null;
+  }
+
   const num = Number(value);
-  if (!Number.isFinite(num)) {
+  return Number.isFinite(num) ? num : null;
+}
+
+export function formatNumber(value: unknown, fractionDigits = 2): string {
+  const num = parseFiniteNumber(value);
+  if (num === null) {
     return "-";
   }
   return num.toFixed(fractionDigits);
 }
 
 export function formatMoney(value: unknown): string {
-  const num = Number(value);
-  if (!Number.isFinite(num)) {
+  const num = parseFiniteNumber(value);
+  if (num === null) {
     return "-";
   }
   return num.toLocaleString("zh-CN", {
@@ -18,16 +30,16 @@ export function formatMoney(value: unknown): string {
 }
 
 export function formatPercent(value: unknown): string {
-  const num = Number(value);
-  if (!Number.isFinite(num)) {
+  const num = parseFiniteNumber(value);
+  if (num === null) {
     return "-";
   }
   return `${num >= 0 ? "+" : ""}${num.toFixed(2)}%`;
 }
 
 export function signedClassName(value: unknown): string {
-  const num = Number(value);
-  if (!Number.isFinite(num) || num === 0) {
+  const num = parseFiniteNumber(value);
+  if (num === null || num === 0) {
     return "";
   }
   return num > 0 ? "value-positive" : "value-negative";
