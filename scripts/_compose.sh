@@ -55,8 +55,30 @@ require_tushare_token() {
   fi
 }
 
+wait_for_app_container() {
+  local attempt
+  for attempt in {1..60}; do
+    if compose exec -T trend-radar python -c "print('ready')" >/dev/null 2>&1; then
+      return
+    fi
+    sleep 1
+  done
+
+  echo "容器启动超时，请使用 ./scripts/logs.sh 查看日志。" >&2
+  compose ps >&2 || true
+  exit 1
+}
+
+initialize_storage_schema() {
+  wait_for_app_container
+  compose exec -T trend-radar python -c "from web.core.config import storage; storage.ensure_ready(); print(f'SQLite 初始化完成: {storage.db_path}')"
+}
+
 ensure_deploy_layout() {
-  mkdir -p "${PROJECT_ROOT}/deploy/data/db" "${PROJECT_ROOT}/deploy/data/storage"
+  mkdir -p \
+    "${PROJECT_ROOT}/deploy/data/db" \
+    "${PROJECT_ROOT}/deploy/data/storage/cache" \
+    "${PROJECT_ROOT}/deploy/data/storage/objects"
 
   if [ ! -f "${PROJECT_ROOT}/deploy/configs.json" ]; then
     cp "${PROJECT_ROOT}/configs.json" "${PROJECT_ROOT}/deploy/configs.json"
@@ -71,7 +93,21 @@ ensure_deploy_layout() {
   fi
 
   copy_dir_if_empty "${PROJECT_ROOT}/db" "${PROJECT_ROOT}/deploy/data/db"
-  copy_dir_if_empty "${PROJECT_ROOT}/storage" "${PROJECT_ROOT}/deploy/data/storage"
+  copy_file_if_missing \
+    "${PROJECT_ROOT}/storage/cache/trading_calendar.parquet" \
+    "${PROJECT_ROOT}/deploy/data/storage/cache/trading_calendar.parquet"
+}
+
+copy_file_if_missing() {
+  local source_file="$1"
+  local target_file="$2"
+
+  if [ ! -f "${source_file}" ] || [ -f "${target_file}" ]; then
+    return
+  fi
+
+  mkdir -p "$(dirname "${target_file}")"
+  cp "${source_file}" "${target_file}"
 }
 
 copy_dir_if_empty() {

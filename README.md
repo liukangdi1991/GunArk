@@ -42,15 +42,23 @@ uvicorn web.app:app --host 0.0.0.0 --port 8000
 
 推荐使用 Docker Compose 部署成一个服务容器。镜像内包含 FastAPI 后端和 React 构建产物；行情库、SQLite、运行产物、策略配置和股票列表通过宿主机目录挂载，升级镜像不会覆盖业务数据。
 
-首次初始化并启动：
+首次安装并启动：
 
 ```bash
 cp deploy/.env.example deploy/.env
-# 编辑 deploy/.env，填写 TUSHARE_TOKEN
+vim deploy/.env
 ./scripts/install.sh
 ```
 
-`TUSHARE_TOKEN` 是必填项。`install/start/restart/update` 会在启动前校验该配置，未填写时直接失败，避免启动一个无法拉取行情的半可用服务。
+`deploy/.env` 至少需要填写：
+
+```bash
+TUSHARE_TOKEN=你的token
+APP_PORT=8818
+TZ=Asia/Shanghai
+```
+
+`TUSHARE_TOKEN` 是必填项。`install/start/restart/update` 会在启动前校验该配置，未填写时直接失败，避免启动一个无法拉取行情的半可用服务。容器启动后脚本会自动初始化 `/app/storage/app.db` 表结构。
 
 常用命令：
 
@@ -61,6 +69,31 @@ cp deploy/.env.example deploy/.env
 ./scripts/logs.sh       # 查看容器日志
 ./scripts/backup.sh     # 备份 deploy/data、configs.json、stocklist.csv
 ```
+
+升级方式：
+
+```bash
+./scripts/backup.sh     # 可选，升级前备份运行数据
+./scripts/update.sh     # git pull --ff-only 后重新构建并启动
+```
+
+如果代码已经手动更新到最新，也可以直接执行：
+
+```bash
+./scripts/restart.sh    # 使用当前代码重新构建并启动
+```
+
+Docker Compose 升级会保留宿主机挂载目录和运行配置：
+
+```text
+deploy/.env
+deploy/configs.json
+deploy/stocklist.csv
+deploy/data/db/
+deploy/data/storage/
+```
+
+会替换容器镜像内的程序代码、Python 依赖和前端构建产物。
 
 部署目录结构：
 
@@ -74,7 +107,7 @@ deploy/
     └── storage/         # SQLite、交易日历、选股/回测产物，挂载到容器 /app/storage
 ```
 
-首次执行脚本时，如果 `deploy/data/db` 或 `deploy/data/storage` 为空，会自动从项目根目录现有的 `db/`、`storage/` 复制一份作为容器持久化数据。
+首次执行脚本时，如果 `deploy/data/db` 为空，会自动从项目根目录现有的 `db/` 复制一份作为行情库种子数据。`deploy/data/storage` 不会复制项目根目录的历史运行数据；脚本只会创建目录、按需复制交易日历缓存，并在容器启动后初始化 SQLite 表结构，避免把开发环境的选股/回测历史带进生产。
 
 默认访问地址为 `http://localhost:8818`。如需修改端口，调整 `deploy/.env` 中的 `APP_PORT` 后执行 `./scripts/restart.sh`。
 

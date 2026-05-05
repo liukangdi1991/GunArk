@@ -10,3 +10,4 @@ require_docker
 ensure_deploy_layout
 require_tushare_token
 compose up -d
+initialize_storage_schema

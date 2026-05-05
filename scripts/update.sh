@@ -13,3 +13,4 @@ require_tushare_token
 git pull --ff-only
 compose build
 compose up -d
+initialize_storage_schema
