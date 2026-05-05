@@ -1,21 +1,16 @@
-"""选股核心服务：策略加载、行情加载、预筛与精筛执行。"""
+from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 import inspect
-import json
-import logging
 import os
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import polars as pl
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-logger = logging.getLogger(__name__)
-
-from Selector import (
+from selection.indicators import _compute_kdj_numba, bbi_deriv_uptrend
+from selection.strategies import (
     BBIKDJSelector,
     SuperB1Selector,
     PeakKDJSelector,
@@ -24,154 +19,7 @@ from Selector import (
     ZXDKXBalanceSelector,
     PerfectB1Selector,
     BigBullishVolumeSelector,
-    bbi_deriv_uptrend,
-    _compute_kdj_numba,
 )
-
-# ─────────────────────────── 配置 ─────────────────────────── #
-
-# 策略类名到 emoji 的映射
-STRATEGY_EMOJIS = {
-    "BBIKDJSelector": "🔥",
-    "SuperB1Selector": "⚡",
-    "PeakKDJSelector": "🎫",
-    "BBIShortLongSelector": "🕳️",
-    "MA60CrossVolumeWaveSelector": "📈",
-    "ZXDKXBalanceSelector": "⚖️",
-    "PerfectB1Selector": "🌟",
-    "BigBullishVolumeSelector": "💪",
-}
-
-# 类名到类的映射
-SELECTOR_CLASSES = {
-    "BBIKDJSelector": BBIKDJSelector,
-    "SuperB1Selector": SuperB1Selector,
-    "PeakKDJSelector": PeakKDJSelector,
-    "BBIShortLongSelector": BBIShortLongSelector,
-    "MA60CrossVolumeWaveSelector": MA60CrossVolumeWaveSelector,
-    "ZXDKXBalanceSelector": ZXDKXBalanceSelector,
-    "PerfectB1Selector": PerfectB1Selector,
-    "BigBullishVolumeSelector": BigBullishVolumeSelector,
-}
-
-FALLBACK_DEFAULT_STRATEGY_ALIASES = ["B1战法", "B1战法（V2）"]
-
-
-def load_config_raw(cfg_path: Path) -> Any:
-    """读取 configs.json 原始结构。"""
-    if not cfg_path.exists():
-        raise FileNotFoundError(f"配置文件不存在: {cfg_path}")
-    with cfg_path.open(encoding="utf-8") as f:
-        return json.load(f)
-
-
-def load_default_strategy_aliases(cfg_path: Path) -> List[str]:
-    """从配置读取默认策略；未配置时回退到内置默认值。"""
-    cfg_raw = load_config_raw(cfg_path)
-    if isinstance(cfg_raw, dict):
-        aliases = cfg_raw.get("default_strategies")
-        if isinstance(aliases, list):
-            normalized = [str(x).strip() for x in aliases if str(x).strip()]
-            if normalized:
-                return normalized
-    return list(FALLBACK_DEFAULT_STRATEGY_ALIASES)
-
-
-def load_config(cfg_path: Path) -> List[Dict[str, Any]]:
-    """从 configs.json 加载策略配置"""
-    cfg_raw = load_config_raw(cfg_path)
-
-    # 兼容三种结构：单对象、对象数组、或带 selectors 键
-    if isinstance(cfg_raw, list):
-        cfgs = cfg_raw
-    elif isinstance(cfg_raw, dict) and "selectors" in cfg_raw:
-        cfgs = cfg_raw["selectors"]
-    else:
-        cfgs = [cfg_raw]
-
-    if not cfgs:
-        raise ValueError("configs.json 未定义任何 Selector")
-
-    return cfgs
-
-
-def instantiate_selector(cfg: Dict[str, Any]):
-    """动态加载 Selector 类并实例化"""
-    cls_name: str = cfg.get("class")
-    if not cls_name:
-        raise ValueError("缺少 class 字段")
-
-    cls = SELECTOR_CLASSES.get(cls_name)
-    if cls is None:
-        raise ImportError(f"未知的 Selector 类: {cls_name}")
-
-    params = cfg.get("params", {})
-    alias = cfg.get("alias", cls_name)
-    emoji = STRATEGY_EMOJIS.get(cls_name, "📊")
-    return alias, cls(**params), emoji
-
-
-def load_strategies_from_config(cfg_path: Path) -> Dict[str, Dict[str, Any]]:
-    """从配置文件加载策略，返回 {策略名: {selector, emoji}} 结构。"""
-    cfgs = load_config(cfg_path)
-    strategies = {}
-    for cfg in cfgs:
-        if cfg.get("activate", True) is False:
-            continue
-        try:
-            alias, selector, emoji = instantiate_selector(cfg)
-            strategies[alias] = {
-                "selector": selector,
-                "emoji": emoji,
-            }
-        except Exception as e:
-            logger.warning("跳过无效策略配置 %s: %s", cfg, e)
-    return strategies
-
-
-# ─────────────────────────── 数据加载 ─────────────────────────── #
-
-def load_data_table(data_dir: str, tickers: Optional[List[str]] = None) -> pl.DataFrame:
-    """读取并返回按 code/date 排序的大表，使用 scan_parquet 延迟加载 + 列裁剪"""
-    data_path = Path(data_dir)
-    
-    if tickers:
-        files = [str(data_path / f"{t}.parquet") for t in tickers if (data_path / f"{t}.parquet").exists()]
-    else:
-        files = [str(f) for f in data_path.glob("*.parquet")]
-    
-    if not files:
-        return pl.DataFrame()
-    
-    cols = ["date", "open", "close", "high", "low", "volume"]
-    return (
-        pl.scan_parquet(files, include_file_paths="file_path")
-        .select([
-            pl.col("file_path").str.extract(r"([^/]+)\.parquet$").alias("code"),
-            *[pl.col(c) for c in cols],
-        ])
-        .sort(["code", "date"])
-        .collect()
-    )
-
-
-def table_to_data_dict(df_all: pl.DataFrame) -> Dict[str, pl.DataFrame]:
-    """将大表转换为旧版 Dict[code, DataFrame] 结构。
-
-    说明：
-    - 为兼容历史 selector 的接口，这里保留 code->DataFrame 的字典形态。
-    - 每个子表会移除重复的 code 列，只保留原始行情数据列。
-    """
-    data = {}
-    for code, df in df_all.partition_by("code", as_dict=True).items():
-        data[code[0]] = df.drop("code")
-    return data
-
-
-def load_data(data_dir: str, tickers: Optional[List[str]] = None) -> Dict[str, pl.DataFrame]:
-    """使用 Polars 批量读取 Parquet 文件（旧接口）"""
-    return table_to_data_dict(load_data_table(data_dir, tickers))
-
 
 class StrategySelectionRunner(ABC):
     """策略运行模板：统一执行“预筛 -> 精筛”流程。"""
@@ -1073,25 +921,3 @@ def build_strategy_runner(selector: Any) -> StrategySelectionRunner:
     if isinstance(selector, BigBullishVolumeSelector):
         return BigBullishVolumeSelectionRunner(selector)
     return DefaultSelectionRunner(selector)
-
-
-# ─────────────────────────── 股票名称 ─────────────────────────── #
-
-def _load_stock_names() -> Dict[str, str]:
-    """从 stocklist.csv 加载 code→name 映射"""
-    stocklist_path = PROJECT_ROOT / "stocklist.csv"
-    if not stocklist_path.exists():
-        return {}
-    try:
-        df = pl.read_csv(stocklist_path, columns=["symbol", "name"])
-        return {str(row[0]).zfill(6): str(row[1]) for row in df.iter_rows()}
-    except Exception:
-        return {}
-
-_stock_name_cache: Optional[Dict[str, str]] = None
-
-def get_stock_names() -> Dict[str, str]:
-    global _stock_name_cache
-    if _stock_name_cache is None:
-        _stock_name_cache = _load_stock_names()
-    return _stock_name_cache

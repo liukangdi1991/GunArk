@@ -33,6 +33,7 @@ export interface BacktestResult {
   summary: BacktestSummary[];
   object_dir_key?: string;
   signal_dir?: string | null;
+  selection_execution_keys?: string[];
   trade_rule?: Record<string, unknown>;
 }
 

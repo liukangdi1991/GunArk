@@ -1,6 +1,7 @@
 import { Card, Space, Tag, Typography } from "antd";
 import type { ReactNode } from "react";
 import type { Strategy } from "../types/strategy";
+import { capitalModeLabel } from "../utils/capital";
 
 const { Text } = Typography;
 
@@ -59,9 +60,9 @@ function describeTradeRule(
   lines.push("如果卖出日跌停无法成交，跌停顺延卖出优先于其他卖出规则。");
 
   if (capitalMode === "unlimited_cash") {
-    lines.push(`资金模式为无限资金：每只股票按 ${formatMoney(cashPerTrade)} 元名义金额买入，不做现金不足限制。`);
+    lines.push(`资金模式为${capitalModeLabel(capitalMode)}：每只股票按 ${formatMoney(cashPerTrade)} 元名义金额买入，不做现金不足限制。`);
   } else if (capitalMode) {
-    lines.push("资金模式为真实现金约束：买入前会校验可用现金。");
+    lines.push(`资金模式为${capitalModeLabel(capitalMode)}：买入前会校验可用现金。`);
   }
 
   return lines;

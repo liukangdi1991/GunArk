@@ -3,15 +3,13 @@ from __future__ import annotations
 import json
 import re
 from functools import lru_cache
-from pathlib import Path
 
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from core.runtime import runtime_root
 
 
 @lru_cache(maxsize=1)
 def _load_alias_to_class() -> dict[str, str]:
-    cfg_path = PROJECT_ROOT / "configs.json"
+    cfg_path = runtime_root() / "configs.json"
     if not cfg_path.exists():
         return {}
     try:

@@ -10,13 +10,9 @@ from typing import Any, Callable
 
 import polars as pl
 
-from select_stock import (
-    build_strategy_runner,
-    load_data_table,
-    load_default_strategy_aliases,
-    load_strategies_from_config,
-    table_to_data_dict,
-)
+from selection.config import load_default_strategy_aliases, load_strategies_from_config
+from selection.data import load_data_table, table_to_data_dict
+from selection.runners import build_strategy_runner
 from web.core.config import ROOT, storage
 from web.schemas.selection import BatchSelectionRequest, SelectionRequest
 from web.services import market_service
@@ -231,7 +227,7 @@ def _run_selection_for_date(
 
     snapshots = _strategy_snapshots(strategy_names)
     storage.record_selection_result(
-        run_id=execution_key,
+        execution_key=execution_key,
         selection_date=date_text,
         strategies=strategy_names,
         strategy_snapshots=snapshots,
@@ -242,21 +238,21 @@ def _run_selection_for_date(
     )
     storage.register_artifact(
         run_type="selection",
-        run_id=execution_key,
+        execution_key=execution_key,
         artifact_type="signals_json",
         path=signals_path,
         mime_type="application/json; charset=utf-8",
     )
     storage.register_artifact(
         run_type="selection",
-        run_id=execution_key,
+        execution_key=execution_key,
         artifact_type="picks_parquet",
         path=picks_path,
         mime_type="application/vnd.apache.parquet",
     )
     storage.register_artifact(
         run_type="selection",
-        run_id=execution_key,
+        execution_key=execution_key,
         artifact_type="log_txt",
         path=log_path,
         mime_type="text/plain; charset=utf-8",
@@ -453,9 +449,6 @@ def _read_picks(execution_key: str) -> list[dict[str, Any]]:
 
 def _normalize_pick_row(row: dict[str, Any], stock_meta: dict[str, dict[str, str]]) -> dict[str, Any]:
     out = dict(row)
-    if "execution_key" not in out and "run_id" in out:
-        out["execution_key"] = out["run_id"]
-    out.pop("run_id", None)
     code = str(out.get("code") or "").strip().zfill(6)
     meta = stock_meta.get(code, {})
     out["code"] = code

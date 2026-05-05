@@ -10,6 +10,10 @@ import { formatNumber } from "../../utils/format";
 
 const { Paragraph, Text, Title } = Typography;
 
+function compareText(a: unknown, b: unknown) {
+  return String(a || "").localeCompare(String(b || ""), "zh-Hans-CN");
+}
+
 function totalPickCount(detail?: SelectionResultDetailResponse | null) {
   return (detail?.result.summary || []).reduce((sum, item) => sum + Number(item.count || 0), 0);
 }
@@ -64,7 +68,14 @@ const pickColumns: ColumnsType<SelectionPick> = [
   { title: "日期", dataIndex: "date", key: "date", width: 120 },
   { title: "代码", dataIndex: "code", key: "code", width: 110 },
   { title: "名称", dataIndex: "name", key: "name", width: 140 },
-  { title: "所属板块", dataIndex: "industry", key: "industry", width: 140, render: (value) => value || "-" },
+  {
+    title: "所属板块",
+    dataIndex: "industry",
+    key: "industry",
+    width: 140,
+    render: (value) => value || "-",
+    sorter: (a, b) => compareText(a.industry, b.industry),
+  },
 ];
 
 export function SelectionResultPage() {

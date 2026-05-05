@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from backtest.storage import BacktestStorage
+from core.runtime import resource_root, runtime_root
+from core.storage import AppStorage
 
 
-ROOT = Path(__file__).resolve().parents[2]
-FRONTEND_DIST_DIR = ROOT / "frontend" / "dist"
+ROOT = runtime_root()
+RESOURCE_ROOT = resource_root()
+FRONTEND_DIST_DIR = RESOURCE_ROOT / "frontend" / "dist"
 STORAGE_ROOT = ROOT / "storage"
 
-storage = BacktestStorage(STORAGE_ROOT)
+storage = AppStorage(STORAGE_ROOT)

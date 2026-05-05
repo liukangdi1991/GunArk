@@ -1,9 +1,10 @@
-import { CalendarOutlined, DeleteOutlined, PlayCircleOutlined, ReloadOutlined } from "@ant-design/icons";
-import { Alert, Button, Card, Checkbox, Col, DatePicker, Form, List, Popconfirm, Row, Select, Space, Statistic, Tag, Typography, message } from "antd";
+import { CalendarOutlined, PlayCircleOutlined } from "@ant-design/icons";
+import { Alert, Button, Card, Col, DatePicker, Form, Row, Select, Space, Statistic, Tag, Typography, message } from "antd";
 import dayjs from "dayjs";
 import type { Dayjs } from "dayjs";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { EditableHistoryCard } from "../../components/EditableHistoryCard";
 import { submitExecution } from "../../services/executions";
 import { listTradingDates } from "../../services/marketData";
 import { deleteSelectionResults, listSelectionResults } from "../../services/selections";
@@ -61,10 +62,6 @@ export function SelectionWorkspacePage() {
   );
   const latestDate = useMemo(() => latestTradingDate(tradingDates), [tradingDates]);
   const monthStartDate = useMemo(() => firstTradingDateOfLatestMonth(tradingDates), [tradingDates]);
-  const selectedRunSet = useMemo(() => new Set(selectedRunIds), [selectedRunIds]);
-  const allRunIds = useMemo(() => runs.map((run) => run.execution_key), [runs]);
-  const allSelected = runs.length > 0 && selectedRunIds.length === runs.length;
-  const partiallySelected = selectedRunIds.length > 0 && selectedRunIds.length < runs.length;
 
   async function refreshRuns() {
     setRunsLoading(true);
@@ -300,99 +297,29 @@ export function SelectionWorkspacePage() {
         </Col>
 
         <Col xs={24} xl={10}>
-          <Card
-            className="workbench-card"
+          <EditableHistoryCard<SelectionResult>
             title="选股历史"
-            extra={
-              <Space size={8} wrap>
-                {editingHistory ? (
-                  <>
-                    <Checkbox
-                      checked={allSelected}
-                      indeterminate={partiallySelected}
-                      onChange={(event) => setSelectedRunIds(event.target.checked ? allRunIds : [])}
-                    >
-                      全选
-                    </Checkbox>
-                    <Popconfirm
-                      title="删除选中的选股历史？"
-                      description={`将删除 ${selectedRunIds.length} 条历史记录及对应本地结果文件。`}
-                      okText="删除"
-                      cancelText="取消"
-                      disabled={!selectedRunIds.length}
-                      onConfirm={() => deleteRuns(selectedRunIds)}
-                    >
-                      <Button size="small" danger icon={<DeleteOutlined />} loading={deleting} disabled={!selectedRunIds.length}>
-                        删除选中
-                      </Button>
-                    </Popconfirm>
-                    <Popconfirm
-                      title="清空全部选股历史？"
-                      description="将删除所有选股历史记录及对应本地结果文件。"
-                      okText="清空"
-                      cancelText="取消"
-                      disabled={!runs.length}
-                      onConfirm={() => deleteRuns()}
-                    >
-                      <Button size="small" danger loading={deleting} disabled={!runs.length}>
-                        清空
-                      </Button>
-                    </Popconfirm>
-                    <Button
-                      size="small"
-                      onClick={() => {
-                        setEditingHistory(false);
-                        setSelectedRunIds([]);
-                      }}
-                    >
-                      取消
-                    </Button>
-                  </>
-                ) : (
-                  <Button size="small" onClick={() => setEditingHistory(true)}>
-                    编辑
-                  </Button>
-                )}
-                <Button size="small" icon={<ReloadOutlined />} loading={runsLoading} onClick={refreshRuns}>刷新</Button>
+            emptyText="暂无选股记录"
+            records={runs}
+            loading={runsLoading || loading}
+            editing={editingHistory}
+            deleting={deleting}
+            selectedKeys={selectedRunIds}
+            onEditingChange={setEditingHistory}
+            onSelectedKeysChange={setSelectedRunIds}
+            onToggleRecord={toggleRun}
+            onDelete={deleteRuns}
+            onRefresh={refreshRuns}
+            onOpen={(executionKey) => navigate(`/selections/${encodeURIComponent(executionKey)}`)}
+            renderTitle={(run) => <Text ellipsis>{run.execution_key}</Text>}
+            renderDescription={(run) => (
+              <Space direction="vertical" size={4}>
+                <Text className="muted-text">{run.selection_date}</Text>
+                <Text className="muted-text">{compactStrategyNames(run.strategies)}</Text>
               </Space>
-            }
-          >
-            <List
-              className="selection-run-list"
-              loading={runsLoading || loading}
-              dataSource={runs}
-              locale={{ emptyText: "暂无选股记录" }}
-              renderItem={(run) => (
-                <List.Item
-                  onClick={() => {
-                    if (editingHistory) {
-                      toggleRun(run.execution_key, !selectedRunSet.has(run.execution_key));
-                      return;
-                    }
-                    navigate(`/selections/${encodeURIComponent(run.execution_key)}`);
-                  }}
-                >
-                  {editingHistory ? (
-                    <Checkbox
-                      checked={selectedRunSet.has(run.execution_key)}
-                      onClick={(event) => event.stopPropagation()}
-                      onChange={(event) => toggleRun(run.execution_key, event.target.checked)}
-                    />
-                  ) : null}
-                  <List.Item.Meta
-                    title={<Text ellipsis>{run.execution_key}</Text>}
-                    description={
-                      <Space direction="vertical" size={4}>
-                        <Text className="muted-text">{run.selection_date}</Text>
-                        <Text className="muted-text">{compactStrategyNames(run.strategies)}</Text>
-                      </Space>
-                    }
-                  />
-                  <Tag color="green">{totalPickCount(run)} 只</Tag>
-                </List.Item>
-              )}
-            />
-          </Card>
+            )}
+            renderExtra={(run) => <Tag color="green">{totalPickCount(run)} 只</Tag>}
+          />
         </Col>
       </Row>
     </div>

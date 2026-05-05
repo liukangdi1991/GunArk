@@ -36,7 +36,7 @@ def create_backtest(
         on_progress=progress,
         on_log=log,
     )
-    execution_key = result.get("execution_key") or result["run_id"]
+    execution_key = str(result["execution_key"])
     return {
         "execution_key": execution_key,
         "run_dir": str(result["run_dir"]),
@@ -69,7 +69,7 @@ def create_backtest_from_selection(
         on_progress=progress,
         on_log=log,
     )
-    execution_key = result.get("execution_key") or result["run_id"]
+    execution_key = str(result["execution_key"])
     return {
         "execution_key": execution_key,
         "run_dir": str(result["run_dir"]),
@@ -253,9 +253,6 @@ def _jsonable(value: Any) -> Any:
 
 def _normalize_execution_key_field(row: dict[str, Any]) -> dict[str, Any]:
     out = dict(row)
-    if "execution_key" not in out and "run_id" in out:
-        out["execution_key"] = out["run_id"]
-    out.pop("run_id", None)
     return out
 
 

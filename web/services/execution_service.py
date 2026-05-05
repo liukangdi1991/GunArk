@@ -86,6 +86,16 @@ class ExecutionContext:
         state.resource_id = result_meta["resource_id"]
         state.result_url = result_meta["result_url"]
         _save_state(state)
+        if state.resource_type:
+            try:
+                storage.record_execution_log_link(
+                    job_execution_id=state.execution_id,
+                    resource_type=state.resource_type,
+                    resource_execution_key=state.resource_id,
+                    resource_url=state.result_url,
+                )
+            except Exception as exc:  # noqa: BLE001 - log link failure must not fail the job.
+                self.log(f"记录日志关联失败: {exc}", level="WARN")
         self.log("执行完成")
         if state.result_url:
             self.log(f"结果页面: {state.result_url}")

@@ -42,11 +42,7 @@ def _parse_signal_date(value: str) -> date:
 
 def list_signal_files(signal_dir: Path, start: date, end: date) -> List[Path]:
     if not signal_dir.exists():
-        legacy_dir = signal_dir.parent / "polars"
-        if legacy_dir.exists():
-            signal_dir = legacy_dir
-        else:
-            return []
+        return []
     files: List[Path] = []
     for p in signal_dir.glob("*.json"):
         try:

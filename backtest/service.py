@@ -9,6 +9,7 @@ from typing import Callable, Mapping
 from backtest import BacktestEngine, default_config
 from backtest.config import BacktestConfig
 from backtest.reports.writer import create_run_dir, save_run_outputs
+from core.runtime import runtime_root
 
 
 StrategyStartCallback = Callable[[str], None]
@@ -31,9 +32,20 @@ def build_config(
     base_config: BacktestConfig | None = None,
 ) -> BacktestConfig:
     cfg = base_config or default_config()
+    root = runtime_root()
+    cfg = replace(
+        cfg,
+        paths=replace(
+            cfg.paths,
+            signal_dir=str(root / "storage" / "objects" / "signals"),
+            parquet_dir=str(root / "db"),
+            storage_root=str(root / "storage"),
+            output_root=str(root / "storage" / "objects" / "executions"),
+        ),
+    )
     mode = normalize_capital_mode(mode)
     if mode not in {"realistic", "unlimited_cash"}:
-        raise ValueError("资金模式仅支持 realistic 或 unlimited_cash")
+        raise ValueError("资金模式仅支持 不限资金 或 现金约束")
     if cash_per_trade <= 0:
         raise ValueError("每票金额必须大于0")
     return replace(
@@ -105,12 +117,11 @@ def run_backtest(
         end=end,
         run_name=run_name,
     )
-    run_id = run_base_dir.name
+    execution_key = run_base_dir.name
     run_dir = run_base_dir / "backtest"
     run_dir.mkdir(parents=True, exist_ok=True)
     meta = {
-        "run_id": run_id,
-        "execution_key": run_id,
+        "execution_key": execution_key,
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "from": start.isoformat(),
         "to": end.isoformat(),
@@ -138,8 +149,7 @@ def run_backtest(
         storage_root=Path(cfg.paths.storage_root),
     )
     return {
-        "run_id": run_id,
-        "execution_key": run_id,
+        "execution_key": execution_key,
         "run_dir": run_dir,
         "strategies": strategy_list,
         "strategy_results": strategy_results,
@@ -147,8 +157,7 @@ def run_backtest(
 
 
 def _load_strategy_snapshots(strategy_list: list[str]) -> list[dict[str, object]]:
-    root = Path(__file__).resolve().parents[1]
-    config_path = root / "configs.json"
+    config_path = runtime_root() / "configs.json"
     if not config_path.exists():
         return [{"name": name, "class": "", "description": "", "params": {}} for name in strategy_list]
 

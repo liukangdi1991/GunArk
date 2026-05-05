@@ -2,131 +2,61 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-import math
-import re
 import shutil
 import sqlite3
 from datetime import datetime
-from enum import StrEnum
 from pathlib import Path
 from typing import Any, Mapping
 
+from core.storage_migrations import (
+    backfill_backtest_selection_links,
+    backfill_execution_log_links,
+    ensure_artifacts_scope_schema,
+)
+from core.storage_models import ExecutionItemType, ExecutionType, SelectionResultInUseError
+from core.storage_schema import SCHEMA_SQL
+from core.storage_utils import (
+    backtest_metrics,
+    coerce_metric,
+    dedupe_storage_keys,
+    delete_result,
+    deserialize_value,
+    ensure_execution_item_type,
+    ensure_execution_type,
+    execution_type_from_legacy,
+    item_to_strategy_snapshot,
+    normalize_execution_keys,
+    placeholders as make_placeholders,
+    scoped_dir_key,
+    selection_metrics,
+    serialize_value,
+    sha256,
+    snapshots_in_order,
+)
 
-class ExecutionType(StrEnum):
-    SELECTION = "selection"
-    BACKTEST = "backtest"
-    SELECTION_BACKTEST = "selection_backtest"
 
-
-class ExecutionItemType(StrEnum):
-    SELECTION_STRATEGY = "selection_strategy"
-    TRADE_STRATEGY = "trade_strategy"
-    CAPITAL_MODEL = "capital_model"
-    EXECUTION_CONFIG = "execution_config"
-
-
-class BacktestStorage:
+class AppStorage:
     def __init__(self, storage_root: Path | str = "storage") -> None:
         self.storage_root = Path(storage_root)
         self.db_path = self.storage_root / "app.db"
         self.objects_root = self.storage_root / "objects"
+        self._links_backfilled = False
 
     def ensure_ready(self) -> None:
         self.storage_root.mkdir(parents=True, exist_ok=True)
         self.objects_root.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
-            conn.executescript(
-                """
-                create table if not exists executions (
-                    id integer primary key autoincrement,
-                    execution_key text not null unique,
-                    execution_type text not null,
-                    status text not null,
-                    created_at text not null,
-                    finished_at text not null,
-                    object_dir_key text not null
-                );
-
-                create table if not exists selection_results (
-                    id integer primary key autoincrement,
-                    execution_id integer not null unique,
-                    selection_date text not null,
-                    data_dir text,
-                    signal_file text,
-                    foreign key (execution_id) references executions(id) on delete cascade
-                );
-
-                create table if not exists backtest_results (
-                    id integer primary key autoincrement,
-                    execution_id integer not null unique,
-                    start_date text not null,
-                    end_date text not null,
-                    signal_dir text,
-                    foreign key (execution_id) references executions(id) on delete cascade
-                );
-
-                create table if not exists execution_items (
-                    id integer primary key autoincrement,
-                    execution_id integer not null,
-                    item_type text not null,
-                    item_key text not null,
-                    item_name text not null,
-                    item_class text,
-                    description text,
-                    foreign key (execution_id) references executions(id) on delete cascade,
-                    unique (execution_id, item_type, item_key)
-                );
-
-                create table if not exists execution_item_params (
-                    id integer primary key autoincrement,
-                    execution_item_id integer not null,
-                    param_key text not null,
-                    param_value text,
-                    param_type text not null,
-                    foreign key (execution_item_id) references execution_items(id) on delete cascade,
-                    unique (execution_item_id, param_key)
-                );
-
-                create table if not exists execution_item_metrics (
-                    id integer primary key autoincrement,
-                    execution_item_id integer not null,
-                    metric_key text not null,
-                    metric_value text,
-                    metric_type text not null,
-                    foreign key (execution_item_id) references execution_items(id) on delete cascade,
-                    unique (execution_item_id, metric_key)
-                );
-
-                create table if not exists artifacts (
-                    id integer primary key autoincrement,
-                    execution_id integer not null,
-                    artifact_scope text not null,
-                    artifact_type text not null,
-                    storage_key text not null,
-                    mime_type text,
-                    size_bytes integer,
-                    checksum text,
-                    created_at text not null,
-                    foreign key (execution_id) references executions(id) on delete cascade,
-                    unique (execution_id, artifact_scope, artifact_type)
-                );
-
-                create index if not exists idx_executions_created_at
-                    on executions(created_at);
-                create index if not exists idx_execution_items_execution_id
-                    on execution_items(execution_id);
-                create index if not exists idx_artifacts_execution_id
-                    on artifacts(execution_id);
-                """
-            )
-            self._ensure_artifacts_scope_schema(conn)
+            conn.executescript(SCHEMA_SQL)
+            ensure_artifacts_scope_schema(conn)
+            if not self._links_backfilled:
+                backfill_backtest_selection_links(self, conn)
+                backfill_execution_log_links(self, conn)
+                self._links_backfilled = True
 
     def record_selection_result(
         self,
         *,
-        run_id: str,
+        execution_key: str,
         selection_date: str,
         strategies: list[str],
         strategy_snapshots: list[dict[str, Any]],
@@ -142,7 +72,7 @@ class BacktestStorage:
         with self._connect() as conn:
             execution_id = self._upsert_execution(
                 conn,
-                run_id=run_id,
+                execution_key=execution_key,
                 execution_type=ExecutionType.SELECTION,
                 status=status,
                 created_at=now,
@@ -170,7 +100,7 @@ class BacktestStorage:
                 for item in summaries
                 if isinstance(item, dict)
             }
-            for snapshot in _snapshots_in_order(strategies, strategy_snapshots):
+            for snapshot in snapshots_in_order(strategies, strategy_snapshots):
                 item_id = self._upsert_execution_item(
                     conn,
                     execution_id=execution_id,
@@ -181,13 +111,13 @@ class BacktestStorage:
                     description=str(snapshot.get("description") or ""),
                 )
                 self._replace_params(conn, item_id, snapshot.get("params") or {})
-                metrics = _selection_metrics(summary_by_strategy.get(str(snapshot.get("name") or ""), {}))
+                metrics = selection_metrics(summary_by_strategy.get(str(snapshot.get("name") or ""), {}))
                 self._upsert_metrics(conn, item_id, metrics)
 
     def record_backtest_result(
         self,
         *,
-        run_id: str,
+        execution_key: str,
         meta: Mapping[str, Any],
         summaries: list[dict[str, Any]],
         object_dir: Path,
@@ -200,7 +130,7 @@ class BacktestStorage:
         with self._connect() as conn:
             execution_id = self._upsert_execution(
                 conn,
-                run_id=run_id,
+                execution_key=execution_key,
                 execution_type=ExecutionType.BACKTEST,
                 status=status,
                 created_at=created_at,
@@ -227,6 +157,10 @@ class BacktestStorage:
                     str(meta.get("signal_dir") or ""),
                 ),
             )
+            selection_keys = normalize_execution_keys([
+                str(item) for item in (meta.get("selection_execution_keys") or [])
+            ]) or []
+            self._replace_backtest_selection_links(conn, execution_id, selection_keys)
             self._clear_execution_items(conn, execution_id, ExecutionItemType.CAPITAL_MODEL)
             self._clear_execution_items(conn, execution_id, ExecutionItemType.TRADE_STRATEGY)
             summary_by_strategy = {
@@ -235,7 +169,7 @@ class BacktestStorage:
                 if isinstance(item, dict)
             }
             strategy_names = [str(item) for item in (meta.get("strategies") or [])]
-            for snapshot in _snapshots_in_order(strategy_names, meta.get("strategy_snapshots") or []):
+            for snapshot in snapshots_in_order(strategy_names, meta.get("strategy_snapshots") or []):
                 item_id = self._upsert_execution_item(
                     conn,
                     execution_id=execution_id,
@@ -246,7 +180,7 @@ class BacktestStorage:
                     description=str(snapshot.get("description") or ""),
                 )
                 self._replace_params(conn, item_id, snapshot.get("params") or {})
-                metrics = _backtest_metrics(summary_by_strategy.get(str(snapshot.get("name") or ""), {}))
+                metrics = backtest_metrics(summary_by_strategy.get(str(snapshot.get("name") or ""), {}))
                 self._upsert_metrics(conn, item_id, metrics)
 
             capital_item_id = self._upsert_execution_item(
@@ -281,7 +215,7 @@ class BacktestStorage:
     def register_artifact(
         self,
         *,
-        run_id: str,
+        execution_key: str,
         artifact_type: str,
         path: Path,
         mime_type: str,
@@ -291,12 +225,12 @@ class BacktestStorage:
         now = datetime.now().isoformat(timespec="seconds")
         stat = path.stat()
         with self._connect() as conn:
-            execution_id = self._get_execution_id(conn, run_id)
+            execution_id = self._get_execution_id(conn, execution_key)
             if execution_id is None:
                 execution_id = self._upsert_execution(
                     conn,
-                    run_id=run_id,
-                    execution_type=_execution_type_from_legacy(run_type),
+                    execution_key=execution_key,
+                    execution_type=execution_type_from_legacy(run_type),
                     status="success",
                     created_at=now,
                     finished_at=now,
@@ -328,9 +262,29 @@ class BacktestStorage:
                     self.storage_key(path),
                     mime_type,
                     int(stat.st_size),
-                    _sha256(path),
+                    sha256(path),
                     now,
                 ),
+            )
+
+    def record_execution_log_link(
+        self,
+        *,
+        job_execution_id: str,
+        resource_type: str,
+        resource_execution_key: str | None,
+        resource_url: str | None,
+    ) -> None:
+        self.ensure_ready()
+        now = datetime.now().isoformat(timespec="seconds")
+        with self._connect() as conn:
+            self._upsert_execution_log_link(
+                conn,
+                job_execution_id=job_execution_id,
+                resource_type=resource_type,
+                resource_execution_key=resource_execution_key,
+                resource_url=resource_url,
+                created_at=now,
             )
 
     def list_selection_results(self, limit: int = 50) -> list[dict[str, Any]]:
@@ -358,7 +312,7 @@ class BacktestStorage:
             ).fetchall()
             return [self._selection_row_to_dict(conn, row) for row in rows]
 
-    def get_selection_result(self, run_id: str) -> dict[str, Any] | None:
+    def get_selection_result(self, execution_key: str) -> dict[str, Any] | None:
         self.ensure_ready()
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
@@ -378,7 +332,7 @@ class BacktestStorage:
                 join selection_results sr on sr.execution_id = er.id
                 where er.execution_key = ?
                 """,
-                (run_id,),
+                (execution_key,),
             ).fetchone()
             return None if row is None else self._selection_row_to_dict(conn, row)
 
@@ -407,7 +361,7 @@ class BacktestStorage:
             ).fetchall()
             return [self._backtest_row_to_dict(conn, row) for row in rows]
 
-    def get_backtest_result(self, run_id: str) -> dict[str, Any] | None:
+    def get_backtest_result(self, execution_key: str) -> dict[str, Any] | None:
         self.ensure_ready()
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
@@ -427,11 +381,11 @@ class BacktestStorage:
                 join backtest_results br on br.execution_id = er.id
                 where er.execution_key = ?
                 """,
-                (run_id,),
+                (execution_key,),
             ).fetchone()
             return None if row is None else self._backtest_row_to_dict(conn, row)
 
-    def list_artifacts(self, run_id: str, run_type: str | None = None) -> list[dict[str, Any]]:
+    def list_artifacts(self, execution_key: str, run_type: str | None = None) -> list[dict[str, Any]]:
         self.ensure_ready()
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
@@ -451,7 +405,7 @@ class BacktestStorage:
                     and (? is null or a.artifact_scope = ?)
                 order by a.artifact_type
                 """,
-                (run_id, run_type, run_type),
+                (execution_key, run_type, run_type),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -463,11 +417,54 @@ class BacktestStorage:
         )
 
     def delete_selection_results(self, execution_keys: list[str] | None = None) -> dict[str, Any]:
+        blockers = self.selection_delete_blockers(execution_keys)
+        if blockers:
+            raise SelectionResultInUseError(blockers)
         return self._delete_runs(
             run_type=ExecutionType.SELECTION.value,
             child_table="selection_results",
             execution_keys=execution_keys,
         )
+
+    def selection_delete_blockers(self, execution_keys: list[str] | None = None) -> list[dict[str, Any]]:
+        self.ensure_ready()
+        normalized_execution_keys = normalize_execution_keys(execution_keys)
+        if normalized_execution_keys == []:
+            return []
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            params: tuple[Any, ...] = ()
+            where_sql = ""
+            if normalized_execution_keys is not None:
+                placeholder_sql = make_placeholders(len(normalized_execution_keys))
+                where_sql = f"where sel.execution_key in ({placeholder_sql})"
+                params = tuple(normalized_execution_keys)
+            rows = conn.execute(
+                f"""
+                select
+                    sel.execution_key as selection_execution_key,
+                    bt.execution_key as backtest_execution_key
+                from backtest_selection_links link
+                join executions sel on sel.id = link.selection_execution_id
+                join executions bt on bt.id = link.backtest_execution_id
+                join selection_results sr on sr.execution_id = sel.id
+                join backtest_results br on br.execution_id = bt.id
+                {where_sql}
+                order by sel.created_at desc, bt.created_at desc
+                """,
+                params,
+            ).fetchall()
+
+        grouped: dict[str, list[str]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["selection_execution_key"]), []).append(str(row["backtest_execution_key"]))
+        return [
+            {
+                "selection_execution_key": selection_key,
+                "backtest_execution_keys": backtest_keys,
+            }
+            for selection_key, backtest_keys in grouped.items()
+        ]
 
     def artifact_path(self, storage_key: str) -> Path:
         return self.objects_root / storage_key
@@ -482,20 +479,20 @@ class BacktestStorage:
         self,
         conn: sqlite3.Connection,
         *,
-        run_id: str,
+        execution_key: str,
         execution_type: ExecutionType,
         status: str,
         created_at: str,
         finished_at: str,
         object_dir_key: str,
     ) -> int:
-        execution_type = _ensure_execution_type(execution_type)
+        execution_type = ensure_execution_type(execution_type)
         existing = conn.execute(
             "select id, execution_type, created_at from executions where execution_key = ?",
-            (run_id,),
+            (execution_key,),
         ).fetchone()
         if existing is not None:
-            existing_type = _ensure_execution_type(str(existing[1]))
+            existing_type = ensure_execution_type(str(existing[1]))
             if existing_type != execution_type:
                 execution_type = ExecutionType.SELECTION_BACKTEST
             created_at = str(existing[2] or created_at)
@@ -515,15 +512,15 @@ class BacktestStorage:
                 finished_at = excluded.finished_at,
                 object_dir_key = excluded.object_dir_key
             """,
-            (run_id, execution_type.value, status, created_at, finished_at, object_dir_key),
+            (execution_key, execution_type.value, status, created_at, finished_at, object_dir_key),
         )
-        existing_id = self._get_execution_id(conn, run_id)
+        existing_id = self._get_execution_id(conn, execution_key)
         if existing_id is None:
-            raise RuntimeError(f"execution 写入失败: {run_id}")
+            raise RuntimeError(f"execution 写入失败: {execution_key}")
         return existing_id
 
-    def _get_execution_id(self, conn: sqlite3.Connection, run_id: str) -> int | None:
-        row = conn.execute("select id from executions where execution_key = ?", (run_id,)).fetchone()
+    def _get_execution_id(self, conn: sqlite3.Connection, execution_key: str) -> int | None:
+        row = conn.execute("select id from executions where execution_key = ?", (execution_key,)).fetchone()
         return None if row is None else int(row[0])
 
     def _upsert_execution_item(
@@ -537,7 +534,7 @@ class BacktestStorage:
         item_class: str,
         description: str,
     ) -> int:
-        item_type = _ensure_execution_item_type(item_type)
+        item_type = ensure_execution_item_type(item_type)
         clean_key = item_key.strip()
         if not clean_key:
             raise ValueError("execution item key 不能为空")
@@ -579,7 +576,7 @@ class BacktestStorage:
         if item_type is None:
             conn.execute("delete from execution_items where execution_id = ?", (execution_id,))
             return
-        item_type = _ensure_execution_item_type(item_type)
+        item_type = ensure_execution_item_type(item_type)
         conn.execute(
             "delete from execution_items where execution_id = ? and item_type = ?",
             (execution_id, item_type.value),
@@ -588,7 +585,7 @@ class BacktestStorage:
     def _replace_params(self, conn: sqlite3.Connection, execution_item_id: int, params: Mapping[str, Any]) -> None:
         conn.execute("delete from execution_item_params where execution_item_id = ?", (execution_item_id,))
         for key, value in sorted(params.items()):
-            value_text, value_type = _serialize_value(value)
+            value_text, value_type = serialize_value(value)
             conn.execute(
                 """
                 insert into execution_item_params (
@@ -604,7 +601,7 @@ class BacktestStorage:
     def _replace_metrics(self, conn: sqlite3.Connection, execution_item_id: int, metrics: Mapping[str, Any]) -> None:
         conn.execute("delete from execution_item_metrics where execution_item_id = ?", (execution_item_id,))
         for key, value in sorted(metrics.items()):
-            value_text, value_type = _serialize_value(value)
+            value_text, value_type = serialize_value(value)
             conn.execute(
                 """
                 insert into execution_item_metrics (
@@ -619,7 +616,7 @@ class BacktestStorage:
 
     def _upsert_metrics(self, conn: sqlite3.Connection, execution_item_id: int, metrics: Mapping[str, Any]) -> None:
         for key, value in sorted(metrics.items()):
-            value_text, value_type = _serialize_value(value)
+            value_text, value_type = serialize_value(value)
             conn.execute(
                 """
                 insert into execution_item_metrics (
@@ -638,7 +635,7 @@ class BacktestStorage:
     def _selection_row_to_dict(self, conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         execution_items = self._execution_items(conn, int(row["execution_id"]), ExecutionItemType.SELECTION_STRATEGY)
         strategies = [item["item_name"] for item in execution_items]
-        snapshots = [_item_to_strategy_snapshot(item) for item in execution_items]
+        snapshots = [item_to_strategy_snapshot(item) for item in execution_items]
         summary = []
         for item in execution_items:
             metrics = item["metrics"]
@@ -646,8 +643,8 @@ class BacktestStorage:
                 {
                     "strategy": item["item_name"],
                     "date": row["selection_date"],
-                    "count": _coerce_metric(metrics.get("selected_count"), 0),
-                    "elapsed_seconds": _coerce_metric(metrics.get("elapsed_seconds"), 0.0),
+                    "count": coerce_metric(metrics.get("selected_count"), 0),
+                    "elapsed_seconds": coerce_metric(metrics.get("elapsed_seconds"), 0.0),
                 }
             )
         return {
@@ -669,7 +666,7 @@ class BacktestStorage:
         capital_items = self._execution_items(conn, int(row["execution_id"]), ExecutionItemType.CAPITAL_MODEL)
         trade_items = self._execution_items(conn, int(row["execution_id"]), ExecutionItemType.TRADE_STRATEGY)
         strategies = [item["item_name"] for item in strategy_items]
-        snapshots = [_item_to_strategy_snapshot(item) for item in strategy_items]
+        snapshots = [item_to_strategy_snapshot(item) for item in strategy_items]
         summary = []
         for item in strategy_items:
             metrics = item["metrics"]
@@ -693,8 +690,85 @@ class BacktestStorage:
             "summary": summary,
             "object_dir_key": row["object_dir_key"],
             "signal_dir": row["signal_dir"],
+            "selection_execution_keys": self._linked_selection_keys(conn, int(row["execution_id"])),
             "trade_rule": trade_rule["params"] if trade_rule else {},
         }
+
+    def _replace_backtest_selection_links(
+        self,
+        conn: sqlite3.Connection,
+        backtest_execution_id: int,
+        selection_execution_keys: list[str],
+    ) -> None:
+        conn.execute(
+            "delete from backtest_selection_links where backtest_execution_id = ?",
+            (backtest_execution_id,),
+        )
+        now = datetime.now().isoformat(timespec="seconds")
+        for selection_key in selection_execution_keys:
+            selection_id = self._get_execution_id(conn, selection_key)
+            if selection_id is None:
+                continue
+            conn.execute(
+                """
+                insert or ignore into backtest_selection_links (
+                    backtest_execution_id,
+                    selection_execution_id,
+                    created_at
+                ) values (?, ?, ?)
+                """,
+                (backtest_execution_id, selection_id, now),
+            )
+
+    def _linked_selection_keys(self, conn: sqlite3.Connection, backtest_execution_id: int) -> list[str]:
+        rows = conn.execute(
+            """
+            select sel.execution_key
+            from backtest_selection_links link
+            join executions sel on sel.id = link.selection_execution_id
+            where link.backtest_execution_id = ?
+            order by sel.created_at
+            """,
+            (backtest_execution_id,),
+        ).fetchall()
+        return [str(row["execution_key"]) for row in rows]
+
+    def _upsert_execution_log_link(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        job_execution_id: str,
+        resource_type: str,
+        resource_execution_key: str | None,
+        resource_url: str | None,
+        created_at: str,
+    ) -> None:
+        clean_job_id = str(job_execution_id or "").strip()
+        clean_resource_type = str(resource_type or "").strip()
+        if not clean_job_id or not clean_resource_type:
+            return
+        conn.execute(
+            """
+            insert into execution_log_links (
+                job_execution_id,
+                resource_type,
+                resource_execution_key,
+                resource_url,
+                created_at
+            ) values (?, ?, ?, ?, ?)
+            on conflict(job_execution_id) do update set
+                resource_type = excluded.resource_type,
+                resource_execution_key = excluded.resource_execution_key,
+                resource_url = excluded.resource_url
+            """,
+            (
+                clean_job_id,
+                clean_resource_type,
+                str(resource_execution_key).strip() if resource_execution_key else None,
+                str(resource_url).strip() if resource_url else None,
+                created_at,
+            ),
+        )
 
     def _execution_items(
         self,
@@ -702,7 +776,7 @@ class BacktestStorage:
         execution_id: int,
         item_type: ExecutionItemType,
     ) -> list[dict[str, Any]]:
-        item_type = _ensure_execution_item_type(item_type)
+        item_type = ensure_execution_item_type(item_type)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
@@ -751,11 +825,11 @@ class BacktestStorage:
             """,
             (row_id,),
         ).fetchall()
-        return {str(row["key"]): _deserialize_value(row["value"], row["value_type"]) for row in rows}
+        return {str(row["key"]): deserialize_value(row["value"], row["value_type"]) for row in rows}
 
     def _delete_runs(self, *, run_type: str, child_table: str, execution_keys: list[str] | None) -> dict[str, Any]:
         self.ensure_ready()
-        normalized_execution_keys = _normalize_execution_keys(execution_keys)
+        normalized_execution_keys = normalize_execution_keys(execution_keys)
         run_type = str(run_type)
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
@@ -768,9 +842,9 @@ class BacktestStorage:
                     """
                 ).fetchall()
             elif not normalized_execution_keys:
-                return _delete_result(run_type, requested=0, deleted=0)
+                return delete_result(run_type, requested=0, deleted=0)
             else:
-                placeholders = _placeholders(len(normalized_execution_keys))
+                placeholders = make_placeholders(len(normalized_execution_keys))
                 rows = conn.execute(
                     f"""
                     select er.id, er.execution_key, er.object_dir_key
@@ -786,7 +860,12 @@ class BacktestStorage:
             root_keys: list[str] = []
             scope_dir_keys: list[str] = []
             if execution_ids:
-                placeholders = _placeholders(len(execution_ids))
+                placeholders = make_placeholders(len(execution_ids))
+                if run_type == ExecutionType.BACKTEST.value:
+                    conn.execute(
+                        f"delete from backtest_selection_links where backtest_execution_id in ({placeholders})",
+                        tuple(execution_ids),
+                    )
                 artifact_rows = conn.execute(
                     f"""
                     select storage_key
@@ -830,15 +909,15 @@ class BacktestStorage:
                     if int(row["id"]) in orphan_ids:
                         root_keys.append(object_key)
                     else:
-                        scope_dir_keys.append(_scoped_dir_key(object_key, run_type))
+                        scope_dir_keys.append(scoped_dir_key(object_key, run_type))
                 if orphan_ids:
-                    orphan_placeholders = _placeholders(len(orphan_ids))
+                    orphan_placeholders = make_placeholders(len(orphan_ids))
                     conn.execute(
                         f"delete from executions where id in ({orphan_placeholders})",
                         tuple(orphan_ids),
                     )
 
-        storage_keys = _dedupe_storage_keys([*root_keys, *scope_dir_keys, *artifact_keys])
+        storage_keys = dedupe_storage_keys([*root_keys, *scope_dir_keys, *artifact_keys])
         file_errors = [error for error in (self._delete_storage_key(key) for key in storage_keys) if error]
         requested = len(normalized_execution_keys) if normalized_execution_keys is not None else len(deleted_execution_keys)
         missing = [] if normalized_execution_keys is None else [
@@ -882,284 +961,3 @@ class BacktestStorage:
         conn = sqlite3.connect(self.db_path)
         conn.execute("pragma foreign_keys = on")
         return conn
-
-    def _ensure_artifacts_scope_schema(self, conn: sqlite3.Connection) -> None:
-        columns = {row[1] for row in conn.execute("pragma table_info(artifacts)").fetchall()}
-        if "artifact_scope" in columns:
-            return
-
-        conn.execute("alter table artifacts rename to artifacts_old")
-        conn.execute(
-            """
-            create table artifacts (
-                id integer primary key autoincrement,
-                execution_id integer not null,
-                artifact_scope text not null,
-                artifact_type text not null,
-                storage_key text not null,
-                mime_type text,
-                size_bytes integer,
-                checksum text,
-                created_at text not null,
-                foreign key (execution_id) references executions(id) on delete cascade,
-                unique (execution_id, artifact_scope, artifact_type)
-            )
-            """
-        )
-
-        old_columns = {row[1] for row in conn.execute("pragma table_info(artifacts_old)").fetchall()}
-        if "execution_id" in old_columns:
-            artifact_scope_expr = (
-                "run_type"
-                if "run_type" in old_columns
-                else """
-                case
-                    when artifact_type in ('signals_json', 'picks_parquet') then 'selection'
-                    else 'backtest'
-                end
-                """
-            )
-            conn.execute(
-                f"""
-                insert or ignore into artifacts (
-                    id,
-                    execution_id,
-                    artifact_scope,
-                    artifact_type,
-                    storage_key,
-                    mime_type,
-                    size_bytes,
-                    checksum,
-                    created_at
-                )
-                select
-                    id,
-                    execution_id,
-                    {artifact_scope_expr},
-                    artifact_type,
-                    storage_key,
-                    mime_type,
-                    size_bytes,
-                    checksum,
-                    created_at
-                from artifacts_old
-                """
-            )
-        elif "run_id" in old_columns:
-            artifact_scope_expr = "ao.run_type" if "run_type" in old_columns else "'backtest'"
-            conn.execute(
-                f"""
-                insert or ignore into artifacts (
-                    id,
-                    execution_id,
-                    artifact_scope,
-                    artifact_type,
-                    storage_key,
-                    mime_type,
-                    size_bytes,
-                    checksum,
-                    created_at
-                )
-                select
-                    ao.id,
-                    er.id,
-                    {artifact_scope_expr},
-                    ao.artifact_type,
-                    ao.storage_key,
-                    ao.mime_type,
-                    ao.size_bytes,
-                    ao.checksum,
-                    ao.created_at
-                from artifacts_old ao
-                join executions er on er.execution_key = ao.run_id
-                """
-            )
-        conn.execute("drop table artifacts_old")
-
-
-def _ensure_execution_type(value: ExecutionType | str) -> ExecutionType:
-    try:
-        return value if isinstance(value, ExecutionType) else ExecutionType(str(value))
-    except ValueError as exc:
-        raise ValueError(f"非法 execution type: {value}") from exc
-
-
-def _ensure_execution_item_type(value: ExecutionItemType | str) -> ExecutionItemType:
-    try:
-        return value if isinstance(value, ExecutionItemType) else ExecutionItemType(str(value))
-    except ValueError as exc:
-        raise ValueError(f"非法 execution item type: {value}") from exc
-
-
-def _execution_type_from_legacy(value: str) -> ExecutionType:
-    return ExecutionType.SELECTION if str(value) == "selection" else ExecutionType.BACKTEST
-
-
-def _snapshots_in_order(strategy_names: list[str], strategy_snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    by_name = {
-        str(item.get("name") or ""): item
-        for item in strategy_snapshots
-        if isinstance(item, dict)
-    }
-    result = []
-    for name in strategy_names:
-        result.append(by_name.get(name, {"name": name, "class": "", "description": "", "params": {}}))
-    return result
-
-
-def _selection_metrics(summary: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "selected_count": summary.get("count", 0),
-        "elapsed_seconds": summary.get("elapsed_seconds", 0.0),
-    }
-
-
-def _backtest_metrics(summary: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in summary.items() if key != "strategy"}
-
-
-def _item_to_strategy_snapshot(item: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "name": item.get("item_name") or item.get("item_key") or "",
-        "class": item.get("item_class") or "",
-        "description": item.get("description") or "",
-        "params": dict(item.get("params") or {}),
-    }
-
-
-def _serialize_value(value: Any) -> tuple[str | None, str]:
-    value = _native_scalar(value)
-    if value is None:
-        return None, "null"
-    if isinstance(value, bool):
-        return "true" if value else "false", "boolean"
-    if isinstance(value, int) and not isinstance(value, bool):
-        return str(value), "integer"
-    if isinstance(value, float):
-        return repr(float(value)), "number"
-    if isinstance(value, (list, dict)):
-        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str), "json"
-    return str(value), "string"
-
-
-def _deserialize_value(value: Any, value_type: Any) -> Any:
-    if value_type == "null":
-        return None
-    if value is None:
-        return None
-    text = str(value)
-    if value_type == "boolean":
-        return text.lower() == "true"
-    if value_type == "integer":
-        try:
-            return int(text)
-        except ValueError:
-            return text
-    if value_type == "number":
-        try:
-            return float(text)
-        except ValueError:
-            parsed = _parse_legacy_numpy_scalar(text)
-            return parsed if parsed is not None else text
-    if value_type == "json":
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            return text
-    parsed = _parse_legacy_numpy_scalar(text)
-    return parsed if parsed is not None else text
-
-
-def _native_scalar(value: Any) -> Any:
-    if _is_numpy_scalar(value):
-        try:
-            return value.item()
-        except Exception:
-            return value
-    return value
-
-
-def _is_numpy_scalar(value: Any) -> bool:
-    module = type(value).__module__
-    return module == "numpy" or module.startswith("numpy.")
-
-
-def _parse_legacy_numpy_scalar(text: str) -> float | int | bool | None:
-    normalized = text.strip()
-    if normalized in {"np.True_", "np.bool_(True)"}:
-        return True
-    if normalized in {"np.False_", "np.bool_(False)"}:
-        return False
-
-    match = re.fullmatch(r"np\.(?:float\d*|int\d*)\(([-+0-9.eE]+)\)", normalized)
-    if not match:
-        return None
-    raw = match.group(1)
-    try:
-        value = float(raw)
-    except ValueError:
-        return None
-    if not math.isfinite(value):
-        return None
-    return int(value) if normalized.startswith("np.int") and value.is_integer() else value
-
-
-def _coerce_metric(value: Any, fallback: Any) -> Any:
-    return fallback if value is None else value
-
-
-def _delete_result(run_type: str, *, requested: int, deleted: int) -> dict[str, Any]:
-    return {
-        "result_type": run_type,
-        "requested": requested,
-        "deleted": deleted,
-        "missing": [],
-        "file_errors": [],
-    }
-
-
-def _normalize_execution_keys(execution_keys: list[str] | None) -> list[str] | None:
-    if execution_keys is None:
-        return None
-    normalized = []
-    seen = set()
-    for value in execution_keys:
-        execution_key = str(value or "").strip()
-        if not execution_key or execution_key in seen:
-            continue
-        normalized.append(execution_key)
-        seen.add(execution_key)
-    return normalized
-
-
-def _placeholders(count: int) -> str:
-    return ",".join("?" for _ in range(count))
-
-
-def _dedupe_storage_keys(storage_keys: list[str]) -> list[str]:
-    normalized = [key for key in dict.fromkeys(storage_keys) if key]
-    directories = [key.rstrip("/") for key in normalized]
-    result = []
-    for key in normalized:
-        clean_key = key.rstrip("/")
-        if any(clean_key != directory and clean_key.startswith(f"{directory}/") for directory in directories):
-            continue
-        result.append(key)
-    return result
-
-
-def _scoped_dir_key(object_dir_key: str, run_type: str) -> str:
-    clean_key = str(object_dir_key or "").rstrip("/")
-    if not clean_key:
-        return ""
-    if run_type not in {ExecutionType.SELECTION.value, ExecutionType.BACKTEST.value}:
-        return clean_key
-    return f"{clean_key}/{run_type}"
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()

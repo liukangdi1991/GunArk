@@ -12,3 +12,7 @@ deploy/configs.json
 deploy/stocklist.csv
 deploy/data/
 deploy/backups/
+.release/
+bin/*.zip
+bin/*.tar.gz
+bin/*.tgz

@@ -4,6 +4,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from core.storage import SelectionResultInUseError
 from web.schemas.selection import BatchSelectionRequest, DeleteSelectionResultsRequest, SelectionRequest
 from web.services import selection_service
 
@@ -34,7 +35,10 @@ def get_selection(execution_key: str) -> dict[str, Any]:
 
 
 def delete_selection(execution_key: str) -> dict[str, Any]:
-    result = selection_service.delete_selection(execution_key)
+    try:
+        result = selection_service.delete_selection(execution_key)
+    except SelectionResultInUseError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if result["deleted"] == 0:
         raise HTTPException(status_code=404, detail="execution 不存在")
     return result
@@ -42,4 +46,7 @@ def delete_selection(execution_key: str) -> dict[str, Any]:
 
 def delete_selections(payload: DeleteSelectionResultsRequest | None = None) -> dict[str, Any]:
     execution_keys = payload.execution_keys if payload else None
-    return selection_service.delete_selections(execution_keys=execution_keys)
+    try:
+        return selection_service.delete_selections(execution_keys=execution_keys)
+    except SelectionResultInUseError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
