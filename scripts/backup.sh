@@ -12,6 +12,6 @@ BACKUP_DIR="${BACKUP_DIR:-${PROJECT_ROOT}/deploy/backups}"
 mkdir -p "${BACKUP_DIR}"
 
 ARCHIVE="${BACKUP_DIR}/${APP_SLUG}-$(date +%Y%m%d_%H%M%S).tar.gz"
-tar -czf "${ARCHIVE}" -C "${PROJECT_ROOT}/deploy" configs.json stocklist.csv data
+tar -czf "${ARCHIVE}" -C "${PROJECT_ROOT}/deploy" .env data
 
 echo "备份完成: ${ARCHIVE}"

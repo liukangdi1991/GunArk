@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import errno
+import os
+import threading
 import time
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -30,6 +33,7 @@ TRADE_CAL_LOOKBACK_DAYS = 45
 DEFAULT_CALENDAR_START_YEAR = 2019
 ProgressCallback = Callable[[int, int, str], None]
 LogCallback = Callable[..., None]
+_STOCKLIST_LOCK = threading.Lock()
 
 
 def fetch_market_data(
@@ -230,14 +234,43 @@ def _refresh_stocklist_from_tushare(*, log: LogCallback | None = None) -> dict[s
     df["symbol"] = df["symbol"].astype(str).str.zfill(6)
     df = df.drop_duplicates(subset=["symbol"]).sort_values("symbol")
 
-    tmp_path = STOCKLIST.with_name(f"{STOCKLIST.name}.tmp")
-    df.to_csv(tmp_path, index=False, encoding="utf-8")
-    tmp_path.replace(STOCKLIST)
+    try:
+        _write_stocklist(df, log=log)
+    except Exception as exc:  # noqa: BLE001 - kline sync can continue with the existing stocklist.
+        if log:
+            log(f"股票列表写入失败，继续使用现有 stocklist.csv: {exc}", "WARN")
+        return {"refreshed": False, "count": _stocklist_count()}
 
     count = len(df)
     if log:
         log(f"股票列表已更新: {count} 只股票")
     return {"refreshed": True, "count": count}
+
+
+def _write_stocklist(df: Any, *, log: LogCallback | None = None) -> None:
+    """Write stocklist with an atomic path, falling back for Docker file mounts."""
+    STOCKLIST.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = STOCKLIST.with_name(
+        f".{STOCKLIST.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
+    with _STOCKLIST_LOCK:
+        try:
+            df.to_csv(tmp_path, index=False, encoding="utf-8")
+            tmp_path.replace(STOCKLIST)
+        except OSError as exc:
+            tmp_path.unlink(missing_ok=True)
+            if exc.errno not in {errno.EBUSY, errno.EXDEV, errno.EPERM, errno.EACCES}:
+                raise
+            if log:
+                log(
+                    "stocklist.csv 无法原子替换，可能是 Docker 单文件挂载；"
+                    "已改用直接覆盖写入。",
+                    "WARN",
+                )
+            with STOCKLIST.open("w", encoding="utf-8", newline="") as fh:
+                df.to_csv(fh, index=False)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
 
 def _stocklist_count() -> int:

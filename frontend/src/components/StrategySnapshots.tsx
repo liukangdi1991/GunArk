@@ -155,6 +155,19 @@ function describeStrategy(strategy: Strategy): string[] {
     return lines;
   }
 
+  if (strategy.class === "VolumeSpikeBalanceSelector") {
+    lines.push(
+      `近 ${numberParam(params, "volume_spike_lookback") ?? "-"} 个交易日中存在上涨倍量柱，成交量大于前一日的 ${numberParam(params, "volume_spike_multiple") ?? "-"} 倍。`,
+    );
+    lines.push(`倍量柱到选股日需大于 ${numberParam(params, "min_spike_elapsed_days") ?? "-"} 个交易日。`);
+    lines.push("选股当日成交量是倍量柱到选股日以来最低。");
+    lines.push(
+      `最近 ${numberParam(params, "zx_stick_window") ?? "-"} 个交易日每天两线黏合，相对距离小于 ${formatRatio(numberParam(params, "zx_stick_limit_threshold"))}。`,
+    );
+    lines.push("选股当日收盘价低于长期多空线。");
+    return lines;
+  }
+
   return fallbackLines.length ? fallbackLines : ["未配置策略说明，本次报告已保存运行时策略快照。"];
 }
 

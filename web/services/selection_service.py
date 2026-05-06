@@ -12,7 +12,7 @@ import polars as pl
 
 from selection.config import load_default_strategy_aliases, load_strategies_from_config
 from selection.data import load_data_table, table_to_data_dict
-from selection.runners import build_strategy_runner
+from selection.execution import build_strategy_runner
 from web.core.config import ROOT, storage
 from web.schemas.selection import BatchSelectionRequest, SelectionRequest
 from web.services import market_service

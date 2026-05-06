@@ -5,15 +5,16 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
-from selection.strategies import (
+from selection.selectors import (
     BBIKDJSelector,
-    SuperB1Selector,
-    PeakKDJSelector,
     BBIShortLongSelector,
-    MA60CrossVolumeWaveSelector,
-    ZXDKXBalanceSelector,
-    PerfectB1Selector,
     BigBullishVolumeSelector,
+    MA60CrossVolumeWaveSelector,
+    PeakKDJSelector,
+    PerfectB1Selector,
+    SuperB1Selector,
+    VolumeSpikeBalanceSelector,
+    ZXDKXBalanceSelector,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ STRATEGY_EMOJIS = {
     "ZXDKXBalanceSelector": "⚖️",
     "PerfectB1Selector": "🌟",
     "BigBullishVolumeSelector": "💪",
+    "VolumeSpikeBalanceSelector": "⚖️",
 }
 
 # 类名到类的映射
@@ -42,6 +44,7 @@ SELECTOR_CLASSES = {
     "ZXDKXBalanceSelector": ZXDKXBalanceSelector,
     "PerfectB1Selector": PerfectB1Selector,
     "BigBullishVolumeSelector": BigBullishVolumeSelector,
+    "VolumeSpikeBalanceSelector": VolumeSpikeBalanceSelector,
 }
 
 FALLBACK_DEFAULT_STRATEGY_ALIASES = ["B1战法", "B1战法（V2）"]

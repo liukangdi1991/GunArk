@@ -18,13 +18,18 @@ EOF
 }
 
 compose() {
+  local env_args=()
+  if [ -f "${PROJECT_ROOT}/deploy/.env" ]; then
+    env_args=(--env-file "${PROJECT_ROOT}/deploy/.env")
+  fi
+
   if docker compose version >/dev/null 2>&1; then
-    docker compose "$@"
+    docker compose "${env_args[@]}" "$@"
     return
   fi
 
   if command -v docker-compose >/dev/null 2>&1; then
-    docker-compose "$@"
+    docker-compose "${env_args[@]}" "$@"
     return
   fi
 
@@ -80,12 +85,20 @@ ensure_deploy_layout() {
     "${PROJECT_ROOT}/deploy/data/storage/cache" \
     "${PROJECT_ROOT}/deploy/data/storage/objects"
 
-  if [ ! -f "${PROJECT_ROOT}/deploy/configs.json" ]; then
-    cp "${PROJECT_ROOT}/configs.json" "${PROJECT_ROOT}/deploy/configs.json"
+  if [ ! -f "${PROJECT_ROOT}/deploy/data/configs.json" ]; then
+    if [ -f "${PROJECT_ROOT}/deploy/configs.json" ]; then
+      cp "${PROJECT_ROOT}/deploy/configs.json" "${PROJECT_ROOT}/deploy/data/configs.json"
+    else
+      cp "${PROJECT_ROOT}/configs.json" "${PROJECT_ROOT}/deploy/data/configs.json"
+    fi
   fi
 
-  if [ ! -f "${PROJECT_ROOT}/deploy/stocklist.csv" ]; then
-    cp "${PROJECT_ROOT}/stocklist.csv" "${PROJECT_ROOT}/deploy/stocklist.csv"
+  if [ ! -f "${PROJECT_ROOT}/deploy/data/stocklist.csv" ]; then
+    if [ -f "${PROJECT_ROOT}/deploy/stocklist.csv" ]; then
+      cp "${PROJECT_ROOT}/deploy/stocklist.csv" "${PROJECT_ROOT}/deploy/data/stocklist.csv"
+    else
+      cp "${PROJECT_ROOT}/stocklist.csv" "${PROJECT_ROOT}/deploy/data/stocklist.csv"
+    fi
   fi
 
   if [ ! -f "${PROJECT_ROOT}/deploy/.env" ]; then

@@ -9,13 +9,11 @@ services:
       - ./deploy/.env
     environment:
       TZ: ${TZ:-Asia/Shanghai}
+      TREND_RADAR_RUNTIME_ROOT: /data
     ports:
       - "${APP_PORT:-8818}:8000"
     volumes:
-      - ./deploy/data/db:/app/db
-      - ./deploy/data/storage:/app/storage
-      - ./deploy/configs.json:/app/configs.json
-      - ./deploy/stocklist.csv:/app/stocklist.csv
+      - ./deploy/data:/data
     restart: unless-stopped
     healthcheck:
       test:

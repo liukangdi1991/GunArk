@@ -40,7 +40,7 @@ uvicorn web.app:app --host 0.0.0.0 --port 8000
 
 ## Docker Compose 部署
 
-推荐使用 Docker Compose 部署成一个服务容器。镜像内包含 FastAPI 后端和 React 构建产物；行情库、SQLite、运行产物、策略配置和股票列表通过宿主机目录挂载，升级镜像不会覆盖业务数据。
+推荐使用 Docker Compose 部署成一个服务容器。镜像内包含 FastAPI 后端和 React 构建产物；容器内 `/app` 只放程序代码，所有运行数据和运行配置统一挂载到 `/data`，升级镜像不会覆盖业务数据。
 
 首次安装并启动：
 
@@ -58,7 +58,7 @@ APP_PORT=8818
 TZ=Asia/Shanghai
 ```
 
-`TUSHARE_TOKEN` 是必填项。`install/start/restart/update` 会在启动前校验该配置，未填写时直接失败，避免启动一个无法拉取行情的半可用服务。容器启动后脚本会自动初始化 `/app/storage/app.db` 表结构。
+`TUSHARE_TOKEN` 是必填项。`install/start/restart/update` 会在启动前校验该配置，未填写时直接失败，避免启动一个无法拉取行情的半可用服务。容器启动后脚本会自动初始化 `/data/storage/app.db` 表结构。
 
 常用命令：
 
@@ -67,7 +67,7 @@ TZ=Asia/Shanghai
 ./scripts/stop.sh       # 停止并删除容器
 ./scripts/restart.sh    # 重新构建并启动
 ./scripts/logs.sh       # 查看容器日志
-./scripts/backup.sh     # 备份 deploy/data、configs.json、stocklist.csv
+./scripts/backup.sh     # 备份 deploy/.env 和 deploy/data
 ```
 
 升级方式：
@@ -87,8 +87,8 @@ Docker Compose 升级会保留宿主机挂载目录和运行配置：
 
 ```text
 deploy/.env
-deploy/configs.json
-deploy/stocklist.csv
+deploy/data/configs.json
+deploy/data/stocklist.csv
 deploy/data/db/
 deploy/data/storage/
 ```
@@ -100,16 +100,16 @@ deploy/data/storage/
 ```text
 deploy/
 ├── .env                 # 端口、Tushare Token、时区
-├── configs.json         # 运行时选股策略配置
-├── stocklist.csv        # 运行时股票基础信息缓存
 └── data/
-    ├── db/              # Parquet 行情库，挂载到容器 /app/db
-    └── storage/         # SQLite、交易日历、选股/回测产物，挂载到容器 /app/storage
+    ├── configs.json     # 运行时选股策略配置，容器内路径 /data/configs.json
+    ├── stocklist.csv    # 运行时股票基础信息缓存，容器内路径 /data/stocklist.csv
+    ├── db/              # Parquet 行情库，容器内路径 /data/db
+    └── storage/         # SQLite、交易日历、选股/回测产物，容器内路径 /data/storage
 ```
 
-首次执行脚本时，如果 `deploy/data/db` 为空，会自动从项目根目录现有的 `db/` 复制一份作为行情库种子数据。`deploy/data/storage` 不会复制项目根目录的历史运行数据；脚本只会创建目录、按需复制交易日历缓存，并在容器启动后初始化 SQLite 表结构，避免把开发环境的选股/回测历史带进生产。
+首次执行脚本时，如果 `deploy/data/configs.json` 或 `deploy/data/stocklist.csv` 不存在，会优先从旧位置 `deploy/configs.json`、`deploy/stocklist.csv` 迁移，否则从项目根目录默认文件复制。如果 `deploy/data/db` 为空，会自动从项目根目录现有的 `db/` 复制一份作为行情库种子数据。`deploy/data/storage` 不会复制项目根目录的历史运行数据；脚本只会创建目录、按需复制交易日历缓存，并在容器启动后初始化 SQLite 表结构，避免把开发环境的选股/回测历史带进生产。
 
-默认访问地址为 `http://localhost:8818`。如需修改端口，调整 `deploy/.env` 中的 `APP_PORT` 后执行 `./scripts/restart.sh`。
+默认访问地址为 `http://localhost:8818`。如需修改端口，调整 `deploy/.env` 中的 `APP_PORT` 后执行 `./scripts/restart.sh`；部署脚本会通过 `--env-file deploy/.env` 把端口配置传给 Docker Compose。
 
 ## 二进制 zip 发布包
 

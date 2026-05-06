@@ -141,6 +141,19 @@
         "vol_lookback_n": 20,
         "vol_multiple": 2.5
       }
+    },
+    {
+      "class": "VolumeSpikeBalanceSelector",
+      "alias": "倍量多空平衡策略",
+      "activate": true,
+      "_comment": "近30个交易日中存在上涨倍量柱；倍量柱到选股日需大于20个交易日；选股日成交量为倍量柱到选股日以来最低；最近10个交易日每天两线都足够黏合；选股日收盘价低于长期多空线。",
+      "params": {
+        "volume_spike_lookback": 30,
+        "volume_spike_multiple": 2.0,
+        "zx_stick_window": 10,
+        "zx_stick_limit_threshold": 0.05,
+        "min_spike_elapsed_days": 20
+      }
     }
   ]
 }

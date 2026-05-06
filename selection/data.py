@@ -42,8 +42,3 @@ def table_to_data_dict(df_all: pl.DataFrame) -> Dict[str, pl.DataFrame]:
     for code, df in df_all.partition_by("code", as_dict=True).items():
         data[code[0]] = df.drop("code")
     return data
-
-
-def load_data(data_dir: str, tickers: Optional[List[str]] = None) -> Dict[str, pl.DataFrame]:
-    """使用 Polars 批量读取 Parquet 文件（旧接口）"""
-    return table_to_data_dict(load_data_table(data_dir, tickers))

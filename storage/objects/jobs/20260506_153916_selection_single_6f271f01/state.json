@@ -1,0 +1,39 @@
+{
+  "execution_id": "20260506_153916_selection_single_6f271f01",
+  "execution_type": "selection_single",
+  "status": "success",
+  "created_at": "2026-05-06T15:39:16",
+  "updated_at": "2026-05-06T15:39:22",
+  "request": {
+    "date": "20260428",
+    "strategies": [
+      "倍量多空平衡策略"
+    ],
+    "tickers": null
+  },
+  "progress_current": 1,
+  "progress_total": 1,
+  "progress_message": "执行完成",
+  "started_at": "2026-05-06T15:39:16",
+  "finished_at": "2026-05-06T15:39:22",
+  "result": {
+    "execution_key": "20260506_153922_20260428",
+    "selection_date": "2026-04-28",
+    "strategies": [
+      "倍量多空平衡策略"
+    ],
+    "summary": [
+      {
+        "strategy": "倍量多空平衡策略",
+        "date": "2026-04-28",
+        "count": 6,
+        "elapsed_seconds": 3.990269184112549
+      }
+    ],
+    "signal_file": "/workspace/github/GunArk/storage/objects/executions/20260506_153922_20260428/selection/signals.json"
+  },
+  "resource_type": "selection_result",
+  "resource_id": "20260506_153922_20260428",
+  "result_url": "/selections/20260506_153922_20260428",
+  "error_message": null
+}
