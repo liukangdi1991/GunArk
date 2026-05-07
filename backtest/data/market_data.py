@@ -60,3 +60,12 @@ class MarketDataProvider:
         if hist.empty:
             return fallback_price
         return float(hist.iloc[-1]["close"])
+
+    def get_previous_close(self, code: str, dt: date) -> Optional[float]:
+        df = self.load_code(code)
+        if df is None:
+            return None
+        hist = df[df["date"] < dt]
+        if hist.empty:
+            return None
+        return float(hist.iloc[-1]["close"])

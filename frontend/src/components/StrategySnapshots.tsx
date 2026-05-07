@@ -67,7 +67,7 @@ function describeTradeRule(
     lines.push("持仓期间若连续两日收盘价低于长期多空线，则在第二日按收盘价触发强制卖出。");
   }
   if (recentLowWindow !== null) {
-    lines.push(`持仓期间若今日收盘价低于买入后截至昨日最近 ${recentLowWindow} 个交易日最低收盘价，则按今日收盘价触发止损卖出。`);
+    lines.push(`持仓期间若今日收盘价低于买入后截至昨日最近 ${recentLowWindow} 个交易日最低价，则按今日收盘价触发止损卖出。`);
   }
   lines.push("如果卖出日跌停无法成交，跌停顺延卖出优先于其他卖出规则。");
 

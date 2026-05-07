@@ -278,7 +278,8 @@ class BacktestEngine:
                 )
                 continue
 
-            if self.config.execution.reject_if_limit_up_on_buy and is_limit_up(row["close"], row["high"]):
+            prev_close = self.market.get_previous_close(code, cur_date)
+            if self.config.execution.reject_if_limit_up_on_buy and is_limit_up(row["open"], prev_close, code=code):
                 skips.append(
                     SkipRecord(
                         strategy=sig.strategy,
@@ -436,7 +437,8 @@ class BacktestEngine:
                 continue
 
             can_sell = True
-            if self.config.execution.postpone_if_limit_down_on_sell and is_limit_down(row["close"], row["low"]):
+            prev_close = self.market.get_previous_close(code, cur_date)
+            if self.config.execution.postpone_if_limit_down_on_sell and is_limit_down(row["close"], prev_close, code=code):
                 pos.planned_sell_attempts += 1
                 can_sell = False
                 if pos.planned_sell_attempts > self.config.execution.max_sell_postpone_days:
@@ -542,6 +544,6 @@ class BacktestEngine:
         if prior_holding.empty:
             return False
 
-        recent_low = float(prior_holding.tail(int(window))["close"].astype(float).min())
+        recent_low = float(prior_holding.tail(int(window))["low"].astype(float).min())
         today_close = float(today.iloc[-1]["close"])
         return today_close < recent_low
