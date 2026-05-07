@@ -130,6 +130,8 @@ def run_backtest(
         "signal_dir": signal_source or cfg.paths.signal_dir,
         "signal_files": [str(path) for path in signal_files] if signal_files else [],
         "selection_execution_keys": selection_execution_keys or [],
+        "selection_from": start.isoformat() if selection_execution_keys else None,
+        "selection_to": end.isoformat() if selection_execution_keys else None,
         "capital_mode": cfg.capital.mode,
         "cash_per_trade": float(cfg.capital.fixed_cash_per_trade),
         "trade_rule": {

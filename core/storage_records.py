@@ -43,9 +43,13 @@ class StorageRecordMapper:
         }
 
     def backtest_row_to_dict(self, conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+        execution_id = int(row["execution_id"])
         strategy_items = self.execution_items(conn, int(row["execution_id"]), ExecutionItemType.SELECTION_STRATEGY)
         capital_items = self.execution_items(conn, int(row["execution_id"]), ExecutionItemType.CAPITAL_MODEL)
         trade_items = self.execution_items(conn, int(row["execution_id"]), ExecutionItemType.TRADE_STRATEGY)
+        selection_dates = self.linked_selection_dates(conn, execution_id)
+        selection_from = selection_dates[0] if selection_dates else None
+        selection_to = selection_dates[-1] if selection_dates else None
         strategies = [item["item_name"] for item in strategy_items]
         snapshots = [item_to_strategy_snapshot(item) for item in strategy_items]
         summary = []
@@ -71,9 +75,24 @@ class StorageRecordMapper:
             "summary": summary,
             "object_dir_key": row["object_dir_key"],
             "signal_dir": row["signal_dir"],
-            "selection_execution_keys": self.storage._linked_selection_keys(conn, int(row["execution_id"])),
+            "selection_execution_keys": self.storage._linked_selection_keys(conn, execution_id),
+            "selection_from": selection_from,
+            "selection_to": selection_to,
             "trade_rule": trade_rule["params"] if trade_rule else {},
         }
+
+    def linked_selection_dates(self, conn: sqlite3.Connection, backtest_execution_id: int) -> list[str]:
+        rows = conn.execute(
+            """
+            select sr.selection_date
+            from backtest_selection_links link
+            join selection_results sr on sr.execution_id = link.selection_execution_id
+            where link.backtest_execution_id = ?
+            order by sr.selection_date
+            """,
+            (backtest_execution_id,),
+        ).fetchall()
+        return [str(row["selection_date"]) for row in rows if row["selection_date"]]
 
     def execution_items(
         self,

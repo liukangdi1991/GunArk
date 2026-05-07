@@ -19,6 +19,10 @@ export interface SelectionResult {
   status: string;
   summary: SelectionSummary[];
   object_dir_key?: string;
+  selection_group_key?: string;
+  selection_from?: string | null;
+  selection_to?: string | null;
+  selection_execution_keys?: string[];
 }
 
 export interface SelectionPick {

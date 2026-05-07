@@ -31,6 +31,42 @@ def test_selection_new_package_imports_are_available():
     assert compute_zx_lines is not None
 
 
+def test_selection_batch_group_meta_exposes_range_and_keys(tmp_path):
+    import json
+
+    from web.services.selection_service import _selection_group_meta_from_jobs_root
+
+    job_dir = tmp_path / "jobs" / "job_20260401_20260403"
+    job_dir.mkdir(parents=True)
+    (job_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "execution_id": "job_20260401_20260403",
+                "execution_type": "selection_batch",
+                "result": {
+                    "trade_from": "2026-04-01",
+                    "trade_to": "2026-04-03",
+                    "results": [
+                        {"execution_key": "selection_20260401", "selection_date": "2026-04-01"},
+                        {"execution_key": "selection_20260403", "selection_date": "2026-04-03"},
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    meta = _selection_group_meta_from_jobs_root(tmp_path / "jobs")
+
+    assert meta["selection_20260401"]["selection_from"] == "2026-04-01"
+    assert meta["selection_20260401"]["selection_to"] == "2026-04-03"
+    assert meta["selection_20260401"]["selection_group_key"] == "job_20260401_20260403"
+    assert meta["selection_20260401"]["selection_execution_keys"] == [
+        "selection_20260401",
+        "selection_20260403",
+    ]
+
+
 def test_volume_spike_balance_selector_import_and_runner():
     from selection.execution import build_strategy_runner
     from selection.execution.runners import VolumeSpikeBalanceSelectionRunner

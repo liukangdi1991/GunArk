@@ -54,3 +54,18 @@ export function compactStrategyNames(strategies: string[] = []): string {
   }
   return `${strategies.slice(0, 2).join("、")} 等 ${strategies.length} 个`;
 }
+
+export function formatDateRange(from?: string | null, to?: string | null): string {
+  const cleanFrom = String(from || "").trim();
+  const cleanTo = String(to || "").trim();
+  if (!cleanFrom && !cleanTo) {
+    return "-";
+  }
+  if (!cleanFrom) {
+    return cleanTo;
+  }
+  if (!cleanTo || cleanFrom === cleanTo) {
+    return cleanFrom;
+  }
+  return `${cleanFrom} ~ ${cleanTo}`;
+}

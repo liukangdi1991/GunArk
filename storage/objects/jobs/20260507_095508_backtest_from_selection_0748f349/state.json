@@ -1,0 +1,35 @@
+{
+  "execution_id": "20260507_095508_backtest_from_selection_0748f349",
+  "execution_type": "backtest_from_selection",
+  "status": "success",
+  "created_at": "2026-05-07T09:55:08",
+  "updated_at": "2026-05-07T09:55:10",
+  "request": {
+    "selection_execution_keys": [
+      "20260506_151115_20260414"
+    ],
+    "strategies": null,
+    "mode": "unlimited_cash",
+    "cash_per_trade": 10000.0,
+    "run_name": null
+  },
+  "progress_current": 1,
+  "progress_total": 1,
+  "progress_message": "执行完成",
+  "started_at": "2026-05-07T09:55:08",
+  "finished_at": "2026-05-07T09:55:10",
+  "result": {
+    "execution_key": "bt_20260507_095509_ec1310",
+    "run_dir": "/workspace/github/GunArk/storage/objects/executions/bt_20260507_095509_ec1310/backtest",
+    "strategies": [
+      "倍量多空平衡策略"
+    ],
+    "selection_execution_keys": [
+      "20260506_151115_20260414"
+    ]
+  },
+  "resource_type": "backtest_result",
+  "resource_id": "bt_20260507_095509_ec1310",
+  "result_url": "/backtests/bt_20260507_095509_ec1310",
+  "error_message": null
+}

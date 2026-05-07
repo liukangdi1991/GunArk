@@ -5,7 +5,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { ParamsSnapshot, StrategySnapshots } from "../../components/StrategySnapshots";
 import { getBacktestReport } from "../../services/backtests";
 import type { BacktestReportResponse, BacktestSummary } from "../../types/backtest";
-import { formatPercent, parseFiniteNumber } from "../../utils/format";
+import { formatDateRange, formatPercent, parseFiniteNumber } from "../../utils/format";
 import { formatPlainPercent } from "./components/BacktestSignedValue";
 import { skipColumns, summaryColumns, tradeColumns } from "./components/BacktestReportTables";
 import { TradeReturnTrendCards } from "./components/TradeReturnTrendCards";
@@ -140,6 +140,12 @@ export function BacktestReportPage() {
                       <Text className="metric-range-label">to</Text>
                       <Text className="metric-range-value">{run.end_date}</Text>
                     </div>
+                    {run.selection_from || run.selection_to ? (
+                      <div className="metric-range-row">
+                        <Text className="metric-range-label">选股</Text>
+                        <Text className="metric-range-value">{formatDateRange(run.selection_from, run.selection_to)}</Text>
+                      </div>
+                    ) : null}
                   </div>
                 </Card>
               </Col>

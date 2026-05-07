@@ -270,7 +270,24 @@ def _run_selection_for_date(
 
 
 def list_selections(limit: int = 50) -> dict[str, Any]:
-    return {"results": storage.list_selection_results(limit=limit)}
+    results = storage.list_selection_results(limit=limit)
+    group_meta = _selection_group_meta_from_jobs_root(storage.objects_root / "jobs")
+    for result in results:
+        execution_key = str(result.get("execution_key") or "")
+        meta = group_meta.get(execution_key)
+        if meta:
+            result.update(meta)
+            continue
+        selection_date = str(result.get("selection_date") or "")
+        result.update(
+            {
+                "selection_group_key": execution_key,
+                "selection_from": selection_date,
+                "selection_to": selection_date,
+                "selection_execution_keys": [execution_key] if execution_key else [],
+            }
+        )
+    return {"results": results}
 
 
 def get_selection(execution_key: str) -> dict[str, Any] | None:
@@ -290,6 +307,48 @@ def delete_selection(execution_key: str) -> dict[str, Any]:
 
 def delete_selections(execution_keys: list[str] | None = None) -> dict[str, Any]:
     return storage.delete_selection_results(execution_keys)
+
+
+def _selection_group_meta_from_jobs_root(jobs_root: Path) -> dict[str, dict[str, Any]]:
+    if not jobs_root.exists():
+        return {}
+
+    by_selection_key: dict[str, dict[str, Any]] = {}
+    for state_path in sorted(jobs_root.glob("*/state.json")):
+        try:
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if str(payload.get("execution_type") or "") != "selection_batch":
+            continue
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            continue
+        rows = [item for item in (result.get("results") or []) if isinstance(item, dict)]
+        execution_keys = [
+            str(item.get("execution_key") or "").strip()
+            for item in rows
+            if str(item.get("execution_key") or "").strip()
+        ]
+        if not execution_keys:
+            continue
+        dates = sorted(
+            str(item.get("selection_date") or "").strip()
+            for item in rows
+            if str(item.get("selection_date") or "").strip()
+        )
+        selection_from = str(result.get("trade_from") or (dates[0] if dates else "")).strip()
+        selection_to = str(result.get("trade_to") or (dates[-1] if dates else selection_from)).strip()
+        group_key = str(payload.get("execution_id") or state_path.parent.name).strip()
+        meta = {
+            "selection_group_key": group_key,
+            "selection_from": selection_from,
+            "selection_to": selection_to,
+            "selection_execution_keys": execution_keys,
+        }
+        for execution_key in execution_keys:
+            by_selection_key[execution_key] = meta
+    return by_selection_key
 
 
 def _resolve_strategy_names(

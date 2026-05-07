@@ -34,6 +34,8 @@ export interface BacktestResult {
   object_dir_key?: string;
   signal_dir?: string | null;
   selection_execution_keys?: string[];
+  selection_from?: string | null;
+  selection_to?: string | null;
   trade_rule?: Record<string, unknown>;
 }
 

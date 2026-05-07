@@ -1,0 +1,39 @@
+{
+  "execution_key": "bt_20260507_094707_6932b3",
+  "created_at": "2026-05-07T09:47:07",
+  "from": "2026-04-03",
+  "to": "2026-04-03",
+  "strategies": [
+    "倍量多空平衡策略"
+  ],
+  "strategy_snapshots": [
+    {
+      "name": "倍量多空平衡策略",
+      "class": "VolumeSpikeBalanceSelector",
+      "description": "近30个交易日中存在上涨倍量柱；倍量柱到选股日需大于20个交易日；选股日成交量为倍量柱到选股日以来最低；最近10个交易日每天两线都足够黏合；选股日收盘价低于长期多空线。",
+      "params": {
+        "volume_spike_lookback": 30,
+        "volume_spike_multiple": 2.0,
+        "zx_stick_window": 10,
+        "zx_stick_limit_threshold": 0.05,
+        "min_spike_elapsed_days": 20
+      }
+    }
+  ],
+  "signal_dir": "selection_history",
+  "signal_files": [
+    "/workspace/github/GunArk/storage/objects/executions/20260506_160302_20260403/selection/signals.json"
+  ],
+  "selection_execution_keys": [
+    "20260506_160302_20260403"
+  ],
+  "capital_mode": "unlimited_cash",
+  "cash_per_trade": 10000.0,
+  "trade_rule": {
+    "signal": "T",
+    "buy": "T+1 open",
+    "sell": "T+6 close",
+    "hold_n_days": 5,
+    "连续两日收盘低于长期多空线强制卖出": true
+  }
+}

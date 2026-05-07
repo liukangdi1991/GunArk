@@ -1,0 +1,10 @@
+回测运行日志
+execution_key: bt_20260507_094707_6932b3
+created_at: 2026-05-07T09:47:07
+range: 2026-04-03 ~ 2026-04-03
+strategies: 倍量多空平衡策略
+capital_mode: unlimited_cash
+cash_per_trade: 10000
+
+summary:
+- 倍量多空平衡策略: trades=180, skips=13, total_return=5.74%, max_drawdown=-0.11%

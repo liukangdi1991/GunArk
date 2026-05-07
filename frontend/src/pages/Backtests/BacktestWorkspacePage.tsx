@@ -15,7 +15,7 @@ import type { SelectionResult } from "../../types/selection";
 import type { Strategy } from "../../types/strategy";
 import { CAPITAL_MODE_OPTIONS, capitalModeLabel } from "../../utils/capital";
 import { firstTradingDateOfLatestMonth, formatPickerDate, latestTradingDate, makeDisabledNonTradingDate, toDayjs } from "../../utils/date";
-import { compactStrategyNames, formatPercent, parseFiniteNumber, signedClassName } from "../../utils/format";
+import { compactStrategyNames, formatDateRange, formatPercent, parseFiniteNumber, signedClassName } from "../../utils/format";
 
 const { Paragraph, Text, Title } = Typography;
 
@@ -29,7 +29,6 @@ interface BacktestFormValues {
 
 interface HistoryBacktestFormValues {
   selection_execution_keys?: string[];
-  strategies?: string[];
   mode?: string;
   cash_per_trade?: number;
 }
@@ -37,8 +36,25 @@ interface HistoryBacktestFormValues {
 type SubmitKey = "history" | "selection_backtest";
 export type BacktestWorkspaceMode = SubmitKey;
 
+interface SelectionHistoryOption {
+  label: string;
+  value: string;
+  executionKeys: string[];
+  selectionFrom: string | null;
+  selectionTo: string | null;
+}
+
 function selectedStrategies(values?: string[]) {
   return values && values.length ? values : null;
+}
+
+function normalizeExecutionKeys(values?: unknown): string[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  return values
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
 }
 
 function bestReturn(result: BacktestResult) {
@@ -75,6 +91,7 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
   const [deleting, setDeleting] = useState(false);
   const [editingHistory, setEditingHistory] = useState(false);
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
+  const [selectedHistoryKeys, setSelectedHistoryKeys] = useState<string[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
 
   const strategyOptions = useMemo(
@@ -87,28 +104,78 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
     () => makeDisabledNonTradingDate(tradingDates),
     [tradingDates],
   );
-  const selectionOptions = useMemo(
-    () => selectionResults.map((result) => ({
-      label: `${result.selection_date} · ${compactStrategyNames(result.strategies)} · ${result.execution_key}`,
-      value: result.execution_key,
-    })),
-    [selectionResults],
+  const selectionHistoryOptions = useMemo(() => {
+    const byGroup = new Map<string, SelectionHistoryOption>();
+    for (const result of selectionResults) {
+      const groupKey = result.selection_group_key || result.execution_key;
+      if (byGroup.has(groupKey)) {
+        continue;
+      }
+      const executionKeys = result.selection_execution_keys?.length
+        ? result.selection_execution_keys
+        : [result.execution_key];
+      const selectionFrom = result.selection_from || result.selection_date || null;
+      const selectionTo = result.selection_to || result.selection_date || null;
+      const dateLabel = formatDateRange(selectionFrom, selectionTo);
+      const dayCount = executionKeys.length > 1 ? ` · ${executionKeys.length} 个交易日` : "";
+      byGroup.set(groupKey, {
+        label: `${dateLabel} · ${compactStrategyNames(result.strategies)}${dayCount}`,
+        value: groupKey,
+        executionKeys,
+        selectionFrom,
+        selectionTo,
+      });
+    }
+    return Array.from(byGroup.values());
+  }, [selectionResults]);
+  const selectionOptionMap = useMemo(
+    () => new Map(selectionHistoryOptions.map((option) => [option.value, option])),
+    [selectionHistoryOptions],
   );
-  const selectedHistoryKeys = (Form.useWatch("selection_execution_keys", historyForm) || []) as string[];
+  const selectionOptions = useMemo(
+    () => selectionHistoryOptions.map((option) => ({
+      label: option.label,
+      value: option.value,
+    })),
+    [selectionHistoryOptions],
+  );
+  const selectedHistoryExecutionKeys = useMemo(() => {
+    const keys: string[] = [];
+    const seen = new Set<string>();
+    for (const selectedValue of selectedHistoryKeys) {
+      const option = selectionOptionMap.get(selectedValue);
+      const optionKeys = option?.executionKeys.length ? option.executionKeys : [selectedValue];
+      for (const executionKey of optionKeys) {
+        if (!seen.has(executionKey)) {
+          keys.push(executionKey);
+          seen.add(executionKey);
+        }
+      }
+    }
+    return keys;
+  }, [selectedHistoryKeys, selectionOptionMap]);
+  const selectedHistoryKeySet = useMemo(() => new Set(selectedHistoryExecutionKeys), [selectedHistoryExecutionKeys]);
   const selectedSelectionResults = useMemo(
-    () => selectionResults.filter((result) => selectedHistoryKeys.includes(result.execution_key)),
-    [selectionResults, selectedHistoryKeys],
+    () => selectionResults.filter((result) => selectedHistoryKeySet.has(result.execution_key)),
+    [selectionResults, selectedHistoryKeySet],
   );
   const selectedHistoryRange = useMemo(() => {
-    const dates = selectedSelectionResults
-      .map((result) => result.selection_date)
+    const optionDates = selectedHistoryKeys
+      .flatMap((selectedValue) => {
+        const option = selectionOptionMap.get(selectedValue);
+        return option ? [option.selectionFrom, option.selectionTo] : [];
+      })
       .filter(Boolean)
-      .sort();
+      .map(String);
+    const dates = (optionDates.length
+      ? optionDates
+      : selectedSelectionResults.map((result) => result.selection_date).filter(Boolean)
+    ).sort();
     if (!dates.length) {
       return "-";
     }
     return dates[0] === dates[dates.length - 1] ? dates[0] : `${dates[0]} ~ ${dates[dates.length - 1]}`;
-  }, [selectedSelectionResults]);
+  }, [selectedHistoryKeys, selectedSelectionResults, selectionOptionMap]);
   const pageCopy = mode === "history"
     ? {
       title: "根据选股历史回测",
@@ -150,6 +217,7 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
       setRuns(runsPayload.results || []);
       setSelectionResults(selectionPayload.results || []);
       setSelectedRunIds([]);
+      setSelectedHistoryKeys([]);
       setTradingDates(dates);
       historyForm.setFieldsValue({
         mode: "unlimited_cash",
@@ -174,11 +242,19 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
   async function runHistoryBacktest(values: HistoryBacktestFormValues) {
     setSubmitting("history");
     try {
+      const selectedValues = normalizeExecutionKeys(values.selection_execution_keys);
+      const selectionExecutionKeys = Array.from(
+        new Set(
+          selectedValues.flatMap((value) => {
+            const option = selectionOptionMap.get(value);
+            return option?.executionKeys.length ? option.executionKeys : [value];
+          }),
+        ),
+      );
       const execution = await submitExecution({
         type: "backtest_from_selection",
         params: {
-          selection_execution_keys: values.selection_execution_keys || [],
-          strategies: selectedStrategies(values.strategies),
+          selection_execution_keys: selectionExecutionKeys,
           mode: values.mode || "unlimited_cash",
           cash_per_trade: values.cash_per_trade || 50000,
         },
@@ -288,14 +364,21 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
                     maxTagCount="responsive"
                     options={selectionOptions}
                     placeholder="选择一个或多个选股结果"
+                    onChange={(values) => setSelectedHistoryKeys(normalizeExecutionKeys(values))}
                   />
                 </Form.Item>
-                <Alert
-                  className="workbench-alert"
-                  type="info"
-                  showIcon
-                  message={`已选 ${selectedSelectionResults.length} 条选股历史，信号日期范围: ${selectedHistoryRange}`}
-                />
+                <div className="selection-history-status">
+                  <span className={selectedHistoryKeys.length ? "selection-history-pill active" : "selection-history-pill"}>
+                    已选 <strong>{selectedHistoryKeys.length}</strong> 条
+                  </span>
+                  <span className="selection-history-pill">
+                    日期范围 <strong>{selectedHistoryRange}</strong>
+                  </span>
+                  <span className="selection-history-pill">
+                    覆盖 <strong>{selectedHistoryExecutionKeys.length}</strong> 个交易日
+                  </span>
+                  <span className="selection-history-note">使用所选历史里的全部股票信号回测</span>
+                </div>
                 <Row gutter={12}>
                   <Col xs={24} md={12}>
                     <Form.Item label="资金模式" name="mode">
@@ -310,9 +393,6 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
                     </Form.Item>
                   </Col>
                 </Row>
-                <Form.Item label="回测策略" name="strategies">
-                  <Select allowClear mode="multiple" options={strategyOptions} placeholder="不选择则回测选股结果里的全部策略" />
-                </Form.Item>
                 <Button block type="primary" htmlType="submit" icon={<PlayCircleOutlined />} loading={submitting === "history"}>
                   根据选股历史回测
                 </Button>
@@ -401,6 +481,9 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
             renderDescription={(run) => (
               <Space direction="vertical" size={4}>
                 <Text className="muted-text">回测区间：{run.start_date} ~ {run.end_date}</Text>
+                {run.selection_from || run.selection_to ? (
+                  <Text className="muted-text">选股日期：{formatDateRange(run.selection_from, run.selection_to)}</Text>
+                ) : null}
                 <Text className="muted-text">策略：{compactStrategyNames(run.strategies)}</Text>
                 <Text className="muted-text">资金模式：{capitalModeLabel(run.capital_mode)}</Text>
               </Space>

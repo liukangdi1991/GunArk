@@ -1,0 +1,24 @@
+{
+  "summary": [
+    {
+      "total_return_pct": 5.739188779619031,
+      "annual_return_pct": 140.83333179822023,
+      "max_drawdown_pct": -0.11165073986180163,
+      "sharpe": 4.883059483033621,
+      "trade_count": 180,
+      "win_rate_pct": 98.33333333333333,
+      "strategy": "倍量多空平衡策略",
+      "start_date": "2026-04-03",
+      "end_date": "2026-04-03",
+      "simulation_end_date": "2026-04-28",
+      "capital_mode": "unlimited_cash",
+      "capital_base": 1638207.7657139278,
+      "fixed_cash_per_trade": 10000.0,
+      "initial_cash": 1000000.0,
+      "final_equity": 1732227.6019906292,
+      "final_cash": 1094019.8362767014,
+      "open_positions": 0,
+      "skip_count": 13
+    }
+  ]
+}
