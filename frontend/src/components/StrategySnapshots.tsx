@@ -2,6 +2,7 @@ import { Card, Space, Tag, Typography } from "antd";
 import type { ReactNode } from "react";
 import type { Strategy } from "../types/strategy";
 import { capitalModeLabel } from "../utils/capital";
+import { tradeStrategyLabel } from "../utils/tradeStrategy";
 
 const { Text } = Typography;
 
@@ -47,15 +48,26 @@ function describeTradeRule(
   cashPerTrade?: number,
 ): string[] {
   const holdDays = numberParam(params, "hold_n_days");
+  const tradeStrategy = typeof params.trade_strategy === "string" ? params.trade_strategy : "";
+  const tradeStrategyName = typeof params.trade_strategy_name === "string" && params.trade_strategy_name
+    ? params.trade_strategy_name
+    : tradeStrategyLabel(tradeStrategy);
+  const recentLowWindow = numberParam(params, "close_below_recent_low_stop_window");
   const lines = [
     "选股日为 T 日，T+1 按开盘价买入，并计入买入滑点和交易费用。",
     holdDays === null
       ? "卖出日按当前交易规则执行，并计入卖出滑点和交易费用。"
       : `默认持仓 ${holdDays} 个交易日，T+${holdDays + 1} 按收盘价卖出，并计入卖出滑点和交易费用。`,
   ];
+  if (tradeStrategyName !== "-") {
+    lines.unshift(`交易策略为${tradeStrategyName}。`);
+  }
 
   if (params["连续两日收盘低于长期多空线强制卖出"]) {
     lines.push("持仓期间若连续两日收盘价低于长期多空线，则在第二日按收盘价触发强制卖出。");
+  }
+  if (recentLowWindow !== null) {
+    lines.push(`持仓期间若今日收盘价低于买入后截至昨日最近 ${recentLowWindow} 个交易日最低收盘价，则按今日收盘价触发止损卖出。`);
   }
   lines.push("如果卖出日跌停无法成交，跌停顺延卖出优先于其他卖出规则。");
 

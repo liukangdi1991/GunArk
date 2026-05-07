@@ -22,6 +22,7 @@ export interface SelectionResult {
   selection_group_key?: string;
   selection_from?: string | null;
   selection_to?: string | null;
+  trade_days?: number;
   selection_execution_keys?: string[];
 }
 

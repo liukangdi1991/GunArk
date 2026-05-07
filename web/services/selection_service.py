@@ -99,7 +99,7 @@ def create_batch_selection(
             f"范围 {dates[0].isoformat()} ~ {dates[-1].isoformat()}"
         )
 
-    results = []
+    day_results = []
     for index, day in enumerate(dates, 1):
         date_text = day.isoformat()
         if progress:
@@ -112,8 +112,9 @@ def create_batch_selection(
             data_table=data_table,
             strategies=strategies,
             strategy_names=strategy_names,
+            persist=False,
         )
-        results.append(result)
+        day_results.append(result)
 
         selected_count = sum(int(item.get("count") or 0) for item in result.get("summary", []))
         if log:
@@ -123,12 +124,20 @@ def create_batch_selection(
         if progress:
             progress(index, total, f"{date_text} 完成")
 
+    batch_result = _persist_batch_selection_result(
+        dates=dates,
+        strategy_names=strategy_names,
+        day_results=day_results,
+        request_meta=request_meta,
+        log=log,
+    )
+
     return {
         **request_meta,
+        **batch_result,
         "trade_days": len(dates),
         "trade_from": dates[0].isoformat() if dates else None,
         "trade_to": dates[-1].isoformat() if dates else None,
-        "results": results,
     }
 
 
@@ -140,6 +149,7 @@ def _run_selection_for_date(
     strategy_names: list[str],
     progress: ProgressCallback | None = None,
     log: LogCallback | None = None,
+    persist: bool = True,
 ) -> dict[str, Any]:
     data_dict_cache = None
 
@@ -200,6 +210,16 @@ def _run_selection_for_date(
                     "industry": stock_meta.get(normalized_code, {}).get("industry", ""),
                 }
         )
+
+    if not persist:
+        return {
+            "selection_date": date_text,
+            "strategies": strategy_names,
+            "summary": summaries,
+            "signals": all_results,
+            "pick_rows": pick_rows,
+            "elapsed_seconds": time.time() - total_start,
+        }
 
     execution_key = _build_execution_key(date_obj, strategy_names)
     object_dir = storage.objects_root / "executions" / execution_key / "selection"
@@ -269,21 +289,133 @@ def _run_selection_for_date(
     }
 
 
+def _persist_batch_selection_result(
+    *,
+    dates: list[date],
+    strategy_names: list[str],
+    day_results: list[dict[str, Any]],
+    request_meta: dict[str, Any],
+    log: LogCallback | None = None,
+) -> dict[str, Any]:
+    if not dates:
+        raise ValueError("批量选股缺少交易日")
+
+    from_text = dates[0].isoformat()
+    to_text = dates[-1].isoformat()
+    execution_key = _build_batch_execution_key(dates, strategy_names)
+    object_dir = storage.objects_root / "executions" / execution_key / "selection"
+    signals_dir = object_dir / "signals"
+    signals_dir.mkdir(parents=True, exist_ok=True)
+
+    signal_files: list[str] = []
+    summaries: list[dict[str, Any]] = []
+    pick_rows: list[dict[str, Any]] = []
+    elapsed = 0.0
+    per_day_results: list[dict[str, Any]] = []
+
+    for day_result in day_results:
+        date_text = str(day_result.get("selection_date") or "")
+        signal_path = signals_dir / f"{date_text.replace('-', '')}.json"
+        _write_signals_json(signal_path, day_result.get("signals") or {})
+        signal_files.append(str(signal_path.relative_to(object_dir)))
+
+        day_summaries = [dict(item) for item in (day_result.get("summary") or []) if isinstance(item, dict)]
+        summaries.extend(day_summaries)
+        pick_rows.extend([dict(item) for item in (day_result.get("pick_rows") or []) if isinstance(item, dict)])
+        elapsed += float(day_result.get("elapsed_seconds") or 0.0)
+        per_day_results.append(
+            {
+                "selection_date": date_text,
+                "strategies": strategy_names,
+                "summary": day_summaries,
+            }
+        )
+
+    manifest_path = object_dir / "signals.json"
+    summary_path = object_dir / "summary.json"
+    picks_path = object_dir / "picks.parquet"
+    log_path = object_dir / "log.txt"
+
+    _write_json_file(
+        manifest_path,
+        {
+            "from": from_text,
+            "to": to_text,
+            "trade_days": len(dates),
+            "signal_files": signal_files,
+        },
+    )
+    _write_json_file(summary_path, {"summary": summaries})
+    _write_picks_parquet(picks_path, execution_key, pick_rows)
+    log_path.write_text(
+        _build_batch_log_text(
+            execution_key=execution_key,
+            from_text=from_text,
+            to_text=to_text,
+            strategy_names=strategy_names,
+            summaries=summaries,
+            elapsed=elapsed,
+            signal_file=str(manifest_path),
+        ),
+        encoding="utf-8",
+    )
+
+    snapshots = _strategy_snapshots(strategy_names)
+    storage.record_selection_result(
+        execution_key=execution_key,
+        selection_date=from_text,
+        selection_from=from_text,
+        selection_to=to_text,
+        trade_days=len(dates),
+        strategies=strategy_names,
+        strategy_snapshots=snapshots,
+        data_dir=str(DATA_DIR),
+        signal_file=str(manifest_path),
+        summaries=_aggregate_selection_summaries(summaries),
+        object_dir=object_dir,
+    )
+    for artifact_type, path, mime_type in [
+        ("signals_json", manifest_path, "application/json; charset=utf-8"),
+        ("summary_json", summary_path, "application/json; charset=utf-8"),
+        ("picks_parquet", picks_path, "application/vnd.apache.parquet"),
+        ("log_txt", log_path, "text/plain; charset=utf-8"),
+    ]:
+        storage.register_artifact(
+            run_type="selection",
+            execution_key=execution_key,
+            artifact_type=artifact_type,
+            path=path,
+            mime_type=mime_type,
+        )
+
+    if log:
+        log(f"批量选股记录已保存: {execution_key}")
+
+    return {
+        "execution_key": execution_key,
+        "selection_date": from_text,
+        "selection_from": from_text,
+        "selection_to": to_text,
+        "selection_execution_keys": [execution_key],
+        "strategies": strategy_names,
+        "summary": summaries,
+        "signal_file": str(manifest_path),
+        "results": per_day_results,
+    }
+
+
 def list_selections(limit: int = 50) -> dict[str, Any]:
     results = storage.list_selection_results(limit=limit)
-    group_meta = _selection_group_meta_from_jobs_root(storage.objects_root / "jobs")
     for result in results:
         execution_key = str(result.get("execution_key") or "")
-        meta = group_meta.get(execution_key)
-        if meta:
-            result.update(meta)
-            continue
         selection_date = str(result.get("selection_date") or "")
+        selection_from = str(result.get("selection_from") or selection_date)
+        selection_to = str(result.get("selection_to") or selection_date)
         result.update(
             {
                 "selection_group_key": execution_key,
-                "selection_from": selection_date,
-                "selection_to": selection_date,
+                "selection_from": selection_from,
+                "selection_to": selection_to,
                 "selection_execution_keys": [execution_key] if execution_key else [],
             }
         )
@@ -294,6 +426,9 @@ def get_selection(execution_key: str) -> dict[str, Any] | None:
     result = storage.get_selection_result(execution_key)
     if result is None:
         return None
+    summary = _read_selection_summary(execution_key)
+    if summary:
+        result["summary"] = summary
     return {
         "result": result,
         "artifacts": storage.list_artifacts(execution_key, run_type="selection"),
@@ -465,8 +600,43 @@ def _build_execution_key(date_obj: date, strategy_names: list[str]) -> str:
     return f"{ts}_{date_part}_{suffix}" if suffix else f"{ts}_{date_part}"
 
 
+def _build_batch_execution_key(dates: list[date], strategy_names: list[str]) -> str:
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if len(strategy_names) == 1:
+        suffix = _sanitize(strategy_names[0])
+    else:
+        suffix = f"{len(strategy_names)}strategies"
+    range_part = f"{dates[0]:%Y%m%d}_{dates[-1]:%Y%m%d}"
+    return f"{ts}_{range_part}_{suffix}" if suffix else f"{ts}_{range_part}"
+
+
 def _sanitize(value: str) -> str:
     return re.sub(r"[^0-9A-Za-z._-]+", "_", value.strip()).strip("_")
+
+
+def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2, default=str)
+
+
+def _aggregate_selection_summaries(summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_strategy: dict[str, dict[str, Any]] = {}
+    for item in summaries:
+        strategy = str(item.get("strategy") or "")
+        if not strategy:
+            continue
+        row = by_strategy.setdefault(
+            strategy,
+            {
+                "strategy": strategy,
+                "date": str(item.get("date") or ""),
+                "count": 0,
+                "elapsed_seconds": 0.0,
+            },
+        )
+        row["count"] = int(row.get("count") or 0) + int(item.get("count") or 0)
+        row["elapsed_seconds"] = float(row.get("elapsed_seconds") or 0.0) + float(item.get("elapsed_seconds") or 0.0)
+    return list(by_strategy.values())
 
 
 def _write_picks_parquet(path: Path, execution_key: str, rows: list[dict[str, Any]]) -> None:
@@ -504,6 +674,24 @@ def _read_picks(execution_key: str) -> list[dict[str, Any]]:
     rows = pl.read_parquet(path).to_dicts()
     stock_meta = _load_stock_meta()
     return [_normalize_pick_row(row, stock_meta) for row in rows]
+
+
+def _read_selection_summary(execution_key: str) -> list[dict[str, Any]]:
+    artifacts = storage.list_artifacts(execution_key, run_type="selection")
+    match = next((item for item in artifacts if item["artifact_type"] == "summary_json"), None)
+    if match is None:
+        return []
+    path = storage.artifact_path(match["storage_key"])
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    rows = payload.get("summary") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return []
+    return [dict(item) for item in rows if isinstance(item, dict)]
 
 
 def _normalize_pick_row(row: dict[str, Any], stock_meta: dict[str, dict[str, str]]) -> dict[str, Any]:
@@ -565,6 +753,35 @@ def _build_log_text(
     for item in summaries:
         lines.append(
             f"- {item['strategy']}: count={item['count']}, "
+            f"elapsed={float(item['elapsed_seconds']):.3f}s"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _build_batch_log_text(
+    *,
+    execution_key: str,
+    from_text: str,
+    to_text: str,
+    strategy_names: list[str],
+    summaries: list[dict[str, Any]],
+    elapsed: float,
+    signal_file: str,
+) -> str:
+    lines = [
+        "批量选股运行日志",
+        f"execution_key: {execution_key}",
+        f"range: {from_text} ~ {to_text}",
+        f"strategies: {', '.join(strategy_names)}",
+        f"signal_file: {signal_file}",
+        f"elapsed_seconds: {elapsed:.3f}",
+        "",
+        "summary:",
+    ]
+    for item in summaries:
+        lines.append(
+            f"- {item['date']} {item['strategy']}: count={item['count']}, "
             f"elapsed={float(item['elapsed_seconds']):.3f}s"
         )
     lines.append("")

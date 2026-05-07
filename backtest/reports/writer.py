@@ -121,6 +121,7 @@ def _build_log_text(meta: Mapping[str, Any], summaries: list[dict[str, Any]]) ->
         f"strategies: {', '.join(str(s) for s in meta.get('strategies', []))}",
         f"capital_mode: {meta.get('capital_mode', '-')}",
         f"cash_per_trade: {_fmt_num(meta.get('cash_per_trade', 0), 0)}",
+        f"trade_strategy: {(meta.get('trade_rule') or {}).get('trade_strategy_name', '-') if isinstance(meta.get('trade_rule'), dict) else '-'}",
         "",
         "summary:",
     ]

@@ -431,7 +431,8 @@ class BacktestEngine:
                 self.config.execution.force_sell_on_two_day_close_below_long_term_bull_bear_line
                 and self._is_two_day_close_below_long_term_bull_bear_line(code, cur_date)
             )
-            if not (trigger_by_hold or trigger_by_zx):
+            trigger_by_recent_low = self._is_close_below_recent_low_stop(code, cur_date, pos)
+            if not (trigger_by_hold or trigger_by_zx or trigger_by_recent_low):
                 continue
 
             can_sell = True
@@ -443,6 +444,8 @@ class BacktestEngine:
                     reason = "跌停顺延超上限，按收盘强制平仓"
                     if trigger_by_zx and not trigger_by_hold:
                         reason = "长期多空线连续两日跌破触发卖出，但跌停顺延超上限，按收盘强制平仓"
+                    if trigger_by_recent_low and not trigger_by_hold:
+                        reason = "10日低点止损触发卖出，但跌停顺延超上限，按收盘强制平仓"
                     skips.append(
                         SkipRecord(
                             strategy=pos.strategy,
@@ -517,3 +520,28 @@ class BacktestEngine:
         for d, v in zip(df["date"], two_day):
             result[d] = bool(v)
         return result
+
+    def _is_close_below_recent_low_stop(self, code: str, cur_date: date, pos: Position) -> bool:
+        window = self.config.execution.close_below_recent_low_stop_window
+        if window is None or window <= 0:
+            return False
+
+        df = self.market.load_code(code)
+        if df is None or df.empty:
+            return False
+
+        ordered = df.copy()
+        ordered["date"] = pd.to_datetime(ordered["date"]).dt.date
+        ordered = ordered.sort_values("date").reset_index(drop=True)
+
+        today = ordered[ordered["date"] == cur_date]
+        if today.empty:
+            return False
+
+        prior_holding = ordered[(ordered["date"] >= pos.entry_date) & (ordered["date"] < cur_date)]
+        if prior_holding.empty:
+            return False
+
+        recent_low = float(prior_holding.tail(int(window))["close"].astype(float).min())
+        today_close = float(today.iloc[-1]["close"])
+        return today_close < recent_low

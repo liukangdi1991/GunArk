@@ -25,6 +25,9 @@ class SelectionRepository:
         *,
         execution_key: str,
         selection_date: str,
+        selection_from: str | None = None,
+        selection_to: str | None = None,
+        trade_days: int = 1,
         strategies: list[str],
         strategy_snapshots: list[dict[str, Any]],
         data_dir: str,
@@ -51,15 +54,29 @@ class SelectionRepository:
                 insert into selection_results (
                     execution_id,
                     selection_date,
+                    selection_from,
+                    selection_to,
+                    trade_days,
                     data_dir,
                     signal_file
-                ) values (?, ?, ?, ?)
+                ) values (?, ?, ?, ?, ?, ?, ?)
                 on conflict(execution_id) do update set
                     selection_date = excluded.selection_date,
+                    selection_from = excluded.selection_from,
+                    selection_to = excluded.selection_to,
+                    trade_days = excluded.trade_days,
                     data_dir = excluded.data_dir,
                     signal_file = excluded.signal_file
                 """,
-                (execution_id, selection_date, data_dir, signal_file),
+                (
+                    execution_id,
+                    selection_date,
+                    selection_from or selection_date,
+                    selection_to or selection_date,
+                    max(1, int(trade_days or 1)),
+                    data_dir,
+                    signal_file,
+                ),
             )
             self.storage._clear_execution_items(conn, execution_id, ExecutionItemType.SELECTION_STRATEGY)
             summary_by_strategy = {
@@ -95,6 +112,9 @@ class SelectionRepository:
                     er.status,
                     er.object_dir_key,
                     sr.selection_date,
+                    sr.selection_from,
+                    sr.selection_to,
+                    sr.trade_days,
                     sr.data_dir,
                     sr.signal_file
                 from executions er
@@ -119,7 +139,10 @@ class SelectionRepository:
                     er.finished_at,
                     er.status,
                     er.object_dir_key,
-                    sr.selection_date,
+                   sr.selection_date,
+                    sr.selection_from,
+                    sr.selection_to,
+                    sr.trade_days,
                     sr.data_dir,
                     sr.signal_file
                 from executions er

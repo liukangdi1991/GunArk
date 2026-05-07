@@ -13,7 +13,7 @@ import type { ExecutionRequestType } from "../../types/execution";
 import type { SelectionResult } from "../../types/selection";
 import type { Strategy } from "../../types/strategy";
 import { makeDisabledNonTradingDate, formatPickerDate, firstTradingDateOfLatestMonth, latestTradingDate, toDayjs } from "../../utils/date";
-import { compactStrategyNames } from "../../utils/format";
+import { compactStrategyNames, formatDateRange } from "../../utils/format";
 
 const { Paragraph, Text, Title } = Typography;
 
@@ -314,7 +314,10 @@ export function SelectionWorkspacePage() {
             renderTitle={(run) => <Text ellipsis>{run.execution_key}</Text>}
             renderDescription={(run) => (
               <Space direction="vertical" size={4}>
-                <Text className="muted-text">{run.selection_date}</Text>
+                <Text className="muted-text">
+                  日期：{formatDateRange(run.selection_from || run.selection_date, run.selection_to || run.selection_date)}
+                  {Number(run.trade_days || 1) > 1 ? ` · ${run.trade_days} 个交易日` : ""}
+                </Text>
                 <Text className="muted-text">{compactStrategyNames(run.strategies)}</Text>
               </Space>
             )}

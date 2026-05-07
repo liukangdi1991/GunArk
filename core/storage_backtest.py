@@ -106,10 +106,10 @@ class BacktestRepository:
                 conn,
                 execution_id=execution_id,
                 item_type=ExecutionItemType.TRADE_STRATEGY,
-                item_key="fixed_hold_n_days",
-                item_name="FixedHoldNDaysTradeRule",
+                item_key=str(trade_rule.get("trade_strategy") or "long_term_bull_bear_stop"),
+                item_name=str(trade_rule.get("trade_strategy_name") or "不限资金 + 多空线止损"),
                 item_class="FixedHoldNDaysTradeRule",
-                description="固定持仓 N 个交易日，含强制卖出规则。",
+                description=str(trade_rule.get("trade_strategy_name") or "固定持仓 N 个交易日，含强制卖出规则。"),
             )
             self.storage._replace_params(conn, trade_item_id, trade_rule)
 

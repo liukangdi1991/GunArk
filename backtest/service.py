@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from backtest import BacktestEngine, default_config
-from backtest.config import BacktestConfig
+from backtest.config import BacktestConfig, TradeStrategyName
 from backtest.reports.writer import create_run_dir, save_run_outputs
 from core.runtime import runtime_root
 
@@ -25,10 +25,35 @@ def normalize_capital_mode(raw: str) -> str:
     return value
 
 
+def normalize_trade_strategy(raw: str) -> TradeStrategyName:
+    value = str(raw or "").strip().lower()
+    aliases = {
+        "": "long_term_bull_bear_stop",
+        "long_term_bull_bear_stop": "long_term_bull_bear_stop",
+        "bull_bear_stop": "long_term_bull_bear_stop",
+        "zx_stop": "long_term_bull_bear_stop",
+        "ten_day_low_stop": "ten_day_low_stop",
+        "10d_low_stop": "ten_day_low_stop",
+        "recent_low_stop": "ten_day_low_stop",
+    }
+    normalized = aliases.get(value)
+    if normalized is None:
+        raise ValueError("交易策略仅支持 不限资金+多空线止损 或 不限资金+10日低点止损")
+    return normalized  # type: ignore[return-value]
+
+
+def trade_strategy_label(value: str) -> str:
+    strategy = normalize_trade_strategy(value)
+    if strategy == "ten_day_low_stop":
+        return "不限资金 + 10日低点止损"
+    return "不限资金 + 多空线止损"
+
+
 def build_config(
     *,
     mode: str = "unlimited_cash",
     cash_per_trade: float = 50_000.0,
+    trade_strategy: str = "long_term_bull_bear_stop",
     base_config: BacktestConfig | None = None,
 ) -> BacktestConfig:
     cfg = base_config or default_config()
@@ -48,6 +73,21 @@ def build_config(
         raise ValueError("资金模式仅支持 不限资金 或 现金约束")
     if cash_per_trade <= 0:
         raise ValueError("每票金额必须大于0")
+    normalized_trade_strategy = normalize_trade_strategy(trade_strategy)
+    if normalized_trade_strategy == "ten_day_low_stop":
+        execution = replace(
+            cfg.execution,
+            trade_strategy=normalized_trade_strategy,
+            force_sell_on_two_day_close_below_long_term_bull_bear_line=False,
+            close_below_recent_low_stop_window=10,
+        )
+    else:
+        execution = replace(
+            cfg.execution,
+            trade_strategy=normalized_trade_strategy,
+            force_sell_on_two_day_close_below_long_term_bull_bear_line=True,
+            close_below_recent_low_stop_window=None,
+        )
     return replace(
         cfg,
         capital=replace(
@@ -55,6 +95,7 @@ def build_config(
             mode=mode,
             fixed_cash_per_trade=float(cash_per_trade),
         ),
+        execution=execution,
     )
 
 
@@ -65,6 +106,7 @@ def run_backtest(
     strategies: list[str] | None = None,
     mode: str = "unlimited_cash",
     cash_per_trade: float = 50_000.0,
+    trade_strategy: str = "long_term_bull_bear_stop",
     run_name: str | None = None,
     signal_files: list[Path] | None = None,
     signal_source: str | None = None,
@@ -81,7 +123,7 @@ def run_backtest(
         on_progress(0, 0, "正在初始化回测引擎")
     if on_log:
         on_log("初始化回测引擎")
-    cfg = build_config(mode=mode, cash_per_trade=cash_per_trade)
+    cfg = build_config(mode=mode, cash_per_trade=cash_per_trade, trade_strategy=trade_strategy)
     engine = BacktestEngine(cfg, signal_files=signal_files)
     strategy_list = strategies or engine.list_available_strategies(start, end)
     strategy_list = [s for s in strategy_list if str(s).strip()]
@@ -135,6 +177,8 @@ def run_backtest(
         "capital_mode": cfg.capital.mode,
         "cash_per_trade": float(cfg.capital.fixed_cash_per_trade),
         "trade_rule": {
+            "trade_strategy": cfg.execution.trade_strategy,
+            "trade_strategy_name": trade_strategy_label(cfg.execution.trade_strategy),
             "signal": "T",
             "buy": "T+1 open",
             "sell": f"T+{cfg.execution.fixed_hold_n_days + 1} close",
@@ -142,6 +186,7 @@ def run_backtest(
             "连续两日收盘低于长期多空线强制卖出": bool(
                 cfg.execution.force_sell_on_two_day_close_below_long_term_bull_bear_line
             ),
+            "close_below_recent_low_stop_window": cfg.execution.close_below_recent_low_stop_window,
         },
     }
     save_run_outputs(

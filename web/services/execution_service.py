@@ -409,6 +409,13 @@ def _build_result_meta(execution_type: str, result: dict[str, Any]) -> dict[str,
             "resource_id": execution_key,
             "result_url": f"/selections/{execution_key}",
         }
+    if execution_type == "selection_batch" and result.get("execution_key"):
+        execution_key = str(result["execution_key"])
+        return {
+            "resource_type": "selection_result",
+            "resource_id": execution_key,
+            "result_url": f"/selections/{execution_key}",
+        }
     if execution_type == "selection_batch":
         results = result.get("results") or []
         if results:

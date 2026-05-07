@@ -16,6 +16,7 @@ import type { Strategy } from "../../types/strategy";
 import { CAPITAL_MODE_OPTIONS, capitalModeLabel } from "../../utils/capital";
 import { firstTradingDateOfLatestMonth, formatPickerDate, latestTradingDate, makeDisabledNonTradingDate, toDayjs } from "../../utils/date";
 import { compactStrategyNames, formatDateRange, formatPercent, parseFiniteNumber, signedClassName } from "../../utils/format";
+import { TRADE_STRATEGY_OPTIONS, tradeStrategyLabel } from "../../utils/tradeStrategy";
 
 const { Paragraph, Text, Title } = Typography;
 
@@ -25,12 +26,14 @@ interface BacktestFormValues {
   to?: Dayjs;
   mode?: string;
   cash_per_trade?: number;
+  trade_strategy?: string;
 }
 
 interface HistoryBacktestFormValues {
   selection_execution_keys?: string[];
   mode?: string;
   cash_per_trade?: number;
+  trade_strategy?: string;
 }
 
 type SubmitKey = "history" | "selection_backtest";
@@ -117,7 +120,8 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
       const selectionFrom = result.selection_from || result.selection_date || null;
       const selectionTo = result.selection_to || result.selection_date || null;
       const dateLabel = formatDateRange(selectionFrom, selectionTo);
-      const dayCount = executionKeys.length > 1 ? ` · ${executionKeys.length} 个交易日` : "";
+      const tradeDays = Number(result.trade_days || executionKeys.length || 1);
+      const dayCount = tradeDays > 1 ? ` · ${tradeDays} 个交易日` : "";
       byGroup.set(groupKey, {
         label: `${dateLabel} · ${compactStrategyNames(result.strategies)}${dayCount}`,
         value: groupKey,
@@ -222,12 +226,14 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
       historyForm.setFieldsValue({
         mode: "unlimited_cash",
         cash_per_trade: 50000,
+        trade_strategy: "long_term_bull_bear_stop",
       });
       selectionBacktestForm.setFieldsValue({
         from: toDayjs(firstTradingDateOfLatestMonth(dates)),
         to: toDayjs(latestTradingDate(dates)),
         mode: "unlimited_cash",
         cash_per_trade: 50000,
+        trade_strategy: "long_term_bull_bear_stop",
       });
       setErrorMessage("");
     } catch (error) {
@@ -257,6 +263,7 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
           selection_execution_keys: selectionExecutionKeys,
           mode: values.mode || "unlimited_cash",
           cash_per_trade: values.cash_per_trade || 50000,
+          trade_strategy: values.trade_strategy || "long_term_bull_bear_stop",
         },
       });
       window.location.href = execution.console_url;
@@ -280,6 +287,7 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
           strategies: selectedStrategies(values.strategies),
           mode: values.mode || "unlimited_cash",
           cash_per_trade: values.cash_per_trade || 50000,
+          trade_strategy: values.trade_strategy || "long_term_bull_bear_stop",
         },
       });
       window.location.href = execution.console_url;
@@ -350,6 +358,7 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
                 initialValues={{
                   mode: "unlimited_cash",
                   cash_per_trade: 50000,
+                  trade_strategy: "long_term_bull_bear_stop",
                 }}
                 onFinish={runHistoryBacktest}
               >
@@ -393,6 +402,9 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
                     </Form.Item>
                   </Col>
                 </Row>
+                <Form.Item label="交易策略" name="trade_strategy">
+                  <Select options={TRADE_STRATEGY_OPTIONS} />
+                </Form.Item>
                 <Button block type="primary" htmlType="submit" icon={<PlayCircleOutlined />} loading={submitting === "history"}>
                   根据选股历史回测
                 </Button>
@@ -406,6 +418,7 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
                   to: dayjs("2026-04-10"),
                   mode: "unlimited_cash",
                   cash_per_trade: 50000,
+                  trade_strategy: "long_term_bull_bear_stop",
                 }}
                 onFinish={runSelectionBacktest}
               >
@@ -451,6 +464,9 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
                     </Form.Item>
                   </Col>
                 </Row>
+                <Form.Item label="交易策略" name="trade_strategy">
+                  <Select options={TRADE_STRATEGY_OPTIONS} />
+                </Form.Item>
                 <Form.Item label="选股策略" name="strategies">
                   <Select allowClear mode="multiple" options={strategyOptions} placeholder="不选择则按默认策略选股并回测" />
                 </Form.Item>
@@ -486,6 +502,9 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
                 ) : null}
                 <Text className="muted-text">策略：{compactStrategyNames(run.strategies)}</Text>
                 <Text className="muted-text">资金模式：{capitalModeLabel(run.capital_mode)}</Text>
+                <Text className="muted-text">
+                  交易策略：{tradeStrategyLabel(typeof run.trade_rule?.trade_strategy === "string" ? run.trade_rule.trade_strategy : undefined)}
+                </Text>
               </Space>
             )}
             renderExtra={(run) => (

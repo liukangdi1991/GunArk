@@ -9,6 +9,7 @@ class BacktestRequest(BaseModel):
     strategies: list[str] | None = None
     mode: str = "unlimited_cash"
     cash_per_trade: float = 50_000.0
+    trade_strategy: str = "long_term_bull_bear_stop"
     run_name: str | None = None
 
 
@@ -17,6 +18,7 @@ class BacktestFromSelectionRequest(BaseModel):
     strategies: list[str] | None = None
     mode: str = "unlimited_cash"
     cash_per_trade: float = 50_000.0
+    trade_strategy: str = "long_term_bull_bear_stop"
     run_name: str | None = None
 
 
@@ -27,6 +29,7 @@ class SelectionBacktestRequest(BaseModel):
     tickers: list[str] | None = None
     mode: str = "unlimited_cash"
     cash_per_trade: float = 50_000.0
+    trade_strategy: str = "long_term_bull_bear_stop"
     run_name: str | None = None
 
 

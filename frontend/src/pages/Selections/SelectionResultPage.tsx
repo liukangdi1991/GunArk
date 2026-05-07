@@ -6,7 +6,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { StrategySnapshots } from "../../components/StrategySnapshots";
 import { getSelectionResult } from "../../services/selections";
 import type { SelectionPick, SelectionResultDetailResponse, SelectionSummary } from "../../types/selection";
-import { formatNumber } from "../../utils/format";
+import { formatDateRange, formatNumber } from "../../utils/format";
 
 const { Paragraph, Text, Title } = Typography;
 
@@ -154,7 +154,7 @@ export function SelectionResultPage() {
             <Row gutter={[12, 12]}>
               <Col xs={12} lg={6}>
                 <Card className="metric-card">
-                  <Statistic title="选股日期" value={run.selection_date || "-"} />
+                  <Statistic title="选股日期" value={formatDateRange(run.selection_from || run.selection_date, run.selection_to || run.selection_date)} />
                 </Card>
               </Col>
               <Col xs={12} lg={6}>

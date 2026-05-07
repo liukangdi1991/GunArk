@@ -4,6 +4,9 @@ from dataclasses import dataclass
 from typing import Literal, Optional
 
 
+TradeStrategyName = Literal["long_term_bull_bear_stop", "ten_day_low_stop"]
+
+
 @dataclass(frozen=True)
 class CapitalConfig:
     initial_cash: float = 1_000_000.0
@@ -20,6 +23,7 @@ class CapitalConfig:
 
 @dataclass(frozen=True)
 class ExecutionConfig:
+    trade_strategy: TradeStrategyName = "long_term_bull_bear_stop"
     fixed_hold_n_days: int = 5
     max_sell_postpone_days: int = 10
     reject_if_limit_up_on_buy: bool = True
@@ -27,6 +31,8 @@ class ExecutionConfig:
     skip_if_suspended: bool = True
     # 若连续两日收盘价均低于长期多空线，则在第二日触发强制卖出（仍受跌停顺延约束）
     force_sell_on_two_day_close_below_long_term_bull_bear_line: bool = True
+    # 若今日收盘价低于买入后截至昨日最近 N 个交易日最低收盘价，则触发强制卖出
+    close_below_recent_low_stop_window: Optional[int] = None
 
 
 @dataclass(frozen=True)

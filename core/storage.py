@@ -15,6 +15,7 @@ from core.storage_migrations import (
     backfill_backtest_selection_links,
     backfill_execution_log_links,
     ensure_artifacts_scope_schema,
+    ensure_selection_range_schema,
 )
 from core.storage_models import ExecutionItemType, ExecutionType, SelectionResultInUseError
 from core.storage_records import StorageRecordMapper
@@ -51,6 +52,7 @@ class AppStorage:
         with self._connect() as conn:
             conn.executescript(SCHEMA_SQL)
             ensure_artifacts_scope_schema(conn)
+            ensure_selection_range_schema(conn)
             if not self._links_backfilled:
                 backfill_backtest_selection_links(self, conn)
                 backfill_execution_log_links(self, conn)
@@ -61,6 +63,9 @@ class AppStorage:
         *,
         execution_key: str,
         selection_date: str,
+        selection_from: str | None = None,
+        selection_to: str | None = None,
+        trade_days: int = 1,
         strategies: list[str],
         strategy_snapshots: list[dict[str, Any]],
         data_dir: str,
@@ -72,6 +77,9 @@ class AppStorage:
         self._selection.record_selection_result(
             execution_key=execution_key,
             selection_date=selection_date,
+            selection_from=selection_from,
+            selection_to=selection_to,
+            trade_days=trade_days,
             strategies=strategies,
             strategy_snapshots=strategy_snapshots,
             data_dir=data_dir,

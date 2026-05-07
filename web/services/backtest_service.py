@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 import statistics
 from datetime import date, datetime
@@ -32,6 +33,7 @@ def create_backtest(
         strategies=payload.strategies,
         mode=payload.mode,
         cash_per_trade=payload.cash_per_trade,
+        trade_strategy=payload.trade_strategy,
         run_name=payload.run_name,
         on_progress=progress,
         on_log=log,
@@ -62,6 +64,7 @@ def create_backtest_from_selection(
         strategies=payload.strategies,
         mode=payload.mode,
         cash_per_trade=payload.cash_per_trade,
+        trade_strategy=payload.trade_strategy,
         run_name=payload.run_name,
         signal_files=signal_files,
         signal_source="selection_history",
@@ -104,11 +107,14 @@ def create_selection_backtest(
         progress=None,
         log=log,
     )
-    selection_keys = [
-        str(item.get("execution_key"))
-        for item in selection_result.get("results", [])
-        if item.get("execution_key")
-    ]
+    if selection_result.get("execution_key"):
+        selection_keys = [str(selection_result["execution_key"])]
+    else:
+        selection_keys = [
+            str(item.get("execution_key"))
+            for item in selection_result.get("results", [])
+            if item.get("execution_key")
+        ]
     if not selection_keys:
         raise ValueError("选股回测未生成可回测的选股结果")
 
@@ -120,6 +126,7 @@ def create_selection_backtest(
             strategies=payload.strategies,
             mode=payload.mode,
             cash_per_trade=payload.cash_per_trade,
+            trade_strategy=payload.trade_strategy,
             run_name=payload.run_name,
         ),
         progress=None,
@@ -190,33 +197,65 @@ def _resolve_selection_signal_files(execution_keys: list[str]) -> tuple[list[Pat
         if selection is None:
             missing.append(execution_key)
             continue
-        signal_path = _selection_signal_file_path(execution_key, selection)
-        if signal_path is None or not signal_path.exists():
+        paths = _selection_signal_file_paths(execution_key, selection)
+        if not paths:
             raise ValueError(f"选股结果缺少 signals.json: {execution_key}")
-        signal_files.append(signal_path)
-        signal_dates.append(_parse_date(str(selection.get("selection_date") or "")))
+        signal_files.extend(paths)
+        signal_dates.extend(signal_file_date for signal_file_date in (_signal_file_date(path) for path in paths) if signal_file_date)
 
     if missing:
         raise ValueError(f"选股历史不存在: {', '.join(missing)}")
     if not signal_files or not signal_dates:
         raise ValueError("选股历史没有可用信号文件")
-    return signal_files, min(signal_dates), max(signal_dates), source_keys
+    return sorted(signal_files, key=_signal_file_date_sort_key), min(signal_dates), max(signal_dates), source_keys
 
 
-def _selection_signal_file_path(execution_key: str, selection: dict[str, Any]) -> Path | None:
+def _selection_signal_file_paths(execution_key: str, selection: dict[str, Any]) -> list[Path]:
     raw_signal_file = str(selection.get("signal_file") or "").strip()
     if raw_signal_file:
         path = Path(raw_signal_file)
         if not path.is_absolute():
             path = ROOT / path
         if path.exists():
-            return path
+            return _expand_signal_path(path)
 
     artifacts = storage.list_artifacts(execution_key, run_type="selection")
     match = next((item for item in artifacts if item["artifact_type"] == "signals_json"), None)
     if match is None:
+        return []
+    return _expand_signal_path(storage.artifact_path(match["storage_key"]))
+
+
+def _expand_signal_path(path: Path) -> list[Path]:
+    if path.is_dir():
+        return sorted(path.glob("*.json"), key=_signal_file_date_sort_key)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return [path]
+    if not isinstance(payload, dict) or "signal_files" not in payload:
+        return [path]
+    files: list[Path] = []
+    for raw in payload.get("signal_files") or []:
+        item = Path(str(raw))
+        if not item.is_absolute():
+            item = path.parent / item
+        if item.exists():
+            files.append(item)
+    return sorted(files, key=_signal_file_date_sort_key)
+
+
+def _signal_file_date(path: Path) -> date | None:
+    from backtest.data.signal_data import signal_file_date
+
+    try:
+        return signal_file_date(path)
+    except Exception:
         return None
-    return storage.artifact_path(match["storage_key"])
+
+
+def _signal_file_date_sort_key(path: Path) -> date:
+    return _signal_file_date(path) or date.max
 
 
 def _normalize_execution_keys(values: list[str]) -> list[str]:

@@ -103,6 +103,18 @@ def ensure_artifacts_scope_schema(conn: sqlite3.Connection) -> None:
     conn.execute("drop table artifacts_old")
 
 
+def ensure_selection_range_schema(conn: sqlite3.Connection) -> None:
+    columns = {row[1] for row in conn.execute("pragma table_info(selection_results)").fetchall()}
+    if "selection_from" not in columns:
+        conn.execute("alter table selection_results add column selection_from text")
+        conn.execute("update selection_results set selection_from = selection_date where selection_from is null")
+    if "selection_to" not in columns:
+        conn.execute("alter table selection_results add column selection_to text")
+        conn.execute("update selection_results set selection_to = selection_date where selection_to is null")
+    if "trade_days" not in columns:
+        conn.execute("alter table selection_results add column trade_days integer not null default 1")
+
+
 def backfill_backtest_selection_links(storage: Any, conn: sqlite3.Connection) -> None:
     conn.row_factory = sqlite3.Row
     rows = conn.execute(

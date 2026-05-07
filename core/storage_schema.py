@@ -13,6 +13,9 @@ create table if not exists selection_results (
     id integer primary key autoincrement,
     execution_id integer not null unique,
     selection_date text not null,
+    selection_from text,
+    selection_to text,
+    trade_days integer not null default 1,
     data_dir text,
     signal_file text,
     foreign key (execution_id) references executions(id) on delete cascade
