@@ -44,6 +44,11 @@ def read_console(execution_id: str, offset: int = 0) -> dict[str, Any]:
     return execution_controller.read_console(execution_id, offset=offset)
 
 
+@router.post("/{execution_id}/cancel")
+def cancel_execution(execution_id: str) -> dict[str, Any]:
+    return execution_controller.cancel_execution(execution_id)
+
+
 @router.get("/{execution_id}")
 def get_execution(execution_id: str) -> dict[str, Any]:
     return execution_controller.get_execution(execution_id)

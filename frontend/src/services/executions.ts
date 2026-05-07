@@ -20,3 +20,10 @@ export function submitExecution(payload: ExecutionRequest): Promise<ExecutionSub
     body: JSON.stringify(payload),
   });
 }
+
+export function cancelExecution(executionId: string): Promise<ExecutionSubmitResponse> {
+  return requestJson<ExecutionSubmitResponse>(
+    `/api/executions/${encodeURIComponent(executionId)}/cancel`,
+    { method: "POST" },
+  );
+}

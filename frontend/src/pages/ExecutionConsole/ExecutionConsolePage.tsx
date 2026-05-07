@@ -11,10 +11,11 @@ import {
 import {
   CheckCircleOutlined,
   CloseCircleOutlined,
+  StopOutlined,
   SyncOutlined,
 } from "@ant-design/icons";
 import { useParams } from "react-router-dom";
-import { getExecutionConsole } from "../../services/executions";
+import { cancelExecution, getExecutionConsole } from "../../services/executions";
 import type { Execution } from "../../types/execution";
 import { executionPercent, logLineClassName, statusTone } from "../../utils/execution";
 
@@ -23,6 +24,9 @@ const { Text, Title } = Typography;
 function resultMessage(execution: Execution): string {
   if (execution.status === "success") {
     return execution.result_url ? "执行完成，2 秒后自动打开结果页。" : "执行完成。";
+  }
+  if (execution.status === "cancelled") {
+    return "任务已停止。";
   }
   return execution.error_message || "执行失败。";
 }
@@ -43,13 +47,16 @@ export function ExecutionConsolePage() {
   const [pendingText, setPendingText] = useState("");
   const [autoScroll, setAutoScroll] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
+  const [cancelErrorMessage, setCancelErrorMessage] = useState("");
+  const [cancelSubmitting, setCancelSubmitting] = useState(false);
   const [redirected, setRedirected] = useState(false);
   const consoleRef = useRef<HTMLDivElement | null>(null);
   const offsetRef = useRef(0);
   const pendingTextRef = useRef("");
 
   const percent = useMemo(() => executionPercent(execution || undefined), [execution]);
-  const finished = execution?.status === "success" || execution?.status === "failed";
+  const finished = execution?.status === "success" || execution?.status === "failed" || execution?.status === "cancelled";
+  const cancellable = execution?.status === "queued" || execution?.status === "running" || execution?.status === "cancelling";
 
   useEffect(() => {
     let cancelled = false;
@@ -60,6 +67,7 @@ export function ExecutionConsolePage() {
     setLines([]);
     setPendingText("");
     setErrorMessage("");
+    setCancelErrorMessage("");
     setRedirected(false);
 
     async function poll() {
@@ -131,6 +139,23 @@ export function ExecutionConsolePage() {
 
   const renderedLines = pendingText ? lines.concat(pendingText) : lines;
 
+  async function handleCancel() {
+    if (!executionId || !cancellable) {
+      return;
+    }
+    setCancelSubmitting(true);
+    setCancelErrorMessage("");
+    try {
+      const payload = await cancelExecution(executionId);
+      setExecution(payload);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "停止任务失败。";
+      setCancelErrorMessage(message);
+    } finally {
+      setCancelSubmitting(false);
+    }
+  }
+
   return (
     <main className="console-shell">
       <section className="console-head">
@@ -140,7 +165,7 @@ export function ExecutionConsolePage() {
           <Text className="execution-id">{executionId || "loading..."}</Text>
         </div>
         <div className="status-card">
-          <Tag color={statusTone(execution?.status)} icon={execution?.status === "running" ? <SyncOutlined spin /> : undefined}>
+          <Tag color={statusTone(execution?.status)} icon={execution?.status === "running" || execution?.status === "cancelling" ? <SyncOutlined spin /> : undefined}>
             {execution?.status || "queued"}
           </Tag>
           <strong className="progress-percent">{percent}%</strong>
@@ -173,15 +198,37 @@ export function ExecutionConsolePage() {
         />
       )}
 
+      {cancelErrorMessage && (
+        <Alert
+          className="console-alert"
+          type="error"
+          showIcon
+          message="停止任务失败"
+          description={cancelErrorMessage}
+        />
+      )}
+
       <section className="console-panel">
         <div className="console-toolbar">
           <Space>
             <SyncOutlined />
             <strong>运行日志</strong>
           </Space>
-          <Button onClick={() => setAutoScroll((value) => !value)}>
-            自动滚动: {autoScroll ? "开" : "关"}
-          </Button>
+          <Space>
+            {cancellable ? (
+              <Button
+                danger
+                icon={<StopOutlined />}
+                loading={cancelSubmitting || execution?.status === "cancelling"}
+                onClick={handleCancel}
+              >
+                {execution?.status === "cancelling" ? "正在停止" : "停止任务"}
+              </Button>
+            ) : null}
+            <Button onClick={() => setAutoScroll((value) => !value)}>
+              自动滚动: {autoScroll ? "开" : "关"}
+            </Button>
+          </Space>
         </div>
         <div ref={consoleRef} className="console-output">
           {renderedLines.map((line, index) => (
@@ -197,6 +244,8 @@ export function ExecutionConsolePage() {
           <Space>
             {execution.status === "success" ? (
               <CheckCircleOutlined className="result-success" />
+            ) : execution.status === "cancelled" ? (
+              <StopOutlined className="result-failed" />
             ) : (
               <CloseCircleOutlined className="result-failed" />
             )}

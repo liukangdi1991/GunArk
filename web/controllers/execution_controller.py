@@ -41,6 +41,13 @@ def get_execution(execution_id: str) -> dict[str, Any]:
     return execution
 
 
+def cancel_execution(execution_id: str) -> dict[str, Any]:
+    try:
+        return execution_service.cancel_execution(execution_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="执行记录不存在") from exc
+
+
 def read_console(execution_id: str, offset: int = 0) -> dict[str, Any]:
     console = execution_service.read_console(execution_id, offset=offset)
     if console is None:

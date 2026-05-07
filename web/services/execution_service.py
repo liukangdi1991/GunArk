@@ -19,9 +19,14 @@ from web.services import backtest_service, market_service, selection_service
 
 
 ExecutionWorker = Callable[["ExecutionContext"], dict[str, Any]]
+TERMINAL_STATUSES = {"success", "failed", "cancelled"}
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gunark-exec")
 _lock = RLock()
+
+
+class ExecutionCancelled(RuntimeError):
+    pass
 
 
 @dataclass
@@ -54,6 +59,8 @@ class ExecutionContext:
     def start(self) -> None:
         now = _now()
         state = _load_state(self.execution_id)
+        if state.status == "cancelling":
+            raise ExecutionCancelled("任务已停止")
         state.status = "running"
         state.started_at = now
         state.updated_at = now
@@ -63,6 +70,8 @@ class ExecutionContext:
 
     def update(self, current: int, total: int, message: str) -> None:
         state = _load_state(self.execution_id)
+        if state.status == "cancelling":
+            raise ExecutionCancelled("任务已停止")
         state.progress_current = max(0, int(current))
         state.progress_total = max(0, int(total))
         state.progress_message = message
@@ -72,9 +81,15 @@ class ExecutionContext:
     def log(self, message: str, level: str = "INFO") -> None:
         _append_log(self.execution_id, message, level=level)
 
+    def cancel_requested(self) -> bool:
+        return _is_cancel_requested(self.execution_id)
+
     def finish(self, result: dict[str, Any]) -> None:
         now = _now()
         state = _load_state(self.execution_id)
+        if state.status == "cancelling":
+            self.cancel()
+            return
         state.status = "success"
         state.finished_at = now
         state.updated_at = now
@@ -110,6 +125,17 @@ class ExecutionContext:
         state.error_message = error
         _save_state(state)
         self.log(f"执行失败: {error}", level="ERROR")
+
+    def cancel(self, message: str = "任务已停止") -> None:
+        now = _now()
+        state = _load_state(self.execution_id)
+        state.status = "cancelled"
+        state.finished_at = now
+        state.updated_at = now
+        state.progress_message = message
+        state.error_message = None
+        _save_state(state)
+        self.log(message, level="WARN")
 
 
 def submit_execution(payload: ExecutionRequest) -> dict[str, Any]:
@@ -217,6 +243,7 @@ def submit_market_fetch(
             payload,
             progress=ctx.update,
             log=ctx.log,
+            should_cancel=ctx.cancel_requested,
         ),
     )
 
@@ -226,6 +253,27 @@ def get_execution(execution_id: str) -> dict[str, Any] | None:
         return _load_state(execution_id).to_dict()
     except FileNotFoundError:
         return None
+
+
+def cancel_execution(execution_id: str) -> dict[str, Any]:
+    state = _load_state(execution_id)
+    if state.status in TERMINAL_STATUSES:
+        payload = state.to_dict()
+        payload["console_url"] = f"/console/{execution_id}"
+        return payload
+    if state.status == "cancelling":
+        payload = state.to_dict()
+        payload["console_url"] = f"/console/{execution_id}"
+        return payload
+
+    state.status = "cancelling"
+    state.updated_at = _now()
+    state.progress_message = "正在停止任务"
+    _save_state(state)
+    _append_log(execution_id, "收到停止请求，正在停止任务", level="WARN")
+    payload = state.to_dict()
+    payload["console_url"] = f"/console/{execution_id}"
+    return payload
 
 
 def read_console(execution_id: str, offset: int = 0) -> dict[str, Any] | None:
@@ -246,7 +294,7 @@ def read_console(execution_id: str, offset: int = 0) -> dict[str, Any] | None:
     return {
         "execution": state.to_dict(),
         "offset": new_offset,
-        "more": state.status in {"queued", "running"},
+        "more": state.status in {"queued", "running", "cancelling"},
         "text": text,
     }
 
@@ -279,9 +327,12 @@ def _submit(
 
 def _execute(execution_id: str, worker: ExecutionWorker) -> None:
     ctx = ExecutionContext(execution_id)
-    ctx.start()
     try:
+        ctx.start()
         result = worker(ctx)
+    except (ExecutionCancelled, market_service.MarketDataCancelled):
+        ctx.cancel()
+        return
     except Exception as exc:  # noqa: BLE001 - errors should be visible in console.
         ctx.fail(str(exc))
         return
@@ -325,6 +376,13 @@ def _load_state(execution_id: str) -> ExecutionState:
                 raise
             time.sleep(0.05)
     return ExecutionState(**payload)
+
+
+def _is_cancel_requested(execution_id: str) -> bool:
+    try:
+        return _load_state(execution_id).status == "cancelling"
+    except FileNotFoundError:
+        return False
 
 
 def _append_log(execution_id: str, message: str, level: str = "INFO") -> None:

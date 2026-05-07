@@ -33,7 +33,12 @@ TRADE_CAL_LOOKBACK_DAYS = 45
 DEFAULT_CALENDAR_START_YEAR = 2019
 ProgressCallback = Callable[[int, int, str], None]
 LogCallback = Callable[..., None]
+CancelCallback = Callable[[], bool]
 _STOCKLIST_LOCK = threading.Lock()
+
+
+class MarketDataCancelled(RuntimeError):
+    pass
 
 
 def fetch_market_data(
@@ -41,11 +46,13 @@ def fetch_market_data(
     *,
     progress: ProgressCallback | None = None,
     log: LogCallback | None = None,
+    should_cancel: CancelCallback | None = None,
 ) -> dict[str, Any]:
     start = _resolve_date_arg(payload.start)
     end = _resolve_date_arg(payload.end)
     exclude_boards = set(payload.exclude_boards or [])
 
+    _raise_if_cancelled(should_cancel)
     if progress:
         progress(0, 0, "正在初始化行情接口")
     if log:
@@ -88,6 +95,7 @@ def fetch_market_data(
         )
 
     for index, stock in enumerate(stocks, 1):
+        _raise_if_cancelled(should_cancel)
         code = stock["code"]
         name = stock["name"]
         label = f"{code} {name}".strip()
@@ -108,7 +116,15 @@ def fetch_market_data(
 
         if progress:
             progress(index - 1, total, f"正在拉取 {label}")
-        status = _fetch_one_with_log(code, name, start, effective_end, DATA_DIR, log=log)
+        status = _fetch_one_with_log(
+            code,
+            name,
+            start,
+            effective_end,
+            DATA_DIR,
+            log=log,
+            should_cancel=should_cancel,
+        )
         if status == "failed":
             failed += 1
         elif status == "empty":
@@ -289,11 +305,13 @@ def _fetch_one_with_log(
     out_dir,
     *,
     log: LogCallback | None,
+    should_cancel: CancelCallback | None = None,
 ) -> str:
     label = f"{code} {name}".strip()
     parquet_path = out_dir / f"{code}.parquet"
 
     for attempt in range(1, 4):
+        _raise_if_cancelled(should_cancel)
         try:
             pdf = _get_kline_tushare(code, start, end)
             if pdf.empty:
@@ -301,10 +319,7 @@ def _fetch_one_with_log(
                     log(f"{label} 返回空数据", "WARN")
                 return "empty"
             pdf = validate(pdf)
-            pdf["date"] = pdf["date"].dt.strftime("%Y-%m-%d")
-            pl_df = pl.from_pandas(pdf).with_columns(
-                pl.col("date").str.strptime(pl.Date, "%Y-%m-%d")
-            ).sort("date")
+            pl_df = _kline_pdf_to_polars(pdf)
             pl_df.write_parquet(parquet_path, compression="zstd")
             return "ok"
         except Exception as exc:  # noqa: BLE001 - retry details should be visible in console.
@@ -314,7 +329,7 @@ def _fetch_one_with_log(
                         f"{label} 第 {attempt} 次抓取疑似限流，冷却 {COOLDOWN_SECS} 秒: {exc}",
                         "WARN",
                     )
-                time.sleep(COOLDOWN_SECS)
+                _sleep_with_cancel(COOLDOWN_SECS, should_cancel)
             else:
                 silent_seconds = 15 * attempt
                 if log:
@@ -322,11 +337,76 @@ def _fetch_one_with_log(
                         f"{label} 第 {attempt} 次抓取失败，{silent_seconds} 秒后重试: {exc}",
                         "WARN",
                     )
-                time.sleep(silent_seconds)
+                _sleep_with_cancel(silent_seconds, should_cancel)
 
     if log:
         log(f"{label} 三次抓取均失败，已跳过", "ERROR")
     return "failed"
+
+
+def _raise_if_cancelled(should_cancel: CancelCallback | None) -> None:
+    if should_cancel and should_cancel():
+        raise MarketDataCancelled("任务已停止")
+
+
+def _sleep_with_cancel(seconds: int | float, should_cancel: CancelCallback | None) -> None:
+    deadline = time.monotonic() + max(0.0, float(seconds))
+    while True:
+        _raise_if_cancelled(should_cancel)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(1.0, remaining))
+
+
+def _kline_pdf_to_polars(pdf: Any) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "date": [_coerce_kline_date(value) for value in pdf["date"].tolist()],
+            "open": _float_column(pdf, "open"),
+            "close": _float_column(pdf, "close"),
+            "high": _float_column(pdf, "high"),
+            "low": _float_column(pdf, "low"),
+            "volume": _float_column(pdf, "volume"),
+        },
+        schema={
+            "date": pl.Date,
+            "open": pl.Float64,
+            "close": pl.Float64,
+            "high": pl.Float64,
+            "low": pl.Float64,
+            "volume": pl.Float64,
+        },
+    ).sort("date")
+
+
+def _coerce_kline_date(value: Any) -> dt.date:
+    if isinstance(value, dt.datetime):
+        return value.date()
+    if isinstance(value, dt.date):
+        return value
+    if hasattr(value, "to_pydatetime"):
+        return value.to_pydatetime().date()
+    if hasattr(value, "date") and callable(value.date):
+        return value.date()
+
+    text = str(value).strip()
+    if "-" in text:
+        return dt.datetime.strptime(text[:10], "%Y-%m-%d").date()
+    return dt.datetime.strptime(text[:8], "%Y%m%d").date()
+
+
+def _float_column(pdf: Any, column: str) -> list[float | None]:
+    values = []
+    for value in pdf[column].tolist():
+        if value is None:
+            values.append(None)
+            continue
+        try:
+            values.append(float(value))
+        except (TypeError, ValueError):
+            values.append(None)
+    return values
 
 
 def _load_stocks(stocklist_csv, exclude_boards: set[str]) -> list[dict[str, str]]:

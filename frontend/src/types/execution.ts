@@ -1,4 +1,4 @@
-export type ExecutionStatus = "queued" | "running" | "success" | "failed";
+export type ExecutionStatus = "queued" | "running" | "cancelling" | "cancelled" | "success" | "failed";
 
 export interface Execution {
   execution_id: string;
