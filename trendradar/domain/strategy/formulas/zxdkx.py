@@ -10,7 +10,6 @@ def compute_zx_lines(
 ) -> tuple[pl.Series, pl.Series]:
     close = df["close"]
     ma1 = close.rolling_mean(m1)
-    ma2 = close.rolling_mean(m2)
 
     ma3 = close.rolling_mean(m3)
     ma4 = close.rolling_mean(m4)
