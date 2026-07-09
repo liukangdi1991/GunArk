@@ -6,8 +6,8 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request as FastAPIRequest
 
-from trendradar.interfaces.api.schemas.backtest import (
-    BacktestSubmitRequest,
+from trendradar.interfaces.api.schemas.execution import (
+    BacktestRequest as BacktestSubmitRequest,
     SelectionBacktestRequest,
 )
 
@@ -88,7 +88,7 @@ def delete_all_backtest_results(request: FastAPIRequest):
     if root.exists():
         import shutil
         for exec_dir in list(root.iterdir()):
-            if exec_dir.is_dir() and (exec_dir / "backtest" / "result.json").exists():
+            if exec_dir.is_dir() and (exec_dir / "backtest" / "metrics.json").exists():
                 shutil.rmtree(exec_dir)
                 count += 1
     return {"data": {"deleted": count}}
