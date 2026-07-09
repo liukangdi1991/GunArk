@@ -69,6 +69,8 @@ trendradar/
 
 `domain/` 存放业务模型、协议和确定性规则。这里的代码尽量不依赖 FastAPI、SQLite 或具体文件路径。
 
+`domain/research/` 只作为后续研究型分析的预留边界，V2 首版不实现具体功能；如果实现期没有明确研究工作流，可以先不创建该目录，避免空模块制造歧义。
+
 `infrastructure/` 存放基础设施适配器，包括 SQLite、parquet 文件、Tushare、运行时路径、checksum 和 artifact 存储。
 
 `app/` 存放用例编排逻辑，例如提交行情同步任务、执行选股、执行选股回测、取消任务、组装结果元信息。
@@ -230,7 +232,10 @@ class SelectionStrategy(Protocol):
 trade_date: date
 market_data: pl.DataFrame
 candidate_codes: list[str] | None
+get_data_dict: Callable[[], dict[str, pl.DataFrame]]
 ```
+
+`get_data_dict` 是兼容现有 runner 精筛流程的懒加载接口。首版可以由 adapter 从 `MarketDataStore` 或已加载的 `market_data` 构建，必须保持惰性，避免每个策略启动时都提前展开所有单票 DataFrame。
 
 `SelectionResult` 至少包含：
 
@@ -322,6 +327,8 @@ is_suspended: bool | null
 
 价格口径必须在 market metadata 中明确记录。V2 首版默认沿用当前 Tushare 拉取口径；如果后续支持前复权/后复权/不复权切换，必须把复权类型写入 market sync lineage 和 backtest lineage。
 
+V2 首版采用“6 列兼容扩展”策略：`date/open/high/low/close/volume` 是必填核心列，`code/amount/adj_factor/is_suspended` 是 nullable 扩展列。行情同步写入 V2 parquet 时必须保证返回给 `MarketDataStore.load_bars()` 的 DataFrame 具备完整 schema；如果上游暂未拉取扩展列，则由写入层或读取层补齐 null/default 值。现有 selector 和回测首版只依赖核心 6 列，不能强依赖扩展列。
+
 选股和回测代码不得直接扫描原始 parquet 文件。
 
 ### 行情同步与 Tushare 适配
@@ -376,6 +383,8 @@ StrategySignal
 
 无论是单日选股还是批量选股，选股流程都写入同一种标准信号 artifact。
 
+`SignalRepository` 是 `SignalSet` 的持久化入口，只负责从 artifact store 读写标准信号、校验 schema version 和返回可回测的 `SignalSet`；它不负责策略解析、信号去重或结果聚合。策略解析由 `StrategyResolver` 完成，展示聚合由 summary/report 层完成。
+
 `signals.json` 使用数组结构，不使用策略名作为动态 key：
 
 ```json
@@ -386,7 +395,7 @@ StrategySignal
   "signal_to": "2026-07-09",
   "signals": [
     {
-      "strategy_id": "b1",
+      "strategy_id": "bbi_kdj_b1",
       "strategy_name": "B1战法",
       "group_ids": ["default"],
       "primary_group_id": "default",
@@ -429,7 +438,7 @@ storage/objects/executions/<execution_key>/
   "requested_strategies": ["peak_kdj"],
   "resolved_strategies": [
     {
-      "id": "b1",
+      "id": "bbi_kdj_b1",
       "name": "B1战法",
       "group_ids": ["default"],
       "class_name": "SuperB1Selector",
@@ -621,6 +630,8 @@ market_sync_execution -> selection_execution  link_type = "selection_uses_market
 V2 DDL 必须明确约束和索引，不只停留在字段列表：
 
 - `executions.execution_key` 唯一。
+- `execution_items.execution_key` 外键引用 `executions.execution_key`。
+- `market_sync_runs.execution_key` 外键引用 `executions.execution_key`。
 - `artifacts.storage_key` 唯一。
 - `artifacts(execution_key, artifact_type)` 唯一，除非某类 artifact 明确允许多文件。
 - `strategy_groups.id` 主键。
@@ -632,6 +643,8 @@ V2 DDL 必须明确约束和索引，不只停留在字段列表：
 - `manifest_key` 和 `lineage_key` 是 artifact storage key，不是绝对路径。
 - SQLite 连接必须启用 `PRAGMA foreign_keys = ON`。
 - SQLite 建议启用 WAL，以改善 Web 查询和后台任务写入并发。
+
+`execution_items.execution_key` 使用字符串外键引用 `executions.execution_key`，不再通过整数 `execution_id` 暴露跨层关联；整数 `id` 只作为 SQLite 内部自增主键。`market_sync_runs.execution_key` 同样是 `executions.execution_key` 的外键，表示一次行情同步 execution 的领域结果子表。
 
 `params_json` 和 `metrics_json` 使用 JSON 字符串是有意简化，适合私人工作台；V2 不继续沿用旧版 key-value 参数子表。
 
@@ -812,14 +825,16 @@ V2 存储布局变化会影响 Docker 和二进制发布包：
 - 策略组创建、删除和 default 组保护。
 - 策略解析器覆盖按组、按策略、混合、空请求、禁用组、禁用策略、多组重复策略和 primary group 排序。
 - MarketDataStore 能读取和原子写入 V2 `storage/market/bars/` 布局。
+- MarketDataStore 对只有核心 6 列的 parquet 能补齐 nullable 扩展列，并返回稳定 V2 schema。
 - Tushare 同步保留限流识别、重试退避、16:00 cutoff、增量跳过和取消检查。
 - `SignalSet` 按固定 JSON 数组结构序列化与反序列化。
 - 选股写入 V2 选股 artifact。
+- LegacySelectorAdapter 能把 `SelectionContext.get_data_dict` 传给现有 runner，并保持懒加载。
 - 选股回测使用和选股相同的策略解析器。
 - 回测消费 `SignalSet`，不消费旧信号文件。
 - 回测交易规则保护当前涨跌停、止损、持仓规则行为。
 - `execution_links` 能连接选股和回测结果，并验证 source/target 方向。
-- SQLite 约束、唯一索引、foreign keys 和 WAL 初始化可验证。
+- SQLite 约束、唯一索引、foreign keys 和 WAL 初始化可验证，尤其是 `execution_items` 和 `market_sync_runs` 到 `executions.execution_key` 的外键。
 - 策略注册表能处理同 class 多策略实例和旧 configs.json 初始导入。
 - 前端类型和 API schema 覆盖策略组、策略设置、混合运行请求。
 - 全新初始化能创建默认存储、default 策略组和策略成员关系。
@@ -832,17 +847,19 @@ V2 存储布局变化会影响 Docker 和二进制发布包：
 
 建议迁移顺序：
 
-1. 添加 V2 包结构和 runtime/storage schema。
-2. 添加策略注册表、策略组和策略解析器。
-3. 添加行情存储布局和同步流程。
-4. 添加信号模型和 artifact writer。
-5. 添加使用 V2 信号输出的选股 runner。
-6. 添加消费 V2 `SignalSet` 的回测 runner。
-7. 添加任务系统迁移层，沿用现有 state.json、console.log、取消和进度模型。
+1. 添加 V2 包结构、runtime/storage schema 和破坏性 init/reset 命令。
+2. 添加任务系统迁移层，沿用现有 state.json、console.log、取消和进度模型；后续行情同步、选股和回测都通过这个 job shell 触发。
+3. 添加策略注册表、策略组和策略解析器。
+4. 添加行情存储布局和同步流程，并接入 `market_data_sync` job。
+5. 添加信号模型和 artifact writer。
+6. 添加使用 V2 信号输出的选股 runner，并接入 selection jobs。
+7. 添加消费 V2 `SignalSet` 的回测 runner，并接入 backtest jobs。
 8. 添加策略组 API 和前端支持。
 9. 将 Web 执行流程切换到 V2 services。
 10. 移除旧运行时假设、根目录 `db/` 使用和旧 artifact 格式依赖。
 11. 更新 README、Docker、二进制发布包和部署脚本以适配 V2 存储布局。
+
+如果某个领域组件在 job shell 完成前需要验证，只允许通过测试或临时开发脚本直接调用 service/function，不把临时入口接入正式 API。
 
 ## 验收标准
 
