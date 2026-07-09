@@ -6,6 +6,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request as FastAPIRequest
 
+from trendradar.interfaces.api.schemas.backtest import (
+    BacktestSubmitRequest,
+    SelectionBacktestRequest,
+)
+
 router = APIRouter(prefix="/api", tags=["backtest"])
 
 
@@ -35,19 +40,16 @@ def list_backtest_results(request: FastAPIRequest):
             if not exec_dir.is_dir():
                 continue
             backtest_dir = exec_dir / "backtest"
-            result_file = backtest_dir / "result.json"
-            if not result_file.exists():
+            metrics_file = backtest_dir / "metrics.json"
+            if not metrics_file.exists():
                 continue
             try:
                 import json
-                result = json.loads(result_file.read_text(encoding="utf-8"))
+                metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
                 items.append({
                     "execution_key": exec_dir.name,
                     "job_id": exec_dir.name,
-                    "summary": {
-                        k: v for k, v in result.items()
-                        if k not in ("trades", "skips", "equity_curve")
-                    },
+                    "summary": metrics,
                 })
             except Exception:
                 continue
@@ -90,3 +92,35 @@ def delete_all_backtest_results(request: FastAPIRequest):
                 shutil.rmtree(exec_dir)
                 count += 1
     return {"data": {"deleted": count}}
+
+
+@router.post("/backtests")
+def submit_backtest_route(body: BacktestSubmitRequest, request: FastAPIRequest):
+    from trendradar.app.services.backtest_service import submit_backtest
+
+    try:
+        job_id = submit_backtest(
+            _executor(request),
+            _market_store(request),
+            _signal_repo(request),
+            body.model_dump(exclude_none=True),
+        )
+        return {"data": {"job_id": job_id, "status": "submitted"}}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/selection-backtest")
+def submit_selection_backtest_route(body: SelectionBacktestRequest, request: FastAPIRequest):
+    from trendradar.app.services.backtest_service import submit_selection_backtest
+
+    try:
+        job_id = submit_selection_backtest(
+            _executor(request),
+            _market_store(request),
+            _signal_repo(request),
+            body.model_dump(exclude_none=True),
+        )
+        return {"data": {"job_id": job_id, "status": "submitted"}}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

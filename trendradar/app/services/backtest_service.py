@@ -179,7 +179,7 @@ def _run_backtest_worker(
             json.dumps(result.metrics, ensure_ascii=False, default=str, indent=2),
             encoding="utf-8",
         )
-        Path(out_dir / "report.json").write_text(
+        Path(out_dir / "result.json").write_text(
             json.dumps(output, ensure_ascii=False, default=str, indent=2),
             encoding="utf-8",
         )
@@ -195,17 +195,15 @@ def _link_backtest_to_selection(selection_key: str, backtest_key: str) -> None:
     """Insert execution_links row connecting selection to backtest."""
     from trendradar.infrastructure.runtime import runtime_root
     from trendradar.infrastructure.storage.connection import StorageConnection
-    from pathlib import Path
 
-    store = StorageConnection(runtime_root() / "storage")
-    conn = store.connect()
-    conn.execute(
-        "INSERT OR IGNORE INTO execution_links "
-        "(source_execution_key, target_execution_key, link_type) "
-        "VALUES (?, ?, 'backtest_uses_selection')",
-        (selection_key, backtest_key),
-    )
-    conn.commit()
+    with StorageConnection(runtime_root() / "storage").connection() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO execution_links "
+            "(source_execution_key, target_execution_key, link_type) "
+            "VALUES (?, ?, 'backtest_uses_selection')",
+            (selection_key, backtest_key),
+        )
+        conn.commit()
 
 
 def submit_backtest(
@@ -246,7 +244,11 @@ def submit_backtest(
             return
 
         config = _build_config(request)
-        _run_backtest_worker(ctx, signal_set, market_store, config)
+        from trendradar.infrastructure.runtime import runtime_root
+        result_path = str(
+            runtime_root() / "storage" / "objects" / "executions" / ctx.job_id / "backtest" / "result.json"
+        )
+        _run_backtest_worker(ctx, signal_set, market_store, config, result_path)
 
     return executor.submit("backtest", worker, request)
 

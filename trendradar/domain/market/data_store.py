@@ -231,7 +231,9 @@ class LocalParquetMarketStore(MarketDataStore):
         result = sorted(unified)
 
         try:
-            pl.DataFrame({"date": result}).write_parquet(cache_path)
+            pl.DataFrame({"date": result}).with_columns(
+                pl.col("date").cast(pl.Date)
+            ).write_parquet(cache_path)
         except Exception:
             pass
 

@@ -146,9 +146,9 @@ def _run_selection(
                     trade_date=trade_date,
                     market_data=market_data,
                     candidate_codes=candidate_codes,
-                    get_data_dict=lambda: {
+                    get_data_dict=lambda codes=candidate_codes: {
                         c: market_data.filter(pl.col("code") == c)
-                        for c in candidate_codes
+                        for c in codes
                     },
                 )
                 result = selector.select(context)

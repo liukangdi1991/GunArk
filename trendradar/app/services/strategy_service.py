@@ -66,6 +66,8 @@ def create_strategy_group(store, name: str, description: str = "") -> dict:
         "description": description,
         "enabled": True,
         "sort_order": 0,
+        "created_at": now,
+        "updated_at": now,
         "members": [],
     }
 
