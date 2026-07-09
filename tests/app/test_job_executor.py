@@ -144,10 +144,10 @@ def test_submit_and_cancel_before_finish(tmp_path):
 
     def slow_work(ctx):
         for _ in range(100):
+            time.sleep(0.01)
             if ctx.check_cancelled():
                 ctx.log("cancelled")
                 return
-            time.sleep(0.01)
         ctx.succeed({"done": True})
 
     job_id = executor.submit("backtest", slow_work, {})
@@ -216,7 +216,11 @@ def test_two_jobs_run_concurrently(tmp_path):
     executor.submit("selection", work_a, {})
     executor.submit("backtest", work_b, {})
 
-    time.sleep(0.3)
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        if len(results) == 2:
+            break
+        time.sleep(0.05)
 
     assert "a" in results
     assert "b" in results

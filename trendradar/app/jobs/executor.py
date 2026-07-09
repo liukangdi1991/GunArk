@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Lock
@@ -43,6 +42,8 @@ class JobExecutor:
     def cancel(self, job_id: str) -> bool:
         with self._lock:
             if job_id not in self._jobs:
+                return False
+            if job_id in self._cancelling:
                 return False
             self._cancelling.add(job_id)
         return True
@@ -94,14 +95,14 @@ class JobExecutor:
         )
         try:
             run_fn(ctx)
-            job = self._store.get_job(job_id)
-            if job is not None and job["status"] == "running":
-                ctx.succeed({})
+            if self._is_cancelled(job_id):
+                self._store.set_status(job_id, "cancelled")
+            else:
+                job = self._store.get_job(job_id)
+                if job is not None and job["status"] == "running":
+                    ctx.succeed({})
         except Exception as e:
             if self._is_cancelled(job_id):
                 self._store.set_status(job_id, "cancelled")
             else:
                 ctx.fail(str(e))
-        finally:
-            if self._is_cancelled(job_id):
-                self._store.set_status(job_id, "cancelled")
