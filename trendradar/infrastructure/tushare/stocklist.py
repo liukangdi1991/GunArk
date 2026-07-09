@@ -29,8 +29,7 @@ def sync_stock_list(bars_dir: Path) -> pl.DataFrame:
     df = pl.from_pandas(data)
 
     column_map = {
-        "ts_code": "code",
-        "symbol": "symbol",
+        "symbol": "code",
         "name": "name",
         "area": "area",
         "industry": "industry",

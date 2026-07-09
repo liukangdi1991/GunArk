@@ -1,0 +1,4 @@
+polars>=1.0
+
+[dev]
+pytest>=7.0

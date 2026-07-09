@@ -66,8 +66,12 @@ def get_backtest_report(execution_key: str, request: FastAPIRequest):
 
 @router.delete("/backtest-results/{execution_key}")
 def delete_backtest_result(execution_key: str, request: FastAPIRequest):
+    if "/" in execution_key or "\\" in execution_key or ".." in execution_key:
+        raise HTTPException(status_code=400, detail="Invalid execution_key")
     root = _artifacts_root(request)
-    target = root / execution_key
+    target = (root / execution_key).resolve()
+    if not str(target).startswith(str(root.resolve())):
+        raise HTTPException(status_code=400, detail="Invalid execution_key")
     if not target.exists():
         raise HTTPException(status_code=404, detail=f"Backtest result not found for '{execution_key}'")
     import shutil

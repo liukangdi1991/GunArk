@@ -31,4 +31,4 @@ RUN mkdir -p /data/db /data/storage/cache /data/storage/objects
 
 EXPOSE 8000
 
-CMD ["python", "trend_radar_launcher.py", "--runtime-dir", "/data", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "trendradar.interfaces.api.app:app", "--host", "0.0.0.0", "--port", "8000"]

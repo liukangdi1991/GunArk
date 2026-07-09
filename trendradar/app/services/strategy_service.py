@@ -115,6 +115,8 @@ def update_strategy_group(store, group_id: str, updates: dict) -> dict:
 
 
 def delete_strategy_group(store, group_id: str) -> dict:
+    if group_id == "default":
+        raise ValueError("Cannot delete the default strategy group")
     conn = store.connect()
     existing = conn.execute(
         "SELECT * FROM strategy_groups WHERE id = ?", (group_id,)

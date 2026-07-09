@@ -32,7 +32,7 @@ def submit_market_sync(
     """
     if bars_dir is None:
         from trendradar.infrastructure.runtime import runtime_root
-        bars_dir = runtime_root() / "storage" / "bars"
+        bars_dir = runtime_root() / "storage" / "market" / "bars"
 
     def worker(ctx: JobContext) -> None:
         ctx.log("Starting market data sync")
@@ -104,7 +104,7 @@ def get_market_status(store) -> dict:
     """
     from trendradar.infrastructure.runtime import runtime_root
 
-    bars_dir = runtime_root() / "storage" / "bars"
+    bars_dir = runtime_root() / "storage" / "market" / "bars"
     stock_count = len(list(bars_dir.glob("*.parquet"))) if bars_dir.exists() else 0
 
     conn = store.connect()

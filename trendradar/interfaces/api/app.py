@@ -16,8 +16,11 @@ async def _lifespan(app: FastAPI):
     from trendradar.infrastructure.storage.schema import init_schema
     from trendradar.domain.market.data_store import LocalParquetMarketStore
     from trendradar.domain.signal.repository import SignalRepository
+    from trendradar.domain.strategy.selectors import register_all
     from trendradar.app.jobs.persistence import JobStore
     from trendradar.app.jobs.executor import JobExecutor
+
+    register_all()
 
     storage_root = runtime_root() / "storage"
     storage_root.mkdir(parents=True, exist_ok=True)
@@ -28,7 +31,7 @@ async def _lifespan(app: FastAPI):
     artifact_store = ArtifactStore(storage_root)
     signal_repo = SignalRepository(artifact_store)
 
-    market_store = LocalParquetMarketStore(storage_root / "bars")
+    market_store = LocalParquetMarketStore(storage_root / "market" / "bars")
 
     job_store = JobStore(store.db_path)
     executor = JobExecutor(job_store)

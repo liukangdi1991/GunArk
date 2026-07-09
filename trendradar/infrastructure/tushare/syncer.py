@@ -84,6 +84,15 @@ def _is_up_to_date(path: Path, target_end: date) -> bool:
         return False
 
 
+def _to_ts_code(code: str) -> str:
+    code = str(code).zfill(6)
+    if code.startswith(("60", "68", "9")):
+        return f"{code}.SH"
+    elif code.startswith(("4", "8")):
+        return f"{code}.BJ"
+    return f"{code}.SZ"
+
+
 def _fetch_with_retry(
     pro, code: str, start: date, end: date, max_retries: int
 ) -> Optional[pl.DataFrame]:
@@ -91,7 +100,7 @@ def _fetch_with_retry(
     end_s = end.strftime("%Y%m%d")
 
     params = {
-        "ts_code": code,
+        "ts_code": _to_ts_code(code),
         "start_date": start_s,
         "end_date": end_s,
         "freq": "D",

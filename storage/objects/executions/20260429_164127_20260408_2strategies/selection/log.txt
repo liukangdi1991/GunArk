@@ -1,7 +1,0 @@
-选股运行日志
-execution_key: 20260429_164127_20260408_2strategies
-date: 2026-04-08
-strategies: 完美B1, B1战法（V2）
-summary:
-- 完美B1: count=0
-- B1战法（V2）: count=11

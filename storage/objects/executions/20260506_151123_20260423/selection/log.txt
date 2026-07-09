@@ -1,9 +1,0 @@
-选股运行日志
-execution_key: 20260506_151123_20260423
-date: 2026-04-23
-strategies: 倍量多空平衡策略
-signal_file: /workspace/github/GunArk/storage/objects/executions/20260506_151123_20260423/selection/signals.json
-elapsed_seconds: 0.923
-
-summary:
-- 倍量多空平衡策略: count=58, elapsed=0.919s

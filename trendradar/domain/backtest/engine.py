@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Callable, List, Optional, Protocol
 
+import polars as pl
 from trendradar.domain.backtest.config import BacktestConfig
 from trendradar.domain.backtest.execution import FillResult, calc_buy_fill, calc_sell_fill, is_limit_down, is_limit_up
 from trendradar.domain.backtest.models import Position, SkipRecord, TradeRecord
@@ -105,7 +106,11 @@ class BacktestEngine:
         return signal_date + timedelta(days=self.config.execution.fixed_hold_n_days + 1)
 
     @staticmethod
-    def _delta_one() -> timedelta:
+    def _to_rows(data):
+        """Normalize get_rows return to list[dict]."""
+        if isinstance(data, pl.DataFrame):
+            return data.to_dicts()
+        return list(data) if data else []
         return timedelta(days=1)
 
     def _get_latest_close(self, market_store: MarketDataStore, code: str, dt: date, fallback: float) -> float:
@@ -378,7 +383,7 @@ class BacktestEngine:
             return None
         start_idx = max(0, ref_idx - 113)
         start_date = calendar[start_idx]
-        rows = market_store.get_rows(code, start_date, ref_date)
+        rows = self._to_rows(market_store.get_rows(code, start_date, ref_date))
         if len(rows) < 114:
             return None
         closes = [float(r["close"]) for r in rows]
@@ -400,7 +405,7 @@ class BacktestEngine:
             return False
         today_close = float(today_row.get("close", 0))
 
-        rows = market_store.get_rows(code, pos.entry_date, cur_date)
+        rows = self._to_rows(market_store.get_rows(code, pos.entry_date, cur_date))
         holding_rows = [r for r in rows if r.get("date") and r["date"] >= pos.entry_date and r["date"] < cur_date]
         if not holding_rows:
             return False
