@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
-from typing import Any, Callable, Dict, List, Optional, Protocol
+from datetime import date, timedelta
+from typing import Any, Callable, List, Optional, Protocol
 
 from trendradar.domain.backtest.config import BacktestConfig
-from trendradar.domain.backtest.execution import calc_buy_fill, calc_sell_fill, is_limit_down, is_limit_up
+from trendradar.domain.backtest.execution import FillResult, calc_buy_fill, calc_sell_fill, is_limit_down, is_limit_up
 from trendradar.domain.backtest.models import Position, SkipRecord, TradeRecord
 from trendradar.domain.backtest.portfolio import (
     PortfolioState,
@@ -21,6 +21,7 @@ class MarketDataStore(Protocol):
     def get_row(self, code: str, dt: date) -> Optional[dict]: ...
     def get_previous_close(self, code: str, dt: date) -> Optional[float]: ...
     def get_calendar(self) -> List[date]: ...
+    def get_rows(self, code: str, start_dt: date, end_dt: date) -> List[dict]: ...
 
 
 @dataclass
@@ -55,8 +56,14 @@ class BacktestEngine:
         skips: list[SkipRecord] = []
         equity_curve: list[dict] = []
         cal_index = {d: i for i, d in enumerate(calendar)}
+        total = len(calendar)
 
-        for cur_date in calendar:
+        for idx, cur_date in enumerate(calendar):
+            if cancel_check and cancel_check():
+                break
+            if progress:
+                progress(idx + 1, total)
+
             self._process_exits(cur_date, state, trades, skips, cal_index, market_store)
             self._process_entries(cur_date, signals_by_date.get(cur_date, []), state, skips, market_store)
 
@@ -95,12 +102,10 @@ class BacktestEngine:
         return result
 
     def _calc_target_sell_date(self, signal_date: date) -> date:
-        from datetime import timedelta
         return signal_date + timedelta(days=self.config.execution.fixed_hold_n_days + 1)
 
     @staticmethod
-    def _delta_one() -> Any:
-        from datetime import timedelta
+    def _delta_one() -> timedelta:
         return timedelta(days=1)
 
     def _get_latest_close(self, market_store: MarketDataStore, code: str, dt: date, fallback: float) -> float:
@@ -155,7 +160,7 @@ class BacktestEngine:
                 continue
 
             prev_close = market_store.get_previous_close(code, cur_date)
-            if self.config.execution.reject_if_limit_up_on_buy and is_limit_up(row["open"], prev_close):
+            if self.config.execution.reject_if_limit_up_on_buy and is_limit_up(row["open"], prev_close, code=code):
                 skips.append(
                     SkipRecord(
                         strategy=sig["strategy"],
@@ -246,7 +251,7 @@ class BacktestEngine:
         open_price: float,
         shares: int,
         cash: float,
-    ) -> tuple[object, int]:
+    ) -> tuple[Optional[FillResult], int]:
         lot_size = self.config.capital.lot_size
         test_shares = shares
         while test_shares > 0:
@@ -271,16 +276,26 @@ class BacktestEngine:
             if row is None:
                 continue
             trigger_by_hold = cur_date >= pos.target_sell_date
-            if not trigger_by_hold:
+            trigger_by_zx = (
+                self.config.execution.force_sell_on_two_day_close_below_long_term_bull_bear_line
+                and self._is_two_day_close_below_long_term_bull_bear_line(market_store, code, cur_date)
+            )
+            trigger_by_recent_low = self._is_close_below_recent_low_stop(market_store, code, cur_date, pos)
+            if not (trigger_by_hold or trigger_by_zx or trigger_by_recent_low):
                 continue
 
             can_sell = True
             prev_close = market_store.get_previous_close(code, cur_date)
-            if self.config.execution.postpone_if_limit_down_on_sell and is_limit_down(row["close"], prev_close):
+            if self.config.execution.postpone_if_limit_down_on_sell and is_limit_down(row["close"], prev_close, code=code):
                 pos.planned_sell_attempts += 1
                 can_sell = False
                 if pos.planned_sell_attempts > self.config.execution.max_sell_postpone_days:
                     can_sell = True
+                    reason = "跌停顺延超上限，按收盘强制平仓"
+                    if trigger_by_zx and not trigger_by_hold:
+                        reason = "长期多空线连续两日跌破触发卖出，但跌停顺延超上限，按收盘强制平仓"
+                    if trigger_by_recent_low and not trigger_by_hold:
+                        reason = "近期低点止损触发卖出，但跌停顺延超上限，按收盘强制平仓"
                     skips.append(
                         SkipRecord(
                             strategy=pos.strategy,
@@ -288,7 +303,7 @@ class BacktestEngine:
                             signal_date=pos.signal_date,
                             buy_date=pos.entry_date,
                             stage="sell",
-                            reason="跌停顺延超上限，按收盘强制平仓",
+                            reason=reason,
                             date_ref=cur_date,
                         )
                     )
@@ -328,6 +343,70 @@ class BacktestEngine:
                     sell_postpone_days=postpone_days,
                 )
             )
+
+    def _is_two_day_close_below_long_term_bull_bear_line(
+        self, market_store: MarketDataStore, code: str, cur_date: date
+    ) -> bool:
+        today_row = market_store.get_row(code, cur_date)
+        if today_row is None:
+            return False
+        today_close = float(today_row.get("close", 0))
+        calendar = market_store.get_calendar()
+        idx_map = {d: i for i, d in enumerate(calendar)}
+        today_idx = idx_map.get(cur_date)
+        if today_idx is None or today_idx < 1:
+            return False
+        yesterday = calendar[today_idx - 1]
+        yesterday_row = market_store.get_row(code, yesterday)
+        if yesterday_row is None:
+            return False
+        yesterday_close = float(yesterday_row.get("close", 0))
+
+        long_term_line_today = self._calc_long_term_bull_bear_line(market_store, code, cur_date)
+        long_term_line_yesterday = self._calc_long_term_bull_bear_line(market_store, code, yesterday)
+        if long_term_line_today is None or long_term_line_yesterday is None:
+            return False
+        return today_close < long_term_line_today and yesterday_close < long_term_line_yesterday
+
+    def _calc_long_term_bull_bear_line(
+        self, market_store: MarketDataStore, code: str, ref_date: date
+    ) -> Optional[float]:
+        calendar = market_store.get_calendar()
+        idx_map = {d: i for i, d in enumerate(calendar)}
+        ref_idx = idx_map.get(ref_date)
+        if ref_idx is None or ref_idx < 113:
+            return None
+        start_idx = max(0, ref_idx - 113)
+        start_date = calendar[start_idx]
+        rows = market_store.get_rows(code, start_date, ref_date)
+        if len(rows) < 114:
+            return None
+        closes = [float(r["close"]) for r in rows]
+        ma14 = sum(closes[-14:]) / 14
+        ma28 = sum(closes[-28:]) / 28
+        ma57 = sum(closes[-57:]) / 57
+        ma114 = sum(closes[-114:]) / 114
+        return (ma14 + ma28 + ma57 + ma114) / 4.0
+
+    def _is_close_below_recent_low_stop(
+        self, market_store: MarketDataStore, code: str, cur_date: date, pos: Position
+    ) -> bool:
+        window = self.config.execution.close_below_recent_low_stop_window
+        if window is None or window <= 0:
+            return False
+
+        today_row = market_store.get_row(code, cur_date)
+        if today_row is None:
+            return False
+        today_close = float(today_row.get("close", 0))
+
+        rows = market_store.get_rows(code, pos.entry_date, cur_date)
+        holding_rows = [r for r in rows if r.get("date") and r["date"] >= pos.entry_date and r["date"] < cur_date]
+        if not holding_rows:
+            return False
+
+        recent_low = float(min(r["low"] for r in holding_rows[-window:]))
+        return today_close < recent_low
 
     def _compute_metrics(self, equity_curve: list[dict], trades: list[TradeRecord]) -> dict[str, Any]:
         if not equity_curve:

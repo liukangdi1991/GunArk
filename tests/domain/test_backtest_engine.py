@@ -23,6 +23,13 @@ class FakeMarketStore:
     def get_row(self, code: str, dt: date) -> Optional[dict]:
         return self._data.get(code, {}).get(dt)
 
+    def get_rows(self, code: str, start_dt: date, end_dt: date) -> List[dict]:
+        rows = self._data.get(code, {})
+        return [
+            r for d, r in sorted(rows.items())
+            if start_dt <= d <= end_dt
+        ]
+
     def get_previous_close(self, code: str, dt: date) -> Optional[float]:
         rows = self._data.get(code, {})
         dates = sorted(d for d in rows if d < dt)
@@ -251,3 +258,40 @@ class TestBacktestEngine:
             assert "equity" in row
             assert "cash" in row
             assert "position_count" in row
+
+    def test_realistic_cash_limits_positions(self):
+        d0 = date(2026, 7, 1)
+        d1 = _td(d0, 1)
+        d_sell = _td(d0, 6)
+
+        store = FakeMarketStore(
+            {
+                "000001": [
+                    {"date": _td(d0, -1), "open": 9.5, "close": 10.0, "high": 10.5, "low": 9.0, "volume": 1000000},
+                    {"date": d1, "open": 50.0, "close": 50.5, "high": 51.0, "low": 49.0, "volume": 2000000},
+                    {"date": d_sell, "open": 52.0, "close": 55.0, "high": 56.0, "low": 51.0, "volume": 3000000},
+                ],
+                "600519": [
+                    {"date": _td(d0, -1), "open": 49.0, "close": 50.0, "high": 51.0, "low": 48.0, "volume": 500000},
+                    {"date": d1, "open": 50.5, "close": 52.0, "high": 53.0, "low": 50.0, "volume": 600000},
+                    {"date": d_sell, "open": 52.0, "close": 55.0, "high": 56.0, "low": 51.0, "volume": 700000},
+                ],
+            }
+        )
+
+        signal_set = _make_signal_set(
+            "test", "Test",
+            {d0: ["000001", "600519"]},
+        )
+
+        config = _make_config(
+            capital={"initial_cash": 50000, "mode": "realistic", "fixed_cash_per_trade": 50000},
+            execution={"fixed_hold_n_days": 5},
+            portfolio={"max_daily_new_positions": 5, "max_positions": 5},
+        )
+        engine = BacktestEngine(config)
+
+        result = engine.run(signal_set, store)
+        assert len(result.trades) <= 1
+        if result.trades:
+            assert result.trades[0].total_cost <= 50000
