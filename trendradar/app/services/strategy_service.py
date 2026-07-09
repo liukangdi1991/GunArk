@@ -45,8 +45,14 @@ def list_strategy_groups(store) -> list[dict]:
 
 
 def create_strategy_group(store, name: str, description: str = "") -> dict:
+    import re
     conn = store.connect()
-    group_id = name.lower().replace(" ", "_")
+    base = re.sub(r"[^a-zA-Z0-9_\u4e00-\u9fff]", "_", name.lower().replace(" ", "_"))
+    group_id = base
+    counter = 1
+    while conn.execute("SELECT 1 FROM strategy_groups WHERE id = ?", (group_id,)).fetchone():
+        group_id = f"{base}_{counter}"
+        counter += 1
     now = _now_iso()
     conn.execute(
         "INSERT INTO strategy_groups (id, name, description, enabled, sort_order, created_at, updated_at) "

@@ -163,12 +163,28 @@ def _run_backtest_worker(
     if result_json_path:
         import json
         from pathlib import Path
-        Path(result_json_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(result_json_path).write_text(
+        import polars as pl
+
+        out_dir = Path(result_json_path).parent
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        if trades_data:
+            pl.DataFrame(trades_data).write_parquet(out_dir / "trades.parquet")
+        if skip_data:
+            pl.DataFrame(skip_data).write_parquet(out_dir / "skips.parquet")
+        if equity_data:
+            pl.DataFrame(equity_data).write_parquet(out_dir / "equity.parquet")
+
+        Path(out_dir / "metrics.json").write_text(
+            json.dumps(result.metrics, ensure_ascii=False, default=str, indent=2),
+            encoding="utf-8",
+        )
+        Path(out_dir / "report.json").write_text(
             json.dumps(output, ensure_ascii=False, default=str, indent=2),
             encoding="utf-8",
         )
-        ctx.log(f"Saved results to {result_json_path}")
+
+        ctx.log(f"Saved results to {out_dir}")
 
         _link_backtest_to_selection(signal_set.execution_key, ctx.job_id)
 

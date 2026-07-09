@@ -173,6 +173,16 @@ class LocalParquetMarketStore(MarketDataStore):
     # ------------------------------------------------------------------
 
     def stock_meta(self, codes: Optional[list[str]] = None) -> pl.DataFrame:
+        meta_path = self.bars_dir.parent / "stock_meta.parquet"
+        if meta_path.exists():
+            try:
+                df = pl.read_parquet(meta_path)
+                if codes:
+                    df = df.filter(pl.col("code").is_in(codes))
+                return df
+            except Exception:
+                pass
+
         all_paths = sorted(self.bars_dir.glob("*.parquet"))
         metas = []
         for p in all_paths:
@@ -189,7 +199,19 @@ class LocalParquetMarketStore(MarketDataStore):
     # ------------------------------------------------------------------
 
     def _collect_dates(self) -> list[date]:
-        """Scan all parquet files and return sorted unique dates."""
+        """Scan all parquet files and return sorted unique dates.
+
+        Results are cached in ``calendar.parquet`` in the parent directory.
+        """
+        cache_path = self.bars_dir.parent / "calendar.parquet"
+        try:
+            if cache_path.exists():
+                cached = pl.read_parquet(cache_path)
+                if not cached.is_empty():
+                    return sorted(cached["date"].unique().to_list())
+        except Exception:
+            pass
+
         all_paths = sorted(self.bars_dir.glob("*.parquet"))
         if not all_paths:
             return []
@@ -198,9 +220,7 @@ class LocalParquetMarketStore(MarketDataStore):
         for p in all_paths:
             try:
                 df = pl.read_parquet(p, columns=["date"])
-                date_sets.append(
-                    set(df["date"].unique().to_list())
-                )
+                date_sets.append(set(df["date"].unique().to_list()))
             except Exception:
                 continue
 
@@ -208,4 +228,11 @@ class LocalParquetMarketStore(MarketDataStore):
             return []
 
         unified = date_sets[0].union(*date_sets[1:]) if date_sets else set()
-        return sorted(unified)
+        result = sorted(unified)
+
+        try:
+            pl.DataFrame({"date": result}).write_parquet(cache_path)
+        except Exception:
+            pass
+
+        return result

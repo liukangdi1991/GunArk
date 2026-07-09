@@ -21,6 +21,7 @@ class SignalSet:
     signal_from: date | None = None
     signal_to: date | None = None
     strategies_snapshot: list[dict] = field(default_factory=list)
+    strategy_groups_snapshot: list[dict] = field(default_factory=list)
     signals: list[StrategySignal] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -30,6 +31,7 @@ class SignalSet:
             "signal_from": str(self.signal_from) if self.signal_from else None,
             "signal_to": str(self.signal_to) if self.signal_to else None,
             "strategies_snapshot": self.strategies_snapshot,
+            "strategy_groups_snapshot": self.strategy_groups_snapshot,
             "signals": [
                 {
                     "strategy_id": s.strategy_id,
@@ -62,6 +64,7 @@ class SignalSet:
             signal_from=date.fromisoformat(data["signal_from"]) if data.get("signal_from") else None,
             signal_to=date.fromisoformat(data["signal_to"]) if data.get("signal_to") else None,
             strategies_snapshot=data.get("strategies_snapshot", []),
+            strategy_groups_snapshot=data.get("strategy_groups_snapshot", []),
             signals=signals,
         )
 
