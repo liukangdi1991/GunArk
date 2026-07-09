@@ -106,6 +106,10 @@ class BacktestEngine:
         return signal_date + timedelta(days=self.config.execution.fixed_hold_n_days + 1)
 
     @staticmethod
+    def _delta_one() -> timedelta:
+        return timedelta(days=1)
+
+    @staticmethod
     def _to_rows(data):
         """Normalize get_rows return to list[dict]."""
         if isinstance(data, pl.DataFrame):
