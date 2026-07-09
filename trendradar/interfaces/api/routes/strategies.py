@@ -143,13 +143,17 @@ def reorder_members(group_id: str, body: ReorderRequest, request: FastAPIRequest
     if group is None:
         raise HTTPException(status_code=404, detail=f"Strategy group '{group_id}' not found")
 
-    conn.execute("DELETE FROM strategy_group_members WHERE group_id = ?", (group_id,))
-    for i, sid in enumerate(body.members):
-        conn.execute(
-            "INSERT INTO strategy_group_members (group_id, strategy_id, sort_order) VALUES (?, ?, ?)",
-            (group_id, sid, i),
-        )
-    conn.commit()
+    try:
+        conn.execute("DELETE FROM strategy_group_members WHERE group_id = ?", (group_id,))
+        for i, sid in enumerate(body.members):
+            conn.execute(
+                "INSERT INTO strategy_group_members (group_id, strategy_id, sort_order) VALUES (?, ?, ?)",
+                (group_id, sid, i),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail="Failed to reorder members")
 
     members = conn.execute(
         "SELECT strategy_id, sort_order FROM strategy_group_members WHERE group_id = ? ORDER BY sort_order ASC",

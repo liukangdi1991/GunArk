@@ -1,5 +1,7 @@
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Generator
 
 
 class StorageConnection:
@@ -13,3 +15,11 @@ class StorageConnection:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
         return conn
+
+    @contextmanager
+    def connection(self) -> Generator[sqlite3.Connection, None, None]:
+        conn = self.connect()
+        try:
+            yield conn
+        finally:
+            conn.close()

@@ -170,7 +170,26 @@ def _run_backtest_worker(
         )
         ctx.log(f"Saved results to {result_json_path}")
 
+        _link_backtest_to_selection(signal_set.execution_key, ctx.job_id)
+
     ctx.succeed(output)
+
+
+def _link_backtest_to_selection(selection_key: str, backtest_key: str) -> None:
+    """Insert execution_links row connecting selection to backtest."""
+    from trendradar.infrastructure.runtime import runtime_root
+    from trendradar.infrastructure.storage.connection import StorageConnection
+    from pathlib import Path
+
+    store = StorageConnection(runtime_root())
+    conn = store.connect()
+    conn.execute(
+        "INSERT OR IGNORE INTO execution_links "
+        "(source_execution_key, target_execution_key, link_type) "
+        "VALUES (?, ?, 'backtest_uses_selection')",
+        (selection_key, backtest_key),
+    )
+    conn.commit()
 
 
 def submit_backtest(

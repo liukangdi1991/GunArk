@@ -26,7 +26,17 @@ def get_market_status(request: FastAPIRequest):
     return get_market_status(_store(request))
 
 
-@router.get("/market-data/trading-dates")
+@router.post("/market-data/sync")
+def submit_market_sync(body: MarketSyncRequest, request: FastAPIRequest):
+    from trendradar.app.services.market_service import submit_market_sync
+    try:
+        job_id = submit_market_sync(
+            _executor(request),
+            {"codes": body.codes, "start_date": body.start, "end_date": body.end},
+        )
+        return {"data": {"job_id": job_id}}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 def get_trading_dates(
     start: str = Query(default=None),
     end: str = Query(default=None),
@@ -35,7 +45,7 @@ def get_trading_dates(
     from trendradar.infrastructure.runtime import runtime_root
     from trendradar.domain.market.data_store import LocalParquetMarketStore
 
-    bars_dir = runtime_root() / "storage" / "bars"
+    bars_dir = runtime_root() / "storage" / "market" / "bars"
     market_store = LocalParquetMarketStore(bars_dir)
 
     try:

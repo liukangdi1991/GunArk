@@ -146,7 +146,10 @@ def _run_selection(
                     trade_date=trade_date,
                     market_data=market_data,
                     candidate_codes=candidate_codes,
-                    get_data_dict=lambda: {},
+                    get_data_dict=lambda: {
+                        c: market_data.filter(pl.col("code") == c)
+                        for c in candidate_codes
+                    },
                 )
                 result = selector.select(context)
                 if result.selected_codes:
@@ -169,6 +172,47 @@ def _run_selection(
         signal_to=trading_dates[-1],
         strategies_snapshot=strategies_snapshot,
         signals=all_signals,
+    )
+
+
+def _write_selection_manifest(execution_key: str, signal_set: SignalSet) -> None:
+    """Write manifest.json and lineage.json for a selection execution."""
+    import json
+    from pathlib import Path
+    from datetime import datetime, timezone
+    from trendradar.infrastructure.runtime import runtime_root
+
+    exec_dir = runtime_root() / "storage" / "objects" / "executions" / execution_key / "selection"
+    exec_dir.mkdir(parents=True, exist_ok=True)
+
+    now = datetime.now(timezone.utc).isoformat()
+    manifest = {
+        "schema_version": "2.0",
+        "execution_key": execution_key,
+        "execution_type": "selection",
+        "created_at": now,
+        "status": "success",
+    }
+    (exec_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    lineage = {
+        "resolved_strategies": [
+            {
+                "id": s.strategy_id,
+                "name": s.strategy_name,
+                "params": {},
+            }
+            for s in signal_set.signals
+        ],
+        "market_data": {
+            "from": str(signal_set.signal_from) if signal_set.signal_from else None,
+            "to": str(signal_set.signal_to) if signal_set.signal_to else None,
+        },
+    }
+    (exec_dir / "lineage.json").write_text(
+        json.dumps(lineage, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
 
@@ -204,6 +248,8 @@ def submit_selection(
         artifact_store = ArtifactStore(runtime_root() / "storage")
         repo = SignalRepository(artifact_store)
         saved_path = repo.save(signal_set, ctx.job_id)
+
+        _write_selection_manifest(ctx.job_id, signal_set)
 
         summary = {
             "execution_key": signal_set.execution_key,

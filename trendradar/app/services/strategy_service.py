@@ -125,10 +125,28 @@ def delete_strategy_group(store, group_id: str) -> dict:
         raise ValueError(f"Strategy group '{group_id}' not found")
 
     result = _dict_from_row(existing)
+    _migrate_orphan_strategies(conn, group_id)
     conn.execute("DELETE FROM strategy_group_members WHERE group_id = ?", (group_id,))
     conn.execute("DELETE FROM strategy_groups WHERE id = ?", (group_id,))
     conn.commit()
     return result
+
+
+def _migrate_orphan_strategies(conn, group_id: str) -> None:
+    """Move strategies that only belong to the deleted group back to default."""
+    orphan = conn.execute(
+        "SELECT strategy_id FROM strategy_group_members WHERE group_id = ? "
+        "AND strategy_id NOT IN (SELECT strategy_id FROM strategy_group_members WHERE group_id != ?)",
+        (group_id, group_id),
+    ).fetchall()
+    max_sort = conn.execute(
+        "SELECT COALESCE(MAX(sort_order), -1) FROM strategy_group_members WHERE group_id = 'default'"
+    ).fetchone()[0]
+    for i, row in enumerate(orphan):
+        conn.execute(
+            "INSERT OR IGNORE INTO strategy_group_members (group_id, strategy_id, sort_order) VALUES (?, ?, ?)",
+            ("default", row["strategy_id"], max_sort + 1 + i),
+        )
 
 
 def list_strategies() -> list[dict]:
