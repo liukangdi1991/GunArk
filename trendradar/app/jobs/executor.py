@@ -86,13 +86,16 @@ class JobExecutor:
         job_type: str,
         run_fn: Callable[[JobContext], None],
     ) -> None:
-        self._store.update_started_at(job_id)
         ctx = JobContext(
             job_id=job_id,
             job_type=job_type,
             store=self._store,
             cancel_check=lambda: self._is_cancelled(job_id),
         )
+        try:
+            self._store.update_started_at(job_id)
+        except Exception:
+            pass
         try:
             run_fn(ctx)
             if self._is_cancelled(job_id):
