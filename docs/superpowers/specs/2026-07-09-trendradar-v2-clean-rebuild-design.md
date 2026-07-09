@@ -9,7 +9,7 @@ TrendRadar V2 是对当前私人量化研究工作台的一次破坏性重构。
 ## 已确认决策
 
 - V2 不兼容旧选股结果、旧回测结果、旧 `storage/app.db`、旧 artifact、旧 `db/` 行情 parquet 文件。
-- V2 初始化时会清空旧运行数据，并创建新的运行目录结构。
+- V2 初始化时会清空旧运行数据，并创建新的运行目录结构。清空必须由显式命令触发，普通 Web/API 启动不得自动删除旧数据。
 - 现有策略算法、指标公式、回测交易规则可以迁移到新架构。
 - Web 工作台仍然是主界面，默认继续使用 FastAPI + React，除非后续设计明确调整。
 - 所有可变运行数据都放到 `storage/` 下。
@@ -27,6 +27,17 @@ TrendRadar V2 是对当前私人量化研究工作台的一次破坏性重构。
 - V2 首版不强制引入 Redis、Celery、PostgreSQL。
 - 架构重构期间不重设策略算法。
 - 除支持策略组和新执行模型所必需的改动外，不做大规模前端重设计。
+
+## 破坏性初始化安全策略
+
+V2 是清空重建，但删除动作必须受控。实现时必须满足：
+
+- 普通服务启动只检查并初始化缺失目录，不自动删除已有运行数据。
+- 清空旧运行数据只能由显式命令触发，例如 `trendradar init-v2 --reset-runtime` 或等价管理脚本。
+- 清空命令必须要求二次确认，或要求传入明确的确认参数，例如 `--confirm-reset`。
+- 清空范围只允许包含 V2 运行根目录下的 `storage/app.db`、`storage/objects/`、`storage/market/` 和旧根目录 `db/`。
+- 清空命令执行前应打印将删除的路径列表。
+- 部署脚本不得在升级时隐式清空数据；清空只属于首次 V2 重建或用户主动 reset。
 
 ## 目标架构
 
@@ -133,10 +144,12 @@ StrategyGroupMember
 
 - 当存储为空时，系统初始化 `default` 策略组。
 - 迁移过来的现有策略全部加入 `default`。
+- V2 清空重建后，旧 `configs.json` 不作为运行时权威数据源；它只作为迁移策略默认参数时的参考输入。
 - `default` 不能删除。
 - 删除非 default 组不会删除策略定义。
 - 删除非 default 组时，其组内策略仍保留在其他组里；如果某个策略只属于被删除的组，则自动移回 `default`。
 - 一个策略可以属于多个组。
+- 多个被请求策略组同时包含同一策略时，按用户请求组顺序确定该策略的 primary group；结果展示保留全部 `group_ids`，排序使用 primary group 的组顺序和组内成员顺序。
 - 禁用的策略组在按组执行时会被忽略。
 - 禁用的策略在按组执行和按策略直接执行时都会被忽略。
 - 策略 ID 必须是稳定的机器标识，不能依赖中文显示名。
@@ -161,6 +174,16 @@ domain/strategy/
 
 `adapter.py` 包装现有 selector 实现，在引入 V2 稳定策略协议的同时复用当前算法行为。
 
+### 策略定义与参数来源
+
+策略 class 和参数 schema 由代码注册表提供，运行时数据库保存用户配置。
+
+- 代码注册表定义 `strategy_id`、显示名、策略 class、参数 schema、默认参数和描述。
+- SQLite 保存策略启用状态、用户覆盖后的默认参数、策略组关系和排序。
+- 旧 `configs.json` 中的策略参数可以在 V2 初始迁移时导入一次，但导入后不再作为运行时权威来源。
+- 每次选股或回测的 lineage 必须保存当时实际使用的参数快照。
+- 如果策略 class 从代码中移除，但数据库仍有该策略配置，系统应在策略列表中标记为 unavailable，而不是静默忽略。
+
 ### 选股语义
 
 选股、批量选股、选股回测请求都接受：
@@ -179,7 +202,7 @@ domain/strategy/
 - 如果只传 `strategies`，直接运行这些启用策略。
 - 如果两者都传，运行“启用组成员 + 启用直接策略”的并集。
 - 使用 `strategy_id` 去重。
-- 最终顺序必须稳定：先按组排序，再按组内成员排序，最后用策略显示名打破并列。
+- 最终顺序必须稳定：按用户请求组顺序和组内成员顺序排序；直接指定但不属于任何请求组的策略排在组解析结果之后；最后用策略显示名打破并列。
 
 ## 行情数据
 
@@ -211,6 +234,23 @@ stock_meta(codes)
 - 缺失行情数据语义。
 - 股票元数据查询。
 
+V2 首版日线 bar schema 至少包含：
+
+```text
+code: str
+date: date
+open: float
+high: float
+low: float
+close: float
+volume: float
+amount: float | null
+adj_factor: float | null
+is_suspended: bool | null
+```
+
+价格口径必须在 market metadata 中明确记录。V2 首版默认沿用当前 Tushare 拉取口径；如果后续支持前复权/后复权/不复权切换，必须把复权类型写入 market sync lineage 和 backtest lineage。
+
 选股和回测代码不得直接扫描原始 parquet 文件。
 
 ## 信号模型
@@ -235,6 +275,27 @@ StrategySignal
 ```
 
 无论是单日选股还是批量选股，选股流程都写入同一种标准信号 artifact。
+
+`signals.json` 使用数组结构，不使用策略名作为动态 key：
+
+```json
+{
+  "schema_version": "2.0",
+  "execution_key": "20260709_120000_selection",
+  "signal_from": "2026-07-01",
+  "signal_to": "2026-07-09",
+  "signals": [
+    {
+      "strategy_id": "b1",
+      "strategy_name": "B1战法",
+      "group_ids": ["default"],
+      "primary_group_id": "default",
+      "signal_date": "2026-07-09",
+      "codes": ["000001", "600519"]
+    }
+  ]
+}
+```
 
 ## 选股 Artifact Schema
 
@@ -418,6 +479,12 @@ strategy_group_members
   strategy_id
   sort_order
 
+strategy_settings
+  strategy_id
+  enabled
+  params_json
+  updated_at
+
 market_sync_runs
   id
   execution_key
@@ -430,11 +497,11 @@ market_sync_runs
   created_at
 ```
 
-`execution_links` 记录执行之间的关系，例如：
+`execution_links` 的方向固定为：`source_execution_key` 是上游依赖，`target_execution_key` 是下游产物。例如：
 
 ```text
-selection_execution -> backtest_execution
-market_sync_execution -> selection_execution
+selection_execution -> backtest_execution  link_type = "backtest_uses_selection"
+market_sync_execution -> selection_execution  link_type = "selection_uses_market_sync"
 ```
 
 ## 任务系统
@@ -472,6 +539,10 @@ PATCH  /api/strategy-groups/{group_id}
 DELETE /api/strategy-groups/{group_id}
 POST   /api/strategy-groups/{group_id}/members
 DELETE /api/strategy-groups/{group_id}/members/{strategy_id}
+PATCH  /api/strategy-groups/{group_id}/members/{strategy_id}
+POST   /api/strategy-groups/{group_id}/members/reorder
+GET    /api/strategies
+PATCH  /api/strategies/{strategy_id}/settings
 ```
 
 运行任务至少支持：
@@ -493,17 +564,20 @@ POST /api/executions
 
 ## 破坏性重建初始化
 
-V2 初始化会删除旧运行数据，并创建新的 V2 运行目录结构。
+V2 初始化会删除旧运行数据，并创建新的 V2 运行目录结构。删除动作只能通过显式 reset/init 命令执行，不能发生在普通服务启动流程中。
 
 初始化流程：
 
-1. 确保 `storage/` 存在。
-2. 初始化全新的 V2 `storage/app.db`。
-3. 创建 `storage/market/`、`storage/objects/`、`storage/objects/jobs/`。
-4. 从代码注册可用策略。
-5. 创建 `default` 策略组。
-6. 将每个已注册策略加入 `default`。
-7. 选股或回测运行前必须先完成行情同步。
+1. 校验用户显式传入 reset 确认参数。
+2. 打印即将删除和重建的路径列表。
+3. 删除旧运行数据。
+4. 确保 `storage/` 存在。
+5. 初始化全新的 V2 `storage/app.db`。
+6. 创建 `storage/market/`、`storage/objects/`、`storage/objects/jobs/`。
+7. 从代码注册可用策略。
+8. 创建 `default` 策略组。
+9. 将每个已注册策略加入 `default`。
+10. 选股或回测运行前必须先完成行情同步。
 
 V2 首版需要在 README 和部署说明中明确写出这次重构的破坏性。
 
@@ -513,10 +587,11 @@ V2 首版需要在 README 和部署说明中明确写出这次重构的破坏性
 
 必要测试范围：
 
+- 破坏性初始化只能通过显式确认命令触发，普通启动不会删除数据。
 - 策略组创建、删除和 default 组保护。
-- 策略解析器覆盖按组、按策略、混合、空请求、禁用组、禁用策略。
+- 策略解析器覆盖按组、按策略、混合、空请求、禁用组、禁用策略、多组重复策略和 primary group 排序。
 - MarketDataStore 能读取 V2 `storage/market/bars/` 布局。
-- `SignalSet` 序列化与反序列化。
+- `SignalSet` 按固定 JSON 数组结构序列化与反序列化。
 - 选股写入 V2 选股 artifact。
 - 选股回测使用和选股相同的策略解析器。
 - 回测消费 `SignalSet`，不消费旧信号文件。
@@ -546,10 +621,12 @@ V2 首版需要在 README 和部署说明中明确写出这次重构的破坏性
 ## 验收标准
 
 - 全新 clone 可以在没有旧运行数据的情况下初始化 V2 storage。
+- 旧运行数据清空只能由显式 reset/init 命令触发，普通服务启动不会删除数据。
 - 系统可以同步行情到 `storage/market/`。
 - 系统创建不可删除的 `default` 策略组，且包含所有已注册策略。
 - 用户可以创建、重命名、禁用和删除非 default 策略组。
-- 用户可以增删策略组成员。
+- 用户可以增删策略组成员，并调整策略组和组内成员顺序。
+- 用户可以查看全部策略定义，并启用/禁用策略或调整策略默认参数。
 - 选股可以按 default 组、指定组、指定策略，以及“组 + 策略”的混合请求运行。
 - 选股回测支持同样的策略组和策略选择语义。
 - 选股写入 V2 `manifest.json`、`lineage.json`、`signals.json`、`picks.parquet`、`summary.json`。
