@@ -1,0 +1,211 @@
+"""Market data store interface and local parquet implementation."""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from datetime import date
+from pathlib import Path
+from typing import Optional
+
+import polars as pl
+
+POLARS_KLINE_SCHEMA: dict[str, type] = {
+    "code": pl.Utf8,
+    "date": pl.Date,
+    "open": pl.Float64,
+    "high": pl.Float64,
+    "low": pl.Float64,
+    "close": pl.Float64,
+    "volume": pl.Float64,
+    "amount": pl.Float64,
+    "adj_factor": pl.Float64,
+    "is_suspended": pl.Boolean,
+}
+
+
+class MarketDataStore(ABC):
+    """Abstract interface for market data access."""
+
+    @abstractmethod
+    def load_bars(
+        self,
+        codes: list[str],
+        start: date,
+        end: date,
+        columns: Optional[list[str]] = None,
+    ) -> pl.DataFrame: ...
+
+    @abstractmethod
+    def latest_trade_date(self) -> Optional[date]: ...
+
+    @abstractmethod
+    def trading_dates(self, start: date, end: date) -> list[date]: ...
+
+    @abstractmethod
+    def stock_meta(self, codes: Optional[list[str]] = None) -> pl.DataFrame: ...
+
+    @abstractmethod
+    def get_calendar(self) -> list[date]: ...
+
+    @abstractmethod
+    def get_row(self, code: str, dt: date) -> Optional[dict]: ...
+
+    @abstractmethod
+    def get_previous_close(self, code: str, dt: date) -> Optional[float]: ...
+
+    @abstractmethod
+    def get_rows(
+        self, code: str, start_date: date, end_date: date
+    ) -> pl.DataFrame: ...
+
+
+class LocalParquetMarketStore(MarketDataStore):
+    """Market data store backed by per-stock parquet files.
+
+    Reads from ``<bars_dir>/{code}.parquet`` files.
+    """
+
+    def __init__(self, bars_dir: Path) -> None:
+        self.bars_dir = Path(bars_dir)
+
+    # ------------------------------------------------------------------
+    # load_bars
+    # ------------------------------------------------------------------
+
+    def load_bars(
+        self,
+        codes: list[str],
+        start: date,
+        end: date,
+        columns: Optional[list[str]] = None,
+    ) -> pl.DataFrame:
+        paths = [self.bars_dir / f"{c}.parquet" for c in codes]
+        existing = [p for p in paths if p.exists()]
+        if not existing:
+            return pl.DataFrame(schema=POLARS_KLINE_SCHEMA)
+
+        dfs: list[pl.DataFrame] = []
+        for p in existing:
+            df = pl.read_parquet(p)
+            code = p.stem
+            df = df.with_columns(pl.lit(code).cast(pl.Utf8).alias("code"))
+            dfs.append(df)
+
+        result = pl.concat(dfs, how="diagonal").filter(
+            (pl.col("date") >= start) & (pl.col("date") <= end)
+        )
+        if columns:
+            result = result.select(columns)
+        return result
+
+    # ------------------------------------------------------------------
+    # latest_trade_date
+    # ------------------------------------------------------------------
+
+    def latest_trade_date(self) -> Optional[date]:
+        dates = self._collect_dates()
+        if not dates:
+            return None
+        return dates[-1]
+
+    # ------------------------------------------------------------------
+    # trading_dates
+    # ------------------------------------------------------------------
+
+    def trading_dates(self, start: date, end: date) -> list[date]:
+        dates = self._collect_dates()
+        return [d for d in dates if start <= d <= end]
+
+    # ------------------------------------------------------------------
+    # get_calendar
+    # ------------------------------------------------------------------
+
+    def get_calendar(self) -> list[date]:
+        return self._collect_dates()
+
+    # ------------------------------------------------------------------
+    # get_row
+    # ------------------------------------------------------------------
+
+    def get_row(self, code: str, dt: date) -> Optional[dict]:
+        path = self.bars_dir / f"{code}.parquet"
+        if not path.exists():
+            return None
+        df = pl.read_parquet(path)
+        df = df.with_columns(pl.lit(code).cast(pl.Utf8).alias("code"))
+        mask = df.filter(pl.col("date") == dt)
+        if mask.is_empty():
+            return None
+        return mask.row(0, named=True)
+
+    # ------------------------------------------------------------------
+    # get_previous_close
+    # ------------------------------------------------------------------
+
+    def get_previous_close(self, code: str, dt: date) -> Optional[float]:
+        path = self.bars_dir / f"{code}.parquet"
+        if not path.exists():
+            return None
+        df = pl.read_parquet(path)
+        prior = df.filter(pl.col("date") < dt).sort("date", descending=True)
+        if prior.is_empty():
+            return None
+        return prior.row(0, named=True)["close"]
+
+    # ------------------------------------------------------------------
+    # get_rows
+    # ------------------------------------------------------------------
+
+    def get_rows(
+        self, code: str, start_date: date, end_date: date
+    ) -> pl.DataFrame:
+        path = self.bars_dir / f"{code}.parquet"
+        if not path.exists():
+            return pl.DataFrame(schema=POLARS_KLINE_SCHEMA)
+        df = pl.read_parquet(path)
+        df = df.with_columns(pl.lit(code).cast(pl.Utf8).alias("code"))
+        return df.filter(
+            (pl.col("date") >= start_date) & (pl.col("date") <= end_date)
+        )
+
+    # ------------------------------------------------------------------
+    # stock_meta
+    # ------------------------------------------------------------------
+
+    def stock_meta(self, codes: Optional[list[str]] = None) -> pl.DataFrame:
+        all_paths = sorted(self.bars_dir.glob("*.parquet"))
+        metas = []
+        for p in all_paths:
+            code = p.stem
+            if codes and code not in codes:
+                continue
+            metas.append({"code": code})
+        if not metas:
+            return pl.DataFrame(schema={"code": pl.Utf8})
+        return pl.DataFrame(metas)
+
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+
+    def _collect_dates(self) -> list[date]:
+        """Scan all parquet files and return sorted unique dates."""
+        all_paths = sorted(self.bars_dir.glob("*.parquet"))
+        if not all_paths:
+            return []
+
+        date_sets: list[set[date]] = []
+        for p in all_paths:
+            try:
+                df = pl.read_parquet(p, columns=["date"])
+                date_sets.append(
+                    set(df["date"].unique().to_list())
+                )
+            except Exception:
+                continue
+
+        if not date_sets:
+            return []
+
+        unified = date_sets[0].union(*date_sets[1:]) if date_sets else set()
+        return sorted(unified)
