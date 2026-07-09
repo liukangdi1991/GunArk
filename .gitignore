@@ -1,3 +1,5 @@
+.agents/
+.codex/
 .idea
 .venv
 __pycache__/
@@ -16,3 +18,17 @@ deploy/backups/
 bin/*.zip
 bin/*.tar.gz
 bin/*.tgz
+
+# runtime artifacts
+fetch.log
+run.log
+select_results.log
+
+# V1 root storage (ignored as dir)
+/storage/
+
+# V2 specific ignored paths
+/storage/app.db
+/storage/objects/
+/storage/market/
+.superpowers/
