@@ -174,6 +174,34 @@ domain/strategy/
 
 `adapter.py` 包装现有 selector 实现，在引入 V2 稳定策略协议的同时复用当前算法行为。
 
+### 注册机制与策略 ID 映射
+
+V2 首版采用显式注册表，不做自动模块扫描。每一个 `StrategyDefinition` 表示一个可运行的策略实例，而不是一个 selector class。这样同一个 selector class 可以注册为多个不同策略实例，并拥有不同 `strategy_id`、显示名和默认参数。
+
+现有 `configs.json` 的初始映射建议如下：
+
+```text
+B1战法 -> bbi_kdj_b1
+SuperB1战法 -> super_b1
+补票战法 -> bbi_short_long
+填坑战法 -> peak_kdj
+上穿60放量战法 -> ma60_volume_wave
+多空平衡选股策略 -> zxdkx_balance
+B1战法（V2） -> perfect_b1_v2
+完美B1 -> perfect_b1_volume_stepdown
+暴力K战法 -> big_bullish_volume
+倍量多空平衡策略 -> volume_spike_balance
+```
+
+迁移规则：
+
+- `class` 映射到代码注册表里的 selector class。
+- `alias` 只作为显示名，不作为主键。
+- `params` 导入到 `strategy_settings.params_json` 作为初始用户参数覆盖。
+- `activate` 导入到 `strategy_settings.enabled`。
+- 所有 active selector 默认加入 `default` 组。
+- `default_strategies` 不表示 `default` 组成员；它可作为前端默认勾选项导入为 `default_run_strategy_ids`，首版也可以忽略。
+
 ### 策略定义与参数来源
 
 策略 class 和参数 schema 由代码注册表提供，运行时数据库保存用户配置。
@@ -183,6 +211,49 @@ domain/strategy/
 - 旧 `configs.json` 中的策略参数可以在 V2 初始迁移时导入一次，但导入后不再作为运行时权威来源。
 - 每次选股或回测的 lineage 必须保存当时实际使用的参数快照。
 - 如果策略 class 从代码中移除，但数据库仍有该策略配置，系统应在策略列表中标记为 unavailable，而不是静默忽略。
+
+### V2 策略协议与 Legacy Adapter
+
+V2 策略协议固定为面向 `SelectionContext` 的接口：
+
+```python
+class SelectionStrategy(Protocol):
+    definition: StrategyDefinition
+
+    def select(self, context: SelectionContext) -> SelectionResult:
+        ...
+```
+
+`SelectionContext` 至少包含：
+
+```text
+trade_date: date
+market_data: pl.DataFrame
+candidate_codes: list[str] | None
+```
+
+`SelectionResult` 至少包含：
+
+```text
+strategy_id: str
+strategy_name: str
+trade_date: date
+selected_codes: list[str]
+elapsed_seconds: float
+```
+
+现有 selector 不直接实现该协议。V2 通过 `LegacySelectorAdapter` 桥接：
+
+```text
+LegacySelectorAdapter
+  -> 持有 selector 实例
+  -> 持有现有 runner 或 runner factory
+  -> 接收 SelectionContext
+  -> 调用 runner.run_selection(date_obj, data_table, get_data_dict)
+  -> 返回 SelectionResult
+```
+
+这样可以先迁移架构和接口，同时保留现有 selector 与 runner 的算法行为。
 
 ### 选股语义
 
@@ -252,6 +323,35 @@ is_suspended: bool | null
 价格口径必须在 market metadata 中明确记录。V2 首版默认沿用当前 Tushare 拉取口径；如果后续支持前复权/后复权/不复权切换，必须把复权类型写入 market sync lineage 和 backtest lineage。
 
 选股和回测代码不得直接扫描原始 parquet 文件。
+
+### 行情同步与 Tushare 适配
+
+行情同步是写流程，不放在 `MarketDataStore` 读接口里硬塞。V2 分工如下：
+
+```text
+infrastructure/tushare/client.py      # Tushare client 初始化、网络环境、token 校验
+infrastructure/tushare/syncer.py      # 拉取日线、限流识别、重试、冷却退避
+infrastructure/tushare/stocklist.py   # 股票列表同步与板块过滤
+app/services/market_service.py        # 编排同步任务、进度、日志、取消
+```
+
+现有生产逻辑需要迁移：
+
+- Tushare IP 限流识别和冷却退避。
+- 3 次重试与分级退避。
+- 北京时间 16:00 cutoff 规则，用于判断当前可用最新交易日。
+- 增量同步：如果本地单票最新交易日已经覆盖目标结束日，则跳过。
+- 股票列表同步和原子写入；V2 写入 `storage/market/stock_meta.parquet`。
+- 板块过滤：创业板、科创板、北交所等过滤选项继续由同步请求控制。
+- 同步任务必须支持取消，worker 在每只股票处理前检查取消状态。
+
+写入规则：
+
+- 单票 parquet 写入先写 `.tmp` 文件，成功后 atomic replace。
+- 同步过程中不得让 selection/backtest 读取 `.tmp` 文件。
+- 一次只允许一个 `market_data_sync` job 运行。
+- 同步完成后写入 `market_sync_runs`，并将 market sync execution 与后续 selection execution 通过 `execution_links` 关联。
+
 
 ## 信号模型
 
@@ -376,6 +476,17 @@ V2 初版必须保持当前交易规则行为：
 - 继续支持长期多空线止损和 10 日低点止损。
 - 继续支持涨停拒绝买入和跌停拒绝卖出。
 - 如果迁移时仍存在不限资金和真实现金两种模式，则两者都要继续支持。
+
+
+### Pandas/Polars 数据框架策略
+
+V2 目标是让行情、选股和信号层以 Polars 为主要 DataFrame 技术栈。回测迁移分阶段进行：
+
+- `MarketDataStore` 对外返回 Polars DataFrame。
+- 选股 runner 和 selector adapter 使用 Polars 输入。
+- 回测 runner 初版可以在边界将 Polars 转成 pandas，以保留现有回测行为并降低重写风险。
+- 回测内部最终目标是迁移到 Polars，但行为等价测试优先于技术栈统一。
+- 所有从 pandas 到 Polars 的迁移都必须有涨跌停、止损、持仓周期和资金模式测试保护。
 
 ## 回测 Artifact Schema
 
@@ -504,6 +615,38 @@ selection_execution -> backtest_execution  link_type = "backtest_uses_selection"
 market_sync_execution -> selection_execution  link_type = "selection_uses_market_sync"
 ```
 
+
+### SQLite 约束与索引原则
+
+V2 DDL 必须明确约束和索引，不只停留在字段列表：
+
+- `executions.execution_key` 唯一。
+- `artifacts.storage_key` 唯一。
+- `artifacts(execution_key, artifact_type)` 唯一，除非某类 artifact 明确允许多文件。
+- `strategy_groups.id` 主键。
+- `strategy_group_members(group_id, strategy_id)` 唯一。
+- `strategy_settings.strategy_id` 主键。
+- `execution_links(source_execution_key, target_execution_key, link_type)` 唯一。
+- `jobs.job_id` 唯一。
+- `job_logs(job_id, sequence)` 唯一。
+- `manifest_key` 和 `lineage_key` 是 artifact storage key，不是绝对路径。
+- SQLite 连接必须启用 `PRAGMA foreign_keys = ON`。
+- SQLite 建议启用 WAL，以改善 Web 查询和后台任务写入并发。
+
+`params_json` 和 `metrics_json` 使用 JSON 字符串是有意简化，适合私人工作台；V2 不继续沿用旧版 key-value 参数子表。
+
+### 并发与一致性
+
+V2 首版按单机工作台设计，并发策略如下：
+
+- 同一时间只允许一个行情同步 job 运行。
+- selection 和 backtest 可以并发运行，但每次执行必须使用独立 `execution_key` 目录。
+- artifact 写入必须先写临时文件，再 atomic replace。
+- artifact metadata 只在必要文件全部写入成功后注册。
+- 策略组和策略设置更新必须在 SQLite transaction 中完成。
+- selection/backtest 启动时解析并快照策略组和策略参数；运行过程中策略组变更不影响已启动任务。
+- market sync 正在写入某只股票文件时，selection/backtest 只能读取上一版完整 parquet，不能读取 `.tmp`。
+
 ## 任务系统
 
 V2 初版可以继续保持单进程、线程池式执行，但任务状态必须隔离在 app 层接口后面。
@@ -525,6 +668,32 @@ app/jobs/
 - 将 job 与产出的 execution result 关联起来。
 
 这样可以避免 FastAPI 路由直接管理 worker 线程和文件状态。
+
+
+### 现有任务系统迁移策略
+
+现有 `web/services/execution_service.py` 的任务机制不直接丢弃，V2 先迁移并收敛命名：
+
+- `ExecutionState` 迁移为 `JobState`。
+- `ExecutionContext` 迁移为 `JobContext`。
+- `ThreadPoolExecutor(max_workers=2)` 的单机执行模型首版可以继续沿用。
+- `storage/objects/jobs/<job_id>/state.json` 和 `console.log` 结构继续沿用。
+- `cancelling` 状态和 worker 主动检查取消的协作机制继续沿用。
+- `job_logs` 表提供结构化日志索引，`console.log` 保留为前端控制台文本流；首版可以双写。
+
+现有任务类型映射到 V2 `job_type`：
+
+```text
+selection_latest -> selection_latest
+selection_single -> selection_single
+selection_batch -> selection_batch
+backtest -> backtest
+backtest_from_selection -> backtest_from_selection
+selection_backtest -> selection_backtest
+market_data_sync -> market_data_sync
+```
+
+V2 可以重写服务层编排，但不应重新发明进度、日志、取消和 job 状态持久化机制。
 
 ## API 与前端
 
@@ -562,6 +731,18 @@ POST /api/executions
 - 按“策略组 + 单独策略”的并集运行。
 - 结果摘要按策略组和策略展示。
 
+
+### 前端迁移范围
+
+前端保持工作台形态，但需要明确这些改动：
+
+- `SelectionWorkspacePage`：策略选择器改为“策略组 + 单独策略”的混合选择。
+- `BacktestWorkspacePage`：选股回测请求支持 `groups` 和 `strategies`。
+- 新增或扩展策略组管理视图，支持创建、重命名、禁用、删除和排序。
+- 新增策略设置能力，支持启用/禁用策略和调整默认参数覆盖。
+- `StrategySnapshots` 和结果摘要组件展示策略所属组、primary group 和参数快照。
+- `frontend/src/services` 和 `frontend/src/types` 增加 `StrategyGroup`、`StrategyDefinition`、`StrategySettings` 类型。
+
 ## 破坏性重建初始化
 
 V2 初始化会删除旧运行数据，并创建新的 V2 运行目录结构。删除动作只能通过显式 reset/init 命令执行，不能发生在普通服务启动流程中。
@@ -581,6 +762,46 @@ V2 初始化会删除旧运行数据，并创建新的 V2 运行目录结构。�
 
 V2 首版需要在 README 和部署说明中明确写出这次重构的破坏性。
 
+
+## 错误处理与可观测性
+
+执行状态枚举至少包括：
+
+```text
+queued
+running
+success
+failed
+cancelling
+cancelled
+```
+
+artifact 状态规则：
+
+- 执行开始后可以创建 execution 目录。
+- 成功执行写入完整业务 artifact，并注册 metadata。
+- 失败执行保留 `manifest.json`、`lineage.json` 和 `error.json`，但不注册不完整业务 artifact。
+- 取消执行写入 `cancelled` 状态，不等同于 `failed`。
+- job 日志必须保留，便于定位失败原因。
+
+日志规则：
+
+- `console.log` 是用户可读文本流。
+- `job_logs` 是结构化日志表。
+- 首版允许双写，后续可用结构化日志重建控制台输出。
+
+## 部署变更清单
+
+V2 存储布局变化会影响 Docker 和二进制发布包：
+
+- Docker 不再单独挂载根目录 `db/`。
+- 运行数据统一挂载到 `storage/` 对应的数据目录。
+- `deploy/data/db` 不再作为行情种子目录。
+- 部署脚本不得在升级时自动执行 reset。
+- 首次 V2 初始化需要显式 reset/init 命令。
+- 二进制包 init 脚本需要创建 `storage/market/bars/`、`storage/objects/` 和 `storage/objects/jobs/`。
+- README 需要明确：V2 首次启动后必须重新同步行情。
+
 ## 测试策略
 
 每个核心切片都应该先写测试，再实现。
@@ -590,13 +811,17 @@ V2 首版需要在 README 和部署说明中明确写出这次重构的破坏性
 - 破坏性初始化只能通过显式确认命令触发，普通启动不会删除数据。
 - 策略组创建、删除和 default 组保护。
 - 策略解析器覆盖按组、按策略、混合、空请求、禁用组、禁用策略、多组重复策略和 primary group 排序。
-- MarketDataStore 能读取 V2 `storage/market/bars/` 布局。
+- MarketDataStore 能读取和原子写入 V2 `storage/market/bars/` 布局。
+- Tushare 同步保留限流识别、重试退避、16:00 cutoff、增量跳过和取消检查。
 - `SignalSet` 按固定 JSON 数组结构序列化与反序列化。
 - 选股写入 V2 选股 artifact。
 - 选股回测使用和选股相同的策略解析器。
 - 回测消费 `SignalSet`，不消费旧信号文件。
 - 回测交易规则保护当前涨跌停、止损、持仓规则行为。
-- `execution_links` 能连接选股和回测结果。
+- `execution_links` 能连接选股和回测结果，并验证 source/target 方向。
+- SQLite 约束、唯一索引、foreign keys 和 WAL 初始化可验证。
+- 策略注册表能处理同 class 多策略实例和旧 configs.json 初始导入。
+- 前端类型和 API schema 覆盖策略组、策略设置、混合运行请求。
 - 全新初始化能创建默认存储、default 策略组和策略成员关系。
 
 ## 迁移计划
@@ -613,20 +838,22 @@ V2 首版需要在 README 和部署说明中明确写出这次重构的破坏性
 4. 添加信号模型和 artifact writer。
 5. 添加使用 V2 信号输出的选股 runner。
 6. 添加消费 V2 `SignalSet` 的回测 runner。
-7. 添加策略组 API 和前端支持。
-8. 将 Web 执行流程切换到 V2 services。
-9. 移除旧运行时假设、根目录 `db/` 使用和旧 artifact 格式依赖。
-10. 更新 README 和部署脚本以适配 V2 存储布局。
+7. 添加任务系统迁移层，沿用现有 state.json、console.log、取消和进度模型。
+8. 添加策略组 API 和前端支持。
+9. 将 Web 执行流程切换到 V2 services。
+10. 移除旧运行时假设、根目录 `db/` 使用和旧 artifact 格式依赖。
+11. 更新 README、Docker、二进制发布包和部署脚本以适配 V2 存储布局。
 
 ## 验收标准
 
 - 全新 clone 可以在没有旧运行数据的情况下初始化 V2 storage。
 - 旧运行数据清空只能由显式 reset/init 命令触发，普通服务启动不会删除数据。
-- 系统可以同步行情到 `storage/market/`。
+- 系统可以同步行情到 `storage/market/`，并保留限流、重试、增量同步、16:00 cutoff 和板块过滤能力。
 - 系统创建不可删除的 `default` 策略组，且包含所有已注册策略。
 - 用户可以创建、重命名、禁用和删除非 default 策略组。
 - 用户可以增删策略组成员，并调整策略组和组内成员顺序。
 - 用户可以查看全部策略定义，并启用/禁用策略或调整策略默认参数。
+- 旧 `configs.json` 的 active selector 可以按映射表导入为 V2 策略设置和 default 组成员。
 - 选股可以按 default 组、指定组、指定策略，以及“组 + 策略”的混合请求运行。
 - 选股回测支持同样的策略组和策略选择语义。
 - 选股写入 V2 `manifest.json`、`lineage.json`、`signals.json`、`picks.parquet`、`summary.json`。
@@ -635,3 +862,5 @@ V2 首版需要在 README 和部署说明中明确写出这次重构的破坏性
 - 结果页面可以按策略组和策略展示摘要。
 - 代码不再依赖根目录 `db/`、旧 `storage/app.db` 或旧 artifact 布局。
 - 当前交易规则行为在迁移过程中由测试保护。
+- Docker、部署脚本和二进制包初始化流程不再依赖根目录 `db/`。
+- 失败和取消任务保留可读日志，并且不注册不完整业务 artifact。
