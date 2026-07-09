@@ -32,11 +32,14 @@ def submit_market_sync(body: MarketSyncRequest, request: FastAPIRequest):
     try:
         job_id = submit_market_sync(
             _executor(request),
-            {"codes": body.codes, "start_date": body.start, "end_date": body.end},
+            {"codes": body.codes, "start_date": body.start_date, "end_date": body.end_date},
         )
         return {"data": {"job_id": job_id}}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/market-data/trading-dates")
 def get_trading_dates(
     start: str = Query(default=None),
     end: str = Query(default=None),

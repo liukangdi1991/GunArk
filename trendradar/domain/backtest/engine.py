@@ -115,7 +115,6 @@ class BacktestEngine:
         if isinstance(data, pl.DataFrame):
             return data.to_dicts()
         return list(data) if data else []
-        return timedelta(days=1)
 
     def _get_latest_close(self, market_store: MarketDataStore, code: str, dt: date, fallback: float) -> float:
         row = market_store.get_row(code, dt)

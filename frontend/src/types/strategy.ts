@@ -28,7 +28,6 @@ export interface StrategyGroup {
 }
 
 export interface StrategyGroupMember {
-  group_id: string;
   strategy_id: string;
   sort_order: number;
 }

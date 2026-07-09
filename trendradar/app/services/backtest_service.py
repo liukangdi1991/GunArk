@@ -181,7 +181,7 @@ def _link_backtest_to_selection(selection_key: str, backtest_key: str) -> None:
     from trendradar.infrastructure.storage.connection import StorageConnection
     from pathlib import Path
 
-    store = StorageConnection(runtime_root())
+    store = StorageConnection(runtime_root() / "storage")
     conn = store.connect()
     conn.execute(
         "INSERT OR IGNORE INTO execution_links "

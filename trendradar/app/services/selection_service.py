@@ -198,14 +198,7 @@ def _write_selection_manifest(execution_key: str, signal_set: SignalSet) -> None
     )
 
     lineage = {
-        "resolved_strategies": [
-            {
-                "id": s.strategy_id,
-                "name": s.strategy_name,
-                "params": {},
-            }
-            for s in signal_set.signals
-        ],
+        "resolved_strategies": signal_set.strategies_snapshot,
         "market_data": {
             "from": str(signal_set.signal_from) if signal_set.signal_from else None,
             "to": str(signal_set.signal_to) if signal_set.signal_to else None,
@@ -303,6 +296,8 @@ def submit_batch_selection(
             repo = SignalRepository(artifact_store)
             saved_path = repo.save(signal_set, ctx.job_id)
             ctx.log(f"Saved signals to {saved_path}")
+
+        _write_selection_manifest(ctx.job_id, signal_set)
 
         result = {
             "execution_key": signal_set.execution_key,

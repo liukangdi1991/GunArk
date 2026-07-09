@@ -27,7 +27,7 @@ RUN python -m pip install --upgrade pip \
 COPY . ./
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
-RUN mkdir -p /data/db /data/storage/cache /data/storage/objects
+RUN mkdir -p /data/storage/market/bars /data/storage/cache /data/storage/objects /data/storage/objects/jobs
 
 EXPOSE 8000
 

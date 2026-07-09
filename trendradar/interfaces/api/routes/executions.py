@@ -89,7 +89,7 @@ def get_selection_result(execution_key: str, request: FastAPIRequest):
     from pathlib import Path
     from trendradar.infrastructure.runtime import runtime_root
 
-    signals_file = runtime_root() / "storage" / "objects" / "executions" / execution_key / "selection" / "signals.json" / "data.json"
+    signals_file = runtime_root() / "storage" / "objects" / "executions" / execution_key / "selection" / "signals.json"
     if not signals_file.exists():
         raise HTTPException(status_code=404, detail=f"Selection result not found for '{execution_key}'")
 
@@ -113,6 +113,9 @@ def delete_selection_result(execution_key: str, request: FastAPIRequest):
         raise HTTPException(status_code=404, detail=f"Selection result not found for '{execution_key}'")
     shutil.rmtree(target)
     return {"data": {"execution_key": execution_key, "deleted": True}}
+
+
+@router.post("/executions/{execution_id}/cancel")
 def cancel_execution(execution_id: str, request: FastAPIRequest):
     cancelled = _executor(request).cancel(execution_id)
     if not cancelled:
