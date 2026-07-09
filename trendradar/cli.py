@@ -3,7 +3,7 @@ import sys
 import shutil
 from pathlib import Path
 
-from trendradar.infrastructure.runtime import storage_root
+from trendradar.infrastructure.runtime import storage_root, source_root
 from trendradar.infrastructure.storage.connection import StorageConnection
 from trendradar.infrastructure.storage.schema import init_schema
 
@@ -26,6 +26,8 @@ def cmd_init_v2(args: argparse.Namespace) -> None:
             print("ERROR: --reset-runtime requires --confirm-reset")
             sys.exit(1)
 
+        old_db_dir = source_root() / "db"
+
         print("Will delete and recreate:")
         for rel in RESET_PATHS:
             full = root / rel
@@ -33,6 +35,8 @@ def cmd_init_v2(args: argparse.Namespace) -> None:
                 print(f"  DELETE: {full}")
             else:
                 print(f"  SKIP (not exists): {full}")
+        if old_db_dir.exists():
+            print(f"  DELETE: {old_db_dir}")
 
         # Delete
         app_db = root / "app.db"
@@ -41,6 +45,8 @@ def cmd_init_v2(args: argparse.Namespace) -> None:
         for d in [objects_root, market_root]:
             if d.exists():
                 shutil.rmtree(d)
+        if old_db_dir.exists():
+            shutil.rmtree(old_db_dir)
 
     # Create dirs
     bars_root.mkdir(parents=True, exist_ok=True)

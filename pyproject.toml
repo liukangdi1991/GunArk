@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trendradar"
-version = "2.0.0.dev0"
+dynamic = ["version"]
 description = "TrendRadar V2 - A-stock quantitive selection system"
 requires-python = ">=3.11"
 dependencies = [
@@ -18,3 +18,6 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["trendradar*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "trendradar._version.__version__"}

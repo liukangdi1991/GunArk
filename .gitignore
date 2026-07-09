@@ -28,7 +28,6 @@ select_results.log
 /storage/
 
 # V2 specific ignored paths
-/storage/app.db
-/storage/objects/
-/storage/market/
+/db/
+
 .superpowers/
