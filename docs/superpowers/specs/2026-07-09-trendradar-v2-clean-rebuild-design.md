@@ -1,34 +1,34 @@
-# TrendRadar V2 Clean Rebuild Design
+# TrendRadar V2 清空重建设计
 
-## Purpose
+## 目标
 
-TrendRadar V2 is a destructive rebuild of the current private quantitative research workbench. The goal is to replace the current mixed module structure with explicit domain boundaries for market data, strategy management, signal generation, backtesting, storage, jobs, and API/reporting.
+TrendRadar V2 是对当前私人量化研究工作台的一次破坏性重构。目标是把现有混合在一起的模块结构，重建成边界清晰的领域架构：行情数据、策略管理、信号生成、回测、存储、任务系统、API 与报告展示各自有明确职责。
 
-The system is allowed to be unavailable during the rebuild. Historical runtime data is not important and will not be migrated.
+本系统可以在重构期间暂停使用。历史运行数据不重要，不做迁移。
 
-## Decisions
+## 已确认决策
 
-- V2 does not support legacy selection results, legacy backtest results, legacy `storage/app.db`, legacy artifacts, or legacy `db/` market parquet files.
-- Existing runtime data will be cleared when V2 is initialized.
-- Existing strategy algorithms, indicator formulas, and backtest trade-rule behavior may be migrated into the new architecture.
-- The Web workbench remains the primary interface, using FastAPI and React unless a later design explicitly changes it.
-- All mutable runtime data moves under `storage/`.
-- Strategy groups are first-class runtime configuration, not only a front-end display grouping.
-- Selection, batch selection, and selection-backtest all resolve strategies through the same strategy resolver.
-- Backtests consume standard `SignalSet` artifacts rather than selection-service-specific output structures.
+- V2 不兼容旧选股结果、旧回测结果、旧 `storage/app.db`、旧 artifact、旧 `db/` 行情 parquet 文件。
+- V2 初始化时会清空旧运行数据，并创建新的运行目录结构。
+- 现有策略算法、指标公式、回测交易规则可以迁移到新架构。
+- Web 工作台仍然是主界面，默认继续使用 FastAPI + React，除非后续设计明确调整。
+- 所有可变运行数据都放到 `storage/` 下。
+- 策略组是一等运行时配置，不只是前端展示分类。
+- 选股、批量选股、选股回测都通过同一个策略解析器解析策略。
+- 回测只消费标准 `SignalSet` artifact，不直接理解选股服务的内部输出格式。
 
-## Non-Goals
+## 非目标
 
-- No compatibility adapter for old selection or backtest artifacts.
-- No migration of previous execution history.
-- No migration of old local market parquet files.
-- No multi-user permission model.
-- No microservice split.
-- No Redis/Celery/PostgreSQL requirement for V2 initial delivery.
-- No strategy algorithm redesign during the architecture rebuild.
-- No front-end redesign beyond what is required to support the new strategy group and execution model.
+- 不做旧选股/回测 artifact 的兼容适配层。
+- 不迁移历史执行记录。
+- 不迁移旧本地行情 parquet 文件。
+- 不做多用户权限模型。
+- 不拆微服务。
+- V2 首版不强制引入 Redis、Celery、PostgreSQL。
+- 架构重构期间不重设策略算法。
+- 除支持策略组和新执行模型所必需的改动外，不做大规模前端重设计。
 
-## Target Architecture
+## 目标架构
 
 ```text
 trendradar/
@@ -54,19 +54,19 @@ trendradar/
     reports/
 ```
 
-### Layer Responsibilities
+### 分层职责
 
-`domain/` contains business models, protocols, and deterministic rules. It should not depend on FastAPI, SQLite, or concrete filesystem paths.
+`domain/` 存放业务模型、协议和确定性规则。这里的代码尽量不依赖 FastAPI、SQLite 或具体文件路径。
 
-`infrastructure/` contains adapters for SQLite, parquet files, Tushare, runtime paths, checksums, and artifact storage.
+`infrastructure/` 存放基础设施适配器，包括 SQLite、parquet 文件、Tushare、运行时路径、checksum 和 artifact 存储。
 
-`app/` contains use-case orchestration: submit a market sync job, run selection, run selection-backtest, cancel a job, and assemble result metadata.
+`app/` 存放用例编排逻辑，例如提交行情同步任务、执行选股、执行选股回测、取消任务、组装结果元信息。
 
-`interfaces/` contains FastAPI routes, request/response schemas, and report view models used by the front end.
+`interfaces/` 存放 FastAPI 路由、请求/响应 schema，以及前端使用的报告展示模型。
 
-## Runtime Data Layout
+## 运行数据布局
 
-All mutable runtime data is stored under `storage/`.
+所有可变运行数据统一存放在 `storage/`。
 
 ```text
 storage/
@@ -90,9 +90,9 @@ storage/
         console.log
 ```
 
-The root-level `db/` directory is not used by V2. Initial market data is pulled again through the V2 market sync flow.
+V2 不再使用根目录下的 `db/`。初始行情数据通过 V2 行情同步流程重新拉取。
 
-## Core Domain Flow
+## 核心领域流程
 
 ```text
 Tushare
@@ -107,11 +107,11 @@ Tushare
   -> API/Web Report
 ```
 
-## Strategy Groups
+## 策略组
 
-Strategy groups are editable runtime objects stored in SQLite.
+策略组是可编辑的运行时对象，存储在 SQLite 中。
 
-### Data Model
+### 数据模型
 
 ```text
 StrategyGroup
@@ -129,21 +129,21 @@ StrategyGroupMember
   sort_order: int
 ```
 
-### Rules
+### 规则
 
-- The system initializes a `default` group when storage is empty.
-- Existing migrated strategies are added to `default`.
-- `default` cannot be deleted.
-- Deleting a non-default group does not delete strategy definitions.
-- When a non-default group is deleted, its member strategies remain available in other groups. If a deleted group was a strategy's only group, that strategy is moved to `default`.
-- A strategy can belong to multiple groups.
-- Disabled groups are ignored when resolving a group-based run.
-- Disabled strategies are ignored in both group-based and direct strategy-based runs.
-- Strategy IDs are stable machine identifiers and must not depend on Chinese display names.
+- 当存储为空时，系统初始化 `default` 策略组。
+- 迁移过来的现有策略全部加入 `default`。
+- `default` 不能删除。
+- 删除非 default 组不会删除策略定义。
+- 删除非 default 组时，其组内策略仍保留在其他组里；如果某个策略只属于被删除的组，则自动移回 `default`。
+- 一个策略可以属于多个组。
+- 禁用的策略组在按组执行时会被忽略。
+- 禁用的策略在按组执行和按策略直接执行时都会被忽略。
+- 策略 ID 必须是稳定的机器标识，不能依赖中文显示名。
 
-### Strategy Registry
+### 策略注册表
 
-Strategy definitions come from code, not from dynamic database-loaded class names.
+策略定义来自代码注册表，不从数据库动态加载 class。
 
 ```text
 domain/strategy/
@@ -155,15 +155,15 @@ domain/strategy/
   selectors/
 ```
 
-`registry.py` registers all available strategies.
+`registry.py` 注册所有可用策略。
 
-`resolver.py` turns requested group IDs and strategy IDs into the final ordered strategy list.
+`resolver.py` 把请求中的策略组 ID 和策略 ID 解析成最终有序策略列表。
 
-`adapter.py` wraps existing selector implementations so their current algorithmic behavior can be reused while V2 introduces a stable strategy protocol.
+`adapter.py` 包装现有 selector 实现，在引入 V2 稳定策略协议的同时复用当前算法行为。
 
-### Selection Semantics
+### 选股语义
 
-Selection, batch selection, and selection-backtest requests accept:
+选股、批量选股、选股回测请求都接受：
 
 ```json
 {
@@ -172,18 +172,18 @@ Selection, batch selection, and selection-backtest requests accept:
 }
 ```
 
-Resolution rules:
+解析规则：
 
-- If `groups` and `strategies` are both empty, use enabled strategies from `default`.
-- If only `groups` is provided, run enabled strategies in those enabled groups.
-- If only `strategies` is provided, run those enabled strategies directly.
-- If both are provided, run the union of enabled group members and enabled direct strategies.
-- Duplicates are removed by `strategy_id`.
-- Final order is deterministic: group order, member order, then strategy display name for ties.
+- 如果 `groups` 和 `strategies` 都为空，使用 `default` 组内启用策略。
+- 如果只传 `groups`，运行这些启用组里的启用策略。
+- 如果只传 `strategies`，直接运行这些启用策略。
+- 如果两者都传，运行“启用组成员 + 启用直接策略”的并集。
+- 使用 `strategy_id` 去重。
+- 最终顺序必须稳定：先按组排序，再按组内成员排序，最后用策略显示名打破并列。
 
-## Market Data
+## 行情数据
 
-V2 uses a single market data store abstraction.
+V2 使用统一的行情数据存储抽象。
 
 ```text
 domain/market/
@@ -193,7 +193,7 @@ domain/market/
   stock_meta.py
 ```
 
-`MarketDataStore` provides:
+`MarketDataStore` 提供：
 
 ```text
 load_bars(codes, start, end, columns)
@@ -202,20 +202,20 @@ trading_dates(start, end)
 stock_meta(codes)
 ```
 
-The market data layer owns:
+行情数据层负责：
 
-- Parquet file schema.
-- Stock code normalization.
-- Trading calendar access.
-- Latest trade date calculation.
-- Missing market data semantics.
-- Stock metadata lookup.
+- Parquet 文件 schema。
+- 股票代码标准化。
+- 交易日历访问。
+- 最新交易日计算。
+- 缺失行情数据语义。
+- 股票元数据查询。
 
-Selection and backtest code must not scan raw parquet files directly.
+选股和回测代码不得直接扫描原始 parquet 文件。
 
-## Signal Model
+## 信号模型
 
-`SignalSet` is the contract between selection and backtest.
+`SignalSet` 是选股与回测之间的合同。
 
 ```text
 SignalSet
@@ -234,9 +234,9 @@ StrategySignal
   codes: list[str]
 ```
 
-Selection writes one standard signal artifact regardless of whether the run is single-day or batch.
+无论是单日选股还是批量选股，选股流程都写入同一种标准信号 artifact。
 
-## Selection Artifact Schema
+## 选股 Artifact Schema
 
 ```text
 storage/objects/executions/<execution_key>/
@@ -248,7 +248,7 @@ storage/objects/executions/<execution_key>/
     summary.json
 ```
 
-`manifest.json` identifies the execution:
+`manifest.json` 标识一次执行：
 
 ```json
 {
@@ -260,7 +260,7 @@ storage/objects/executions/<execution_key>/
 }
 ```
 
-`lineage.json` records the request and resolved inputs:
+`lineage.json` 记录请求和解析后的输入：
 
 ```json
 {
@@ -282,11 +282,11 @@ storage/objects/executions/<execution_key>/
 }
 ```
 
-`signals.json` is the machine-readable backtest input. `picks.parquet` is optimized for result display. `summary.json` contains per-strategy and per-group counts and elapsed time.
+`signals.json` 是机器可读的回测输入。`picks.parquet` 面向结果展示。`summary.json` 保存按策略和按组聚合的数量与耗时。
 
-## Backtest Model
+## 回测模型
 
-The backtest layer is split into orchestration and deterministic simulation components.
+回测层拆分为编排组件和确定性模拟组件。
 
 ```text
 domain/backtest/
@@ -299,24 +299,24 @@ domain/backtest/
   metrics.py
 ```
 
-Responsibilities:
+职责：
 
-- `runner.py` orchestrates one backtest using a `SignalSet`, market data, and a `BacktestSpec`.
-- `engine.py` advances trading dates and coordinates entries, exits, portfolio valuation, and skip records.
-- `execution.py` owns fill price, fees, slippage, limit-up, and limit-down behavior.
-- `portfolio.py` owns cash, positions, sizing, and re-entry rules.
-- `metrics.py` computes summary metrics from equity and trades.
+- `runner.py` 使用 `SignalSet`、行情数据和 `BacktestSpec` 编排一次回测。
+- `engine.py` 推进交易日，协调买入、卖出、组合估值和跳过记录。
+- `execution.py` 负责成交价、费用、滑点、涨停和跌停行为。
+- `portfolio.py` 负责现金、持仓、仓位计算和再入场规则。
+- `metrics.py` 根据权益曲线和交易记录计算汇总指标。
 
-Initial V2 must preserve the current trade-rule behavior:
+V2 初版必须保持当前交易规则行为：
 
-- Signal date is `T`.
-- Buy attempt is `T+1 open`.
-- Fixed holding period remains equivalent to the current implementation.
-- Long-term bull-bear stop and 10-day-low stop remain supported.
-- Limit-up buy rejection and limit-down sell rejection remain supported.
-- Unlimited-cash and realistic cash modes remain supported if both exist at the time of migration.
+- 信号日是 `T`。
+- 买入尝试发生在 `T+1 open`。
+- 固定持仓周期与当前实现保持等价。
+- 继续支持长期多空线止损和 10 日低点止损。
+- 继续支持涨停拒绝买入和跌停拒绝卖出。
+- 如果迁移时仍存在不限资金和真实现金两种模式，则两者都要继续支持。
 
-## Backtest Artifact Schema
+## 回测 Artifact Schema
 
 ```text
 storage/objects/executions/<execution_key>/
@@ -330,21 +330,21 @@ storage/objects/executions/<execution_key>/
     report.json
 ```
 
-Backtest lineage records:
+回测 lineage 记录：
 
-- Source selection execution key.
-- Requested groups and strategies.
-- Resolved strategy snapshots.
-- Signal execution key.
-- Market data date range.
-- Trade strategy.
-- Capital mode.
-- Cash per trade.
-- Backtest config snapshot.
+- 来源选股执行 key。
+- 请求的策略组和策略。
+- 解析后的策略快照。
+- 信号执行 key。
+- 行情数据日期范围。
+- 交易策略。
+- 资金模式。
+- 每票金额。
+- 回测配置快照。
 
 ## SQLite Schema
 
-V2 storage starts from a new schema.
+V2 从新 schema 开始。
 
 ```text
 executions
@@ -430,16 +430,16 @@ market_sync_runs
   created_at
 ```
 
-`execution_links` records relationships such as:
+`execution_links` 记录执行之间的关系，例如：
 
 ```text
 selection_execution -> backtest_execution
 market_sync_execution -> selection_execution
 ```
 
-## Job System
+## 任务系统
 
-V2 may remain single-process and thread-based initially, but job state should be isolated behind an app-level interface.
+V2 初版可以继续保持单进程、线程池式执行，但任务状态必须隔离在 app 层接口后面。
 
 ```text
 app/jobs/
@@ -448,22 +448,22 @@ app/jobs/
   logs.py
 ```
 
-The job layer owns:
+任务层负责：
 
-- Queueing.
-- Running.
-- Cancelling.
-- Progress updates.
-- Console logs.
-- Linking a job to a produced execution result.
+- 排队。
+- 运行。
+- 取消。
+- 进度更新。
+- 控制台日志。
+- 将 job 与产出的 execution result 关联起来。
 
-This keeps FastAPI routes from directly managing worker threads and filesystem state.
+这样可以避免 FastAPI 路由直接管理 worker 线程和文件状态。
 
-## API and Front End
+## API 与前端
 
-FastAPI and React remain the workbench interface.
+FastAPI 和 React 继续作为工作台界面。
 
-Required strategy group API capabilities:
+策略组 API 至少支持：
 
 ```text
 GET    /api/strategy-groups
@@ -474,87 +474,87 @@ POST   /api/strategy-groups/{group_id}/members
 DELETE /api/strategy-groups/{group_id}/members/{strategy_id}
 ```
 
-Required run capabilities:
+运行任务至少支持：
 
 ```text
 POST /api/executions
 ```
 
-Execution payloads include `groups` and `strategies` for selection, batch selection, and selection-backtest.
+选股、批量选股、选股回测的执行 payload 都包含 `groups` 和 `strategies`。
 
-The front end should support:
+前端需要支持：
 
-- Strategy group management.
-- Grouped strategy selection.
-- Running by group.
-- Running by one or more individual strategies.
-- Running by a group-plus-strategy union.
-- Result summaries grouped by strategy group and strategy.
+- 策略组管理。
+- 按组展示策略选择器。
+- 按策略组运行。
+- 按一个或多个单独策略运行。
+- 按“策略组 + 单独策略”的并集运行。
+- 结果摘要按策略组和策略展示。
 
-## Destructive Rebuild Initialization
+## 破坏性重建初始化
 
-V2 initialization may remove or ignore old runtime data.
+V2 初始化会删除旧运行数据，并创建新的 V2 运行目录结构。
 
-The initialization flow:
+初始化流程：
 
-1. Ensure `storage/` exists.
-2. Initialize a fresh V2 `storage/app.db`.
-3. Create `storage/market/`, `storage/objects/`, and `storage/objects/jobs/`.
-4. Register available strategies from code.
-5. Create the `default` strategy group.
-6. Add every registered strategy to `default`.
-7. Require market sync before selection or backtest can run.
+1. 确保 `storage/` 存在。
+2. 初始化全新的 V2 `storage/app.db`。
+3. 创建 `storage/market/`、`storage/objects/`、`storage/objects/jobs/`。
+4. 从代码注册可用策略。
+5. 创建 `default` 策略组。
+6. 将每个已注册策略加入 `default`。
+7. 选股或回测运行前必须先完成行情同步。
 
-The first V2 release should document the destructive nature of the rebuild clearly in README and deployment notes.
+V2 首版需要在 README 和部署说明中明确写出这次重构的破坏性。
 
-## Testing Strategy
+## 测试策略
 
-Tests should be written before implementation for each core slice.
+每个核心切片都应该先写测试，再实现。
 
-Required test areas:
+必要测试范围：
 
-- Strategy group creation, deletion, and default group protection.
-- Strategy resolver for group-only, strategy-only, mixed, empty, disabled group, and disabled strategy cases.
-- Market data store reads from the V2 `storage/market/bars/` layout.
-- SignalSet serialization and deserialization.
-- Selection writes V2 selection artifacts.
-- Selection-backtest uses the same resolver as selection.
-- Backtest consumes `SignalSet`, not legacy signal files.
-- Backtest trade rules preserve current behavior for limit price checks, stops, and holding rules.
-- Execution links connect selection and backtest results.
-- Fresh initialization creates default storage, default group, and strategy memberships.
+- 策略组创建、删除和 default 组保护。
+- 策略解析器覆盖按组、按策略、混合、空请求、禁用组、禁用策略。
+- MarketDataStore 能读取 V2 `storage/market/bars/` 布局。
+- `SignalSet` 序列化与反序列化。
+- 选股写入 V2 选股 artifact。
+- 选股回测使用和选股相同的策略解析器。
+- 回测消费 `SignalSet`，不消费旧信号文件。
+- 回测交易规则保护当前涨跌停、止损、持仓规则行为。
+- `execution_links` 能连接选股和回测结果。
+- 全新初始化能创建默认存储、default 策略组和策略成员关系。
 
-## Migration Plan
+## 迁移计划
 
-There is no data migration from legacy runtime data.
+不从旧运行数据迁移任何内容。
 
-Implementation may temporarily keep old modules in the repository while V2 modules are built. Once equivalent V2 paths are wired into API and tests, unused old modules can be deleted in a cleanup phase.
+实现期间可以暂时保留旧模块。等 V2 路径接入 API 并通过测试后，再在清理阶段删除不再使用的旧模块。
 
-The recommended migration order:
+建议迁移顺序：
 
-1. Add V2 package structure and runtime/storage schema.
-2. Add strategy registry, strategy groups, and resolver.
-3. Add market storage layout and sync flow.
-4. Add signal model and artifact writer.
-5. Add selection runner using V2 signal output.
-6. Add backtest runner consuming V2 `SignalSet`.
-7. Add API endpoints and front-end support for strategy groups.
-8. Switch Web execution flow to V2 services.
-9. Remove legacy runtime assumptions, root `db/` usage, and old artifact format dependencies.
-10. Update README and deployment scripts for V2 storage layout.
+1. 添加 V2 包结构和 runtime/storage schema。
+2. 添加策略注册表、策略组和策略解析器。
+3. 添加行情存储布局和同步流程。
+4. 添加信号模型和 artifact writer。
+5. 添加使用 V2 信号输出的选股 runner。
+6. 添加消费 V2 `SignalSet` 的回测 runner。
+7. 添加策略组 API 和前端支持。
+8. 将 Web 执行流程切换到 V2 services。
+9. 移除旧运行时假设、根目录 `db/` 使用和旧 artifact 格式依赖。
+10. 更新 README 和部署脚本以适配 V2 存储布局。
 
-## Acceptance Criteria
+## 验收标准
 
-- A fresh clone can initialize V2 storage without old runtime data.
-- The system can sync market data into `storage/market/`.
-- The system creates a non-deletable `default` strategy group containing all registered strategies.
-- Users can create, rename, disable, and delete non-default strategy groups.
-- Users can add and remove strategy memberships from groups.
-- Selection can run by default group, by selected groups, by selected strategies, and by a mixed group-plus-strategy request.
-- Selection-backtest supports the same group and strategy selection semantics.
-- Selection writes V2 `manifest.json`, `lineage.json`, `signals.json`, `picks.parquet`, and `summary.json`.
-- Backtest consumes V2 `SignalSet` and writes V2 backtest artifacts.
-- Backtest results are linked to their source selection execution.
-- Result pages can show summaries grouped by strategy group and strategy.
-- The code no longer requires root-level `db/`, old `storage/app.db`, or old artifact layouts.
-- Current trade-rule behavior is protected by tests during migration.
+- 全新 clone 可以在没有旧运行数据的情况下初始化 V2 storage。
+- 系统可以同步行情到 `storage/market/`。
+- 系统创建不可删除的 `default` 策略组，且包含所有已注册策略。
+- 用户可以创建、重命名、禁用和删除非 default 策略组。
+- 用户可以增删策略组成员。
+- 选股可以按 default 组、指定组、指定策略，以及“组 + 策略”的混合请求运行。
+- 选股回测支持同样的策略组和策略选择语义。
+- 选股写入 V2 `manifest.json`、`lineage.json`、`signals.json`、`picks.parquet`、`summary.json`。
+- 回测消费 V2 `SignalSet`，并写入 V2 回测 artifact。
+- 回测结果与来源选股执行建立链接。
+- 结果页面可以按策略组和策略展示摘要。
+- 代码不再依赖根目录 `db/`、旧 `storage/app.db` 或旧 artifact 布局。
+- 当前交易规则行为在迁移过程中由测试保护。
