@@ -56,7 +56,10 @@ def fetch_trade_calendar(pro, start: date, end: date) -> list[date]:
         pl.from_pandas(resp)
         .filter(pl.col("is_open") == 1)
         .select(
-            pl.col("cal_date").cast(pl.Utf8).str.strptime(pl.Date, "%Y%m%d")
+            pl.col("cal_date")
+            .cast(pl.Utf8)
+            .str.strptime(pl.Date, "%Y%m%d")
+            .alias("date")
         )["date"]
         .to_list()
     )
