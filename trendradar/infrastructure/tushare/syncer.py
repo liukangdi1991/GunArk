@@ -6,9 +6,10 @@ import logging
 import os
 import tempfile
 import time
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable, Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import polars as pl
@@ -182,3 +183,67 @@ def _atomic_write_parquet(df: pl.DataFrame, target: Path) -> None:
         except OSError:
             pass
         raise
+
+
+# ---------------------------------------------------------------------------
+# Incremental sync planning (pure helpers)
+# ---------------------------------------------------------------------------
+
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+_SHARD_MAX_ROWS = 5500
+
+
+def latest_tradeable_day(trade_days: set, now_utc: datetime) -> date:
+    """Latest trading day whose data is available (Beijing 16:00 cutoff)."""
+    beijing = now_utc.astimezone(_SHANGHAI)
+    today = beijing.date()
+    candidate = today if beijing.hour >= 16 and today in trade_days else None
+    if candidate is not None:
+        return candidate
+    past = sorted(d for d in trade_days if d < today)
+    return past[-1] if past else today
+
+
+def is_up_to_date(
+    local_min: date,
+    local_max: date,
+    req_start: date | None,
+    latest: date,
+    done: set,
+    trade_days: set,
+) -> bool:
+    """Cheap max/min precheck + authoritative sync_done coverage check."""
+    if local_max < latest:
+        return False
+    if req_start is not None and req_start < local_min:
+        return False
+    end = latest
+    start = req_start if req_start is not None else local_min
+    missing = missing_trade_days(trade_days, done, start, end)
+    return not missing
+
+
+def missing_trade_days(
+    trade_days: set, done: set, start: date, end: date
+) -> list[date]:
+    """Trade days in [start, end] not marked done, ascending."""
+    return sorted(
+        d for d in trade_days if start <= d <= end and d not in done
+    )
+
+
+def shard_ranges(start: date, end: date, max_rows: int = _SHARD_MAX_ROWS) -> list:
+    """Split [start, end] into date ranges each estimated under max_rows."""
+    total_days = (end - start).days + 1
+    est_trade_days = int(total_days / 7 * 5)
+    if est_trade_days <= max_rows:
+        return [(start, end)]
+    shards = -(-est_trade_days // max_rows)  # ceil
+    span = -(-total_days // shards)  # ceil
+    ranges = []
+    cur = start
+    while cur <= end:
+        seg_end = min(end, cur + timedelta(days=span - 1))
+        ranges.append((cur, seg_end))
+        cur = seg_end + timedelta(days=1)
+    return ranges
