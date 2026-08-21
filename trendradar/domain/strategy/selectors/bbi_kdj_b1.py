@@ -1,6 +1,8 @@
 import time
 import polars as pl
-from trendradar.domain.strategy.protocol import SelectionStrategy, SelectionContext, SelectionResult
+from trendradar.domain.strategy.protocol import (
+    SelectionStrategy, SelectionContext, SelectionResult, WarmupResult,
+)
 from trendradar.domain.strategy.formulas.bbi import compute_bbi, bbi_deriv_uptrend
 from trendradar.domain.strategy.formulas.kdj import compute_kdj
 from trendradar.domain.strategy.formulas.ma import compute_ma, compute_dif
@@ -11,71 +13,47 @@ class BBIKDJSelector(SelectionStrategy):
     def __init__(self, definition):
         self.definition = definition
 
-    def select(self, context: SelectionContext) -> SelectionResult:
-        t0 = time.time()
-        df = context.market_data
-        params = self.definition.default_params
+    def warmup(self, market_data: pl.DataFrame) -> WarmupResult:
+        _, _, j_series = compute_kdj(market_data)
+        bbi_series = compute_bbi(market_data)
+        dif_series = compute_dif(market_data)
+        ma60_series = compute_ma(market_data, 60)
+        short_line, long_line = compute_zx_lines(market_data)
+        df = market_data.with_columns([
+            j_series.alias("j"), bbi_series.alias("bbi"), dif_series.alias("dif"),
+            ma60_series.alias("ma_60"), short_line.alias("short_term_trend_line"),
+            long_line.alias("long_term_bull_bear_line"),
+        ])
+        grouped = {g["code"][0]: g for g in df.partition_by("code")}
+        return WarmupResult(grouped=grouped)
 
+    def select_day(self, context: SelectionContext, warmup: WarmupResult) -> SelectionResult:
+        t0 = time.time()
+        params = self.definition.default_params
         j_threshold = params.get("j_threshold", 15)
         bbi_min_window = params.get("bbi_min_window", 20)
         max_window = params.get("max_window", 120)
         bbi_q_threshold = params.get("bbi_q_threshold", 0.2)
 
-        if df.is_empty():
-            return SelectionResult(
-                strategy_id=self.definition.strategy_id,
-                strategy_name=self.definition.name,
-                trade_date=context.trade_date,
-                selected_codes=[],
-                elapsed_seconds=time.time() - t0,
-            )
-
-        _, _, j_series = compute_kdj(df)
-        bbi_series = compute_bbi(df)
-        dif_series = compute_dif(df)
-        ma60_series = compute_ma(df, 60)
-        short_line, long_line = compute_zx_lines(df)
-
-        df = df.with_columns([
-            bbi_series,
-            j_series,
-            dif_series,
-            ma60_series,
-            short_line,
-            long_line,
-        ])
-
-        last_per_code = df.group_by("code").agg([
-            pl.col("j").last(),
-            pl.col("bbi").last(),
-            pl.col("dif").last(),
-            pl.col("ma_60").last(),
-            pl.col("short_term_trend_line").last(),
-            pl.col("long_term_bull_bear_line").last(),
-            pl.col("close").last(),
-        ])
-
-        filtered = last_per_code.filter(
-            (pl.col("j") < j_threshold)
-            & (pl.col("dif") > 0)
-        )
-
         selected = []
-        for code in filtered["code"].to_list():
-            hist = df.filter(pl.col("code") == code).sort("date")
+        for code, hist in warmup.grouped.items():
             if len(hist) < max_window:
                 continue
             bbi_vals = hist["bbi"].drop_nulls()
             if len(bbi_vals) < max_window:
                 continue
+            latest = hist.row(-1, named=True)
+            if latest["j"] is None or latest["j"] >= j_threshold:
+                continue
+            if latest["dif"] is None or latest["dif"] <= 0:
+                continue
             if bbi_deriv_uptrend(bbi_vals, bbi_min_window, max_window, bbi_q_threshold):
                 selected.append(code)
 
-        elapsed = time.time() - t0
         return SelectionResult(
             strategy_id=self.definition.strategy_id,
             strategy_name=self.definition.name,
             trade_date=context.trade_date,
             selected_codes=selected,
-            elapsed_seconds=elapsed,
+            elapsed_seconds=time.time() - t0,
         )
