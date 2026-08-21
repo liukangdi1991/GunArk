@@ -9,6 +9,8 @@ from typing import Optional
 
 import polars as pl
 
+_calendar_lock = __import__("threading").Lock()
+
 POLARS_KLINE_SCHEMA: dict[str, type] = {
     "code": pl.Utf8,
     "date": pl.Date,
@@ -220,36 +222,37 @@ class LocalParquetMarketStore(MarketDataStore):
         except Exception:
             pass
 
-        all_paths = sorted(self.bars_dir.glob("*.parquet"))
-        if not all_paths:
-            return []
-
-        try:
-            dates = (
-                pl.scan_parquet([str(p) for p in all_paths], columns=["date"])
-                .select(pl.col("date").unique())
-                .collect()["date"]
-                .to_list()
-            )
-        except Exception:
-            date_sets: list[set[date]] = []
-            for p in all_paths:
-                try:
-                    df = pl.read_parquet(p, columns=["date"])
-                    date_sets.append(set(df["date"].unique().to_list()))
-                except Exception:
-                    continue
-            if not date_sets:
+        with _calendar_lock:
+            all_paths = sorted(self.bars_dir.glob("*.parquet"))
+            if not all_paths:
                 return []
-            dates = sorted(date_sets[0].union(*date_sets[1:]))
 
-        result = sorted(dates)
+            try:
+                dates = (
+                    pl.scan_parquet([str(p) for p in all_paths], columns=["date"])
+                    .select(pl.col("date").unique())
+                    .collect()["date"]
+                    .to_list()
+                )
+            except Exception:
+                date_sets: list[set[date]] = []
+                for p in all_paths:
+                    try:
+                        df = pl.read_parquet(p, columns=["date"])
+                        date_sets.append(set(df["date"].unique().to_list()))
+                    except Exception:
+                        continue
+                if not date_sets:
+                    return []
+                dates = sorted(date_sets[0].union(*date_sets[1:]))
 
-        try:
-            pl.DataFrame({"date": result}).with_columns(
-                pl.col("date").cast(pl.Date)
-            ).write_parquet(cache_path)
-        except Exception:
-            pass
+            result = sorted(dates)
 
-        return result
+            try:
+                pl.DataFrame({"date": result}).with_columns(
+                    pl.col("date").cast(pl.Date)
+                ).write_parquet(cache_path)
+            except Exception:
+                pass
+
+            return result

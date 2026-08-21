@@ -12,6 +12,7 @@ RESET_PATHS = [
     "app.db",
     "objects/",
     "market/",
+    "cache/",
 ]
 
 
@@ -39,12 +40,12 @@ def cmd_init_v2(args: argparse.Namespace) -> None:
             print(f"  DELETE: {old_db_dir}")
 
         # Delete
-        app_db = root / "app.db"
-        if app_db.exists():
-            app_db.unlink()
-        for d in [objects_root, market_root]:
-            if d.exists():
-                shutil.rmtree(d)
+        for rel in RESET_PATHS:
+            full = root / rel
+            if full.is_dir():
+                shutil.rmtree(full)
+            elif full.exists():
+                full.unlink()
         if old_db_dir.exists():
             shutil.rmtree(old_db_dir)
 
