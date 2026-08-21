@@ -26,8 +26,14 @@ class SlowSelector:
     def __init__(self, definition):
         self.definition = definition
 
-    def select(self, context):
-        time.sleep(3)
+    def warmup(self, market_data):
+        from trendradar.domain.strategy.protocol import WarmupResult
+
+        grouped = {g["code"][0]: g for g in market_data.partition_by("code")}
+        return WarmupResult(grouped=grouped)
+
+    def select_day(self, context, warmup):
+        time.sleep(3)  # simulate long computation
         from trendradar.domain.strategy.protocol import SelectionResult
 
         return SelectionResult(

@@ -12,7 +12,11 @@ from trendradar.app.jobs.context import JobContext
 from trendradar.app.jobs.executor import JobExecutor
 from trendradar.domain.market.data_store import MarketDataStore
 from trendradar.domain.signal.models import SignalSet, StrategySignal
-from trendradar.domain.strategy.protocol import SelectionContext
+from trendradar.domain.strategy.protocol import (
+    SelectionContext,
+    SelectionStrategy,
+    WarmupResult,
+)
 from trendradar.domain.strategy.registry import get as get_defn, list_all
 from trendradar.domain.strategy.resolver import resolve as resolve_strategies
 
@@ -104,22 +108,39 @@ def _run_selection(
         ctx.log(f"Using all {len(codes)} available stocks")
     else:
         ctx.log(f"Using {len(codes)} specified stocks")
+    codes = sorted(codes)   # normalize ordering (spec: deterministic across inputs)
 
     market_data = market_store.load_bars(codes, extended_start, trading_dates[-1])
     if market_data.is_empty():
         ctx.log("No market data loaded")
         return SignalSet(execution_key=ctx.job_id)
+    market_data = market_data.sort(["code", "date"])   # ordering responsibility (runner)
 
     ctx.log(f"Loaded {market_data.height} market data rows")
 
+    # Phase 1: warmup once per strategy
+    warmups: dict[str, WarmupResult | None] = {}
+    selectors: dict[str, SelectionStrategy] = {}
+    for defn in resolved:
+        if ctx.check_cancelled():
+            ctx.fail("Cancelled by user")
+            return SignalSet(execution_key=ctx.job_id)
+        ctx.log(f"Warmup {defn.strategy_id}")
+        selector = defn.selector_class(defn)
+        selectors[defn.strategy_id] = selector
+        try:
+            warmups[defn.strategy_id] = selector.warmup(market_data)
+        except Exception as e:
+            ctx.log(f"Error in warmup {defn.strategy_id}: {e}", level="WARN")
+            warmups[defn.strategy_id] = None
+        ctx.log(f"Warmup done {defn.strategy_id}")
+
+    # Phase 2: per-day select_day
     all_signals: list[StrategySignal] = []
     total_dates = len(trading_dates)
     strategies_snapshot = [
-        {
-            "strategy_id": d.strategy_id,
-            "name": d.name,
-            "params": settings_map.get(d.strategy_id, {}).get("params", {}),
-        }
+        {"strategy_id": d.strategy_id, "name": d.name,
+         "params": settings_map.get(d.strategy_id, {}).get("params", {})}
         for d in resolved
     ]
 
@@ -127,49 +148,41 @@ def _run_selection(
         if ctx.check_cancelled():
             ctx.fail("Cancelled by user")
             return SignalSet(execution_key=ctx.job_id)
-
         ctx.update_progress(date_idx + 1, total_dates, str(trade_date))
 
         day_data = market_data.filter(pl.col("date") == trade_date)
         if day_data.is_empty():
             continue
-
         day_codes = day_data["code"].unique().to_list()
         candidate_codes = [c for c in codes if c in day_codes]
         if not candidate_codes:
             continue
+        context = SelectionContext(
+            trade_date=trade_date,
+            market_data=market_data,
+            candidate_codes=candidate_codes,
+        )
 
         for defn in resolved:
             if ctx.check_cancelled():
                 ctx.fail("Cancelled by user")
                 return SignalSet(execution_key=ctx.job_id)
-
-            selector = defn.selector_class(defn)
+            if warmups.get(defn.strategy_id) is None:
+                continue
             try:
-                context = SelectionContext(
-                    trade_date=trade_date,
-                    market_data=market_data,
-                    candidate_codes=candidate_codes,
-                    get_data_dict=lambda codes=candidate_codes: {
-                        c: market_data.filter(pl.col("code") == c)
-                        for c in codes
-                    },
-                )
-                result = selector.select(context)
+                selector = selectors[defn.strategy_id]
+                result = selector.select_day(context, warmups[defn.strategy_id])
                 if result.selected_codes:
-                    all_signals.append(
-                        StrategySignal(
-                            strategy_id=result.strategy_id,
-                            strategy_name=result.strategy_name,
-                            signal_date=result.trade_date,
-                            codes=result.selected_codes,
-                        )
-                    )
+                    all_signals.append(StrategySignal(
+                        strategy_id=result.strategy_id,
+                        strategy_name=result.strategy_name,
+                        signal_date=result.trade_date,
+                        codes=result.selected_codes,
+                    ))
             except Exception as e:
                 ctx.log(f"Error in strategy {defn.strategy_id} on {trade_date}: {e}", level="WARN")
 
     ctx.log(f"Selection complete: {len(all_signals)} signals generated")
-
     return SignalSet(
         execution_key=ctx.job_id,
         signal_from=trading_dates[0],

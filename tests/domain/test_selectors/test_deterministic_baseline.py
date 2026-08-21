@@ -26,7 +26,9 @@ def _ctx(df):
 
 
 def _select_codes(defn, df):
-    return defn.selector_class(defn).select(_ctx(df)).selected_codes
+    sel = defn.selector_class(defn)
+    warmup = sel.warmup(df)
+    return sel.select_day(_ctx(df), warmup).selected_codes
 
 
 # Two deterministic fixtures: one stock (000001) with 150 days uptrend,
