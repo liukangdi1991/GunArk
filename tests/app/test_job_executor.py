@@ -271,3 +271,32 @@ def test_submit_after_executor_shutdown(tmp_path):
 
     with pytest.raises(RuntimeError):
         executor.submit("selection", lambda ctx: None, {})
+
+
+def test_concurrent_job_writes_are_thread_safe(tmp_path):
+    """Regression: shared sqlite connection must not race on concurrent writes.
+
+    Two workers finishing at the same moment previously could collide on the
+    single connection's execute/commit and fail one job with a sqlite error.
+    """
+    import threading
+
+    db_path = _init_db(tmp_path)
+    store = _create_store(db_path)
+    executor = _create_executor(store, max_workers=2)
+    barrier = threading.Barrier(2)
+
+    def work(ctx):
+        barrier.wait(timeout=5)
+        time.sleep(0.01)
+        ctx.succeed({"x": 1})
+
+    j1 = executor.submit("selection", work, {})
+    j2 = executor.submit("backtest", work, {})
+
+    executor._jobs[j1].future.result(timeout=10)
+    executor._jobs[j2].future.result(timeout=10)
+
+    assert executor.get_state(j1)["status"] == "success"
+    assert executor.get_state(j2)["status"] == "success"
+    executor.shutdown(wait=True)
