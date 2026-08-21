@@ -1,6 +1,8 @@
 import time
 import polars as pl
-from trendradar.domain.strategy.protocol import SelectionStrategy, SelectionContext, SelectionResult
+from trendradar.domain.strategy.protocol import (
+    SelectionStrategy, SelectionContext, SelectionResult, WarmupResult,
+)
 from trendradar.domain.strategy.formulas.zxdkx import compute_zx_lines
 
 
@@ -8,31 +10,25 @@ class VolumeSpikeBalanceSelector(SelectionStrategy):
     def __init__(self, definition):
         self.definition = definition
 
-    def select(self, context: SelectionContext) -> SelectionResult:
+    def warmup(self, market_data: pl.DataFrame) -> WarmupResult:
+        short_line, long_line = compute_zx_lines(market_data)
+        df = market_data.with_columns([
+            short_line.alias("short_term_trend_line"),
+            long_line.alias("long_term_bull_bear_line"),
+        ])
+        grouped = {g["code"][0]: g for g in df.partition_by("code")}
+        return WarmupResult(grouped=grouped)
+
+    def select_day(self, context: SelectionContext, warmup: WarmupResult) -> SelectionResult:
         t0 = time.time()
-        df = context.market_data
         params = self.definition.default_params
 
         volume_spike_lookback = params.get("volume_spike_lookback", 30)
         volume_spike_multiple = params.get("volume_spike_multiple", 2.0)
         min_spike_elapsed_days = params.get("min_spike_elapsed_days", 20)
 
-        if df.is_empty():
-            return SelectionResult(
-                strategy_id=self.definition.strategy_id,
-                strategy_name=self.definition.name,
-                trade_date=context.trade_date,
-                selected_codes=[],
-                elapsed_seconds=time.time() - t0,
-            )
-
-        short_line, long_line = compute_zx_lines(df)
-        df = df.with_columns([short_line, long_line])
-
-        codes = df["code"].unique().to_list()
         selected = []
-        for code in codes:
-            hist = df.filter(pl.col("code") == code).sort("date")
+        for code, hist in warmup.grouped.items():
             if len(hist) < volume_spike_lookback + 1:
                 continue
 
@@ -70,11 +66,10 @@ class VolumeSpikeBalanceSelector(SelectionStrategy):
 
             selected.append(code)
 
-        elapsed = time.time() - t0
         return SelectionResult(
             strategy_id=self.definition.strategy_id,
             strategy_name=self.definition.name,
             trade_date=context.trade_date,
             selected_codes=selected,
-            elapsed_seconds=elapsed,
+            elapsed_seconds=time.time() - t0,
         )
