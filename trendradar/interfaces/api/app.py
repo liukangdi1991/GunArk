@@ -67,6 +67,15 @@ async def _lifespan(app: FastAPI):
     store = StorageConnection(storage_root)
     init_schema(store.connect())
 
+    # Restart recovery: mark orphaned running jobs as failed so mutual
+    # exclusion for market_sync is not permanently locked.
+    conn = store.connect()
+    conn.execute(
+        "UPDATE jobs SET status = 'failed', error_message = 'interrupted by restart', "
+        "finished_at = datetime('now') WHERE status IN ('queued', 'running')"
+    )
+    conn.commit()
+
     from trendradar.app.services.strategy_service import ensure_default_group
 
     ensure_default_group(store)

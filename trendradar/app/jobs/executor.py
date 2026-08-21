@@ -33,6 +33,14 @@ class JobExecutor:
         if self._shutdown:
             raise RuntimeError("Executor has been shut down")
 
+        if job_type == "market_sync":
+            with self._lock:
+                if any(
+                    j.job_type == "market_sync" and not j.future.done()
+                    for j in self._jobs.values()
+                ):
+                    raise RuntimeError("market_sync job already running")
+
         job_id = self._store.create_job(job_type, request)
         fut = self._pool.submit(self._run, job_id, job_type, run_fn)
         with self._lock:
