@@ -71,3 +71,11 @@ def test_sync_market_up_to_date_zero_daily_calls(tmp_path):
                          progress=None, cancel_check=None)
     assert result["skipped_uptodate"] is True
     assert pro.daily_calls == []
+
+
+def test_sync_market_default_now_utc_does_not_crash(tmp_path):
+    """Regression: no now_utc passed -> datetime.now(timezone.utc) default path."""
+    bars_dir = tmp_path / "bars"
+    pro = FakePro(daily_by_day={})
+    result = sync_market(pro, bars_dir, tmp_path, {}, progress=None, cancel_check=None)
+    assert "mode" in result
