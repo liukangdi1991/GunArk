@@ -269,3 +269,83 @@ def merge_day_bars(day_df, bars_dir: Path) -> list[str]:
         _atomic_write_parquet(merged, target)
         written.append(str(code))
     return written
+
+
+def sync_by_stock(
+    pro,
+    codes: list[str],
+    start: date,
+    end: date,
+    bars_dir: Path,
+    done_path: Path,
+    retry_path: Path,
+    progress=None,
+    cancel_check=None,
+    bucket=None,
+    max_workers: int = 6,
+) -> dict:
+    """Fetch full history per stock (sharded), merge into bars.
+
+    All-or-nothing day marking: only when every stock in this batch succeeds
+    are [start, end] trade days written to sync_done; failures persist to
+    retry_path so the next run retries just the failed subset.
+    """
+    from trendradar.infrastructure.tushare.calendar import fetch_trade_calendar
+    from trendradar.infrastructure.tushare.markers import (
+        load_retry_codes, load_sync_done, save_retry_codes, save_sync_done,
+    )
+    from trendradar.infrastructure.tushare.rate_limit import TokenBucket
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    if bucket is None:
+        bucket = TokenBucket()
+    trade_days = set(fetch_trade_calendar(pro, start, end))
+    codes = load_retry_codes(retry_path) or codes
+
+    def fetch_one(code: str) -> bool:
+        for seg_start, seg_end in shard_ranges(start, end):
+            if cancel_check and cancel_check():
+                return False
+            if not bucket.acquire(cancel_check=cancel_check):
+                return False
+            data = _fetch_with_retry(pro, code, seg_start, seg_end, 3)
+            if data is None:
+                return False
+            if data.is_empty():
+                continue
+            target = bars_dir / f"{code}.parquet"
+            if target.exists():
+                local = pl.read_parquet(target)
+                merged = pl.concat(
+                    [local.filter(~pl.col("date").is_in(data["date"])), data]
+                ).sort("date")
+            else:
+                merged = data.sort("date")
+            _atomic_write_parquet(merged, target)
+        return True
+
+    failed = []
+    total = len(codes)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(fetch_one, c): c for c in codes}
+        for i, fut in enumerate(as_completed(futures), start=1):
+            code = futures[fut]
+            if progress:
+                progress(i, total, code)
+            if cancel_check and cancel_check():
+                break
+            try:
+                if not fut.result():
+                    failed.append(code)
+            except Exception:
+                failed.append(code)
+
+    if failed:
+        save_retry_codes(retry_path, failed)
+        done = set()
+    else:
+        save_retry_codes(retry_path, [])
+        done = load_sync_done(done_path) | trade_days
+        save_sync_done(done_path, done)
+
+    return {"failed_codes": failed}
