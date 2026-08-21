@@ -76,64 +76,24 @@ wait_for_app_container() {
 
 initialize_storage_schema() {
   wait_for_app_container
-  compose exec -T trend-radar python -c "from web.core.config import storage; storage.ensure_ready(); print(f'SQLite 初始化完成: {storage.db_path}')"
+  compose exec -T trend-radar python -c "
+from trendradar.infrastructure.runtime import runtime_root
+from trendradar.infrastructure.storage.connection import StorageConnection
+from trendradar.infrastructure.storage.schema import init_schema
+storage = runtime_root() / 'storage'
+storage.mkdir(parents=True, exist_ok=True)
+init_schema(StorageConnection(storage).connect())
+print('SQLite 初始化完成')
+"
 }
 
 ensure_deploy_layout() {
   mkdir -p \
-    "${PROJECT_ROOT}/deploy/data/db" \
-    "${PROJECT_ROOT}/deploy/data/storage/cache" \
-    "${PROJECT_ROOT}/deploy/data/storage/objects"
-
-  if [ ! -f "${PROJECT_ROOT}/deploy/data/configs.json" ]; then
-    if [ -f "${PROJECT_ROOT}/deploy/configs.json" ]; then
-      cp "${PROJECT_ROOT}/deploy/configs.json" "${PROJECT_ROOT}/deploy/data/configs.json"
-    else
-      cp "${PROJECT_ROOT}/configs.json" "${PROJECT_ROOT}/deploy/data/configs.json"
-    fi
-  fi
-
-  if [ ! -f "${PROJECT_ROOT}/deploy/data/stocklist.csv" ]; then
-    if [ -f "${PROJECT_ROOT}/deploy/stocklist.csv" ]; then
-      cp "${PROJECT_ROOT}/deploy/stocklist.csv" "${PROJECT_ROOT}/deploy/data/stocklist.csv"
-    else
-      cp "${PROJECT_ROOT}/stocklist.csv" "${PROJECT_ROOT}/deploy/data/stocklist.csv"
-    fi
-  fi
+    "${PROJECT_ROOT}/deploy/data/storage/market/bars" \
+    "${PROJECT_ROOT}/deploy/data/storage/objects/jobs" \
+    "${PROJECT_ROOT}/deploy/data/storage/cache"
 
   if [ ! -f "${PROJECT_ROOT}/deploy/.env" ]; then
     cp "${PROJECT_ROOT}/deploy/.env.example" "${PROJECT_ROOT}/deploy/.env"
   fi
-
-  copy_dir_if_empty "${PROJECT_ROOT}/db" "${PROJECT_ROOT}/deploy/data/db"
-  copy_file_if_missing \
-    "${PROJECT_ROOT}/storage/cache/trading_calendar.parquet" \
-    "${PROJECT_ROOT}/deploy/data/storage/cache/trading_calendar.parquet"
-}
-
-copy_file_if_missing() {
-  local source_file="$1"
-  local target_file="$2"
-
-  if [ ! -f "${source_file}" ] || [ -f "${target_file}" ]; then
-    return
-  fi
-
-  mkdir -p "$(dirname "${target_file}")"
-  cp "${source_file}" "${target_file}"
-}
-
-copy_dir_if_empty() {
-  local source_dir="$1"
-  local target_dir="$2"
-
-  if [ ! -d "${source_dir}" ]; then
-    return
-  fi
-
-  if find "${target_dir}" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
-    return
-  fi
-
-  cp -a "${source_dir}/." "${target_dir}/"
 }

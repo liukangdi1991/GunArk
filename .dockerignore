@@ -13,8 +13,6 @@ frontend/dist/
 db/
 storage/
 deploy/.env
-deploy/configs.json
-deploy/stocklist.csv
 deploy/data/
 deploy/backups/
 
