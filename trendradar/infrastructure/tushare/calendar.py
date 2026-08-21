@@ -44,17 +44,33 @@ def load_trade_calendar(path: Path) -> list[date] | None:
 
 
 def fetch_trade_calendar(pro, start: date, end: date) -> list[date]:
-    """Fetch trade days in [start, end] from Tushare (exchange SSE)."""
-    resp = pro.trade_cal(
-        exchange="SSE",
-        start_date=start.strftime("%Y%m%d"),
-        end_date=end.strftime("%Y%m%d"),
-    )
-    if resp is None or resp.empty:
+    """Fetch trade days in [start, end] from Tushare (exchange SSE).
+
+    Sharded by calendar year so any range stays under the per-call row
+    ceiling (6000 rows; a multi-decade range is ~9000+ trade days).
+    """
+    frames = []
+    year = start.year
+    while year <= end.year:
+        seg_start = max(start, date(year, 1, 1))
+        seg_end = min(end, date(year, 12, 31))
+        resp = pro.trade_cal(
+            exchange="SSE",
+            start_date=seg_start.strftime("%Y%m%d"),
+            end_date=seg_end.strftime("%Y%m%d"),
+        )
+        if resp is not None and not resp.empty:
+            # pl.DataFrame(dict-of-lists) avoids pl.from_pandas, which can
+            # require pyarrow for some object columns (e.g. sparse early-year
+            # trade_cal responses).
+            frames.append(pl.DataFrame(resp.to_dict(orient="list")))
+        year += 1
+
+    if not frames:
         return []
+    df = pl.concat(frames)
     return sorted(
-        pl.from_pandas(resp)
-        .filter(pl.col("is_open") == 1)
+        df.filter(pl.col("is_open") == 1)
         .select(
             pl.col("cal_date")
             .cast(pl.Utf8)
