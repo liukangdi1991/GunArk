@@ -1,1 +1,0 @@
-"""TrendRadar web application."""

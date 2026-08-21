@@ -164,10 +164,10 @@ def reorder_members(group_id: str, body: ReorderRequest, request: FastAPIRequest
     return result
 
 
-@router.get("/strategies", response_model=list[StrategyListItem])
+@router.get("/strategies")
 def list_strategies():
-    from trendradar.app.services.strategy_service import list_strategies
-    return list_strategies()
+    from trendradar.interfaces.api.presenters import strategy_list_payload
+    return strategy_list_payload()
 
 
 @router.patch("/strategies/{strategy_id}/settings", response_model=StrategySettingsResponse)

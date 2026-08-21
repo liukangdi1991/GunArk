@@ -6,11 +6,17 @@ from trendradar.domain.strategy.models import StrategyDefinition
 
 @pytest.fixture(autouse=True)
 def _setup():
+    import trendradar.domain.strategy.registry as registry
+
+    before = dict(registry._registry)
     for sid, name in [("s1", "Str1"), ("s2", "Str2"), ("s3", "Str3"), ("s4", "Str4")]:
         register(StrategyDefinition(
             strategy_id=sid, name=name, description="",
             selector_class=type("Fake", (), {}),
         ))
+    yield
+    registry._registry.clear()
+    registry._registry.update(before)
 
 
 def test_empty_request_uses_default():

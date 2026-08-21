@@ -59,6 +59,11 @@ def cmd_init_v2(args: argparse.Namespace) -> None:
     init_schema(conn)
     conn.close()
 
+    # Bootstrap default strategy group with all registered strategies
+    from trendradar.app.services.strategy_service import ensure_default_group
+
+    ensure_default_group(sc)
+
     print(f"V2 storage initialized at {root}")
 
 

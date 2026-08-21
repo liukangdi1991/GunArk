@@ -20,6 +20,49 @@ from trendradar.domain.signal.models import SignalSet
 from trendradar.domain.signal.repository import SignalRepository
 
 
+def validate_backtest_prerequisites(
+    signal_set: SignalSet,
+    trading_dates: list[date],
+    fixed_hold_n_days: int = 5,
+) -> list[str]:
+    """Return blocking reasons for a backtest; empty list means it can run.
+
+    Rule (V1): signal at T, buy at T+1 open, target sell at T+N+1 close, all
+    in trading-day indices. A signal whose date leaves fewer than N+1 trading
+    days afterwards is skipped by the engine. If EVERY signal is skipped the
+    backtest produces zero trades — block it up front. If at least one signal
+    date is tradeable, the backtest runs (only the tail signals are skipped).
+    """
+    if not signal_set.signals:
+        return ["信号集为空，没有可回测的信号。"]
+
+    signal_dates = sorted({s.signal_date for s in signal_set.signals if s.signal_date})
+    if not signal_dates:
+        return ["信号集缺少信号日期，无法回测。"]
+
+    cal_index = {d: i for i, d in enumerate(trading_dates)}
+    needed = fixed_hold_n_days + 1  # T+1 buy + N-day hold to T+N+1
+    tradeable = [
+        d
+        for d in signal_dates
+        if cal_index.get(d) is not None and cal_index[d] + needed < len(trading_dates)
+    ]
+    if tradeable:
+        return []
+
+    last_sig = signal_dates[-1]
+    last_idx = cal_index.get(last_sig)
+    if last_idx is None:
+        return [f"信号日 {last_sig} 不在交易日历中，无法确定买入日。"]
+
+    return [
+        f"信号集内所有信号日均无足够交易日完成买入+持仓（需 {needed} 个："
+        f"T+1 买入 + 持仓 {fixed_hold_n_days} 日）。最新信号日 {last_sig} 之后仅剩 "
+        f"{len(trading_dates) - 1 - last_idx} 个交易日，回测将没有任何交易。"
+        f"请选择更早的选股区间，或先同步更新行情数据（当前行情截止 {trading_dates[-1]}）。"
+    ]
+
+
 def _build_config(request: dict) -> BacktestConfig:
     cap = request.get("capital", {})
     exe = request.get("execution", {})
@@ -186,6 +229,8 @@ def _run_backtest_worker(
 
         ctx.log(f"Saved results to {out_dir}")
 
+        _register_backtest_metadata(ctx.job_id, out_dir)
+
         _link_backtest_to_selection(signal_set.execution_key, ctx.job_id)
 
     ctx.succeed(output)
@@ -202,6 +247,28 @@ def _link_backtest_to_selection(selection_key: str, backtest_key: str) -> None:
             "(source_execution_key, target_execution_key, link_type) "
             "VALUES (?, ?, 'backtest_uses_selection')",
             (selection_key, backtest_key),
+        )
+        conn.commit()
+
+
+def _register_backtest_metadata(execution_key: str, out_dir) -> None:
+    """Register executions/artifacts rows once backtest artifacts are written."""
+    from trendradar.infrastructure.runtime import runtime_root
+    from trendradar.infrastructure.storage.connection import StorageConnection
+    from trendradar.infrastructure.storage.registration import (
+        register_artifacts,
+        register_execution,
+    )
+
+    storage_root = runtime_root() / "storage"
+    with StorageConnection(storage_root).connection() as conn:
+        register_execution(conn, execution_key, "backtest")
+        register_artifacts(
+            conn,
+            execution_key,
+            "backtest",
+            list(out_dir.iterdir()) if out_dir.exists() else [],
+            storage_root,
         )
         conn.commit()
 
@@ -277,7 +344,11 @@ def submit_selection_backtest(
     def worker(ctx: JobContext) -> None:
         ctx.log("Starting selection + backtest pipeline")
 
-        from trendradar.app.services.selection_service import _run_selection
+        from trendradar.app.services.selection_service import (
+            _register_selection_metadata,
+            _run_selection,
+            _write_selection_manifest,
+        )
         from trendradar.infrastructure.runtime import runtime_root
         from trendradar.infrastructure.storage.artifact_store import ArtifactStore
         from trendradar.infrastructure.storage.connection import StorageConnection
@@ -297,6 +368,9 @@ def submit_selection_backtest(
         repo = SignalRepository(artifact_store)
         saved_path = repo.save(signal_set, ctx.job_id)
         ctx.log(f"Saved signals to {saved_path}")
+
+        _write_selection_manifest(ctx.job_id, signal_set)
+        _register_selection_metadata(ctx.job_id, execution_type="selection_backtest")
 
         ctx.log("Phase 2: Running backtest")
         backtest_request = request.get("backtest", {})

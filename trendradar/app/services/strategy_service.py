@@ -171,6 +171,49 @@ def list_strategies() -> list[dict]:
     ]
 
 
+def ensure_default_group(store) -> None:
+    """Bootstrap the default strategy group with all registered strategies.
+
+    Runs once when the 'default' group does not exist yet: creates the group,
+    adds every registered strategy as a member, and seeds strategy settings
+    with the registry default parameters. Idempotent.
+    """
+    import json
+
+    from trendradar.domain.strategy.selectors import register_all
+
+    register_all()
+
+    conn = store.connect()
+    try:
+        if conn.execute(
+            "SELECT 1 FROM strategy_groups WHERE id = 'default'"
+        ).fetchone():
+            return
+
+        now = _now_iso()
+        conn.execute(
+            "INSERT INTO strategy_groups "
+            "(id, name, description, enabled, sort_order, created_at, updated_at) "
+            "VALUES ('default', '默认组', '系统默认策略组', 1, 0, ?, ?)",
+            (now, now),
+        )
+        for i, defn in enumerate(list_all()):
+            conn.execute(
+                "INSERT OR IGNORE INTO strategy_group_members "
+                "(group_id, strategy_id, sort_order) VALUES ('default', ?, ?)",
+                (defn.strategy_id, i),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO strategy_settings "
+                "(strategy_id, enabled, params_json, updated_at) VALUES (?, 1, ?, ?)",
+                (defn.strategy_id, json.dumps(defn.default_params, ensure_ascii=False), now),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def get_strategy_settings(store) -> list[dict]:
     """Get all strategy settings from the database."""
     conn = store.connect()

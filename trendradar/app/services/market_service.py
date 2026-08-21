@@ -88,9 +88,45 @@ def submit_market_sync(
             f"Sync complete: synced={result['synced']}, skipped={result['skipped']}, "
             f"failed={result['failed']}, empty={result['empty']}"
         )
+
+        _register_market_sync_metadata(ctx.job_id, codes, start, end, result)
+
         ctx.succeed(result)
 
     return executor.submit("market_sync", worker, request)
+
+
+def _register_market_sync_metadata(
+    execution_key: str,
+    codes: list[str],
+    start: date,
+    end: date,
+    result: dict,
+) -> None:
+    """Register executions + market_sync_runs rows after a completed sync."""
+    from trendradar.infrastructure.runtime import runtime_root
+    from trendradar.infrastructure.storage.connection import StorageConnection
+    from trendradar.infrastructure.storage.registration import register_execution
+
+    storage_root = runtime_root() / "storage"
+    with StorageConnection(storage_root).connection() as conn:
+        register_execution(conn, execution_key, "market_sync")
+        conn.execute(
+            "INSERT OR IGNORE INTO market_sync_runs "
+            "(execution_key, start_date, end_date, stock_count, skipped_latest, "
+            " empty_count, failed_count) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                execution_key,
+                start.isoformat(),
+                end.isoformat(),
+                len(codes),
+                result.get("skipped", 0),
+                result.get("empty", 0),
+                result.get("failed", 0),
+            ),
+        )
+        conn.commit()
 
 
 def get_market_status(store) -> dict:

@@ -44,7 +44,7 @@ def _get_strategy_resolve_input(store) -> tuple[list[dict], list[dict], dict[str
     for s in setting_rows:
         settings_map[s["strategy_id"]] = {
             "enabled": bool(s["enabled"]),
-            "params": json.loads(s.get("params_json", "{}")),
+            "params": json.loads(s["params_json"] or "{}"),
         }
 
     all_defs = list_all()
@@ -140,6 +140,10 @@ def _run_selection(
             continue
 
         for defn in resolved:
+            if ctx.check_cancelled():
+                ctx.fail("Cancelled by user")
+                return SignalSet(execution_key=ctx.job_id)
+
             selector = defn.selector_class(defn)
             try:
                 context = SelectionContext(
@@ -209,6 +213,39 @@ def _write_selection_manifest(execution_key: str, signal_set: SignalSet) -> None
     )
 
 
+def _register_selection_metadata(
+    execution_key: str, execution_type: str = "selection"
+) -> None:
+    """Register executions/artifacts rows once selection artifacts are written."""
+    from trendradar.infrastructure.runtime import runtime_root
+    from trendradar.infrastructure.storage.connection import StorageConnection
+    from trendradar.infrastructure.storage.registration import (
+        register_artifacts,
+        register_execution,
+    )
+
+    storage_root = runtime_root() / "storage"
+    selection_dir = (
+        storage_root / "objects" / "executions" / execution_key / "selection"
+    )
+    with StorageConnection(storage_root).connection() as conn:
+        register_execution(
+            conn,
+            execution_key,
+            execution_type,
+            manifest_key=f"objects/executions/{execution_key}/selection/manifest.json",
+            lineage_key=f"objects/executions/{execution_key}/selection/lineage.json",
+        )
+        register_artifacts(
+            conn,
+            execution_key,
+            "selection",
+            list(selection_dir.iterdir()) if selection_dir.exists() else [],
+            storage_root,
+        )
+        conn.commit()
+
+
 def submit_selection(
     executor: JobExecutor,
     market_store: MarketDataStore,
@@ -243,6 +280,8 @@ def submit_selection(
         saved_path = repo.save(signal_set, ctx.job_id)
 
         _write_selection_manifest(ctx.job_id, signal_set)
+
+        _register_selection_metadata(ctx.job_id)
 
         summary = {
             "execution_key": signal_set.execution_key,
@@ -298,6 +337,8 @@ def submit_batch_selection(
             ctx.log(f"Saved signals to {saved_path}")
 
         _write_selection_manifest(ctx.job_id, signal_set)
+
+        _register_selection_metadata(ctx.job_id)
 
         result = {
             "execution_key": signal_set.execution_key,

@@ -33,37 +33,19 @@ def _artifacts_root(request: FastAPIRequest) -> Path:
 
 @router.get("/backtest-results")
 def list_backtest_results(request: FastAPIRequest):
-    root = _artifacts_root(request)
-    items = []
-    if root.exists():
-        for exec_dir in sorted(root.iterdir(), key=lambda p: p.name, reverse=True):
-            if not exec_dir.is_dir():
-                continue
-            backtest_dir = exec_dir / "backtest"
-            metrics_file = backtest_dir / "metrics.json"
-            if not metrics_file.exists():
-                continue
-            try:
-                import json
-                metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
-                items.append({
-                    "execution_key": exec_dir.name,
-                    "job_id": exec_dir.name,
-                    "summary": metrics,
-                })
-            except Exception:
-                continue
-    return {"data": {"items": items}}
+    from trendradar.interfaces.api.presenters import list_backtest_results_payload
+    return list_backtest_results_payload()
 
 
 @router.get("/backtest-results/{execution_key}/report")
 def get_backtest_report(execution_key: str, request: FastAPIRequest):
+    from trendradar.interfaces.api.presenters import backtest_result_payload
+
     root = _artifacts_root(request)
     result_file = root / execution_key / "backtest" / "result.json"
     if not result_file.exists():
         raise HTTPException(status_code=404, detail=f"Backtest result not found for '{execution_key}'")
-    import json
-    return json.loads(result_file.read_text(encoding="utf-8"))
+    return backtest_result_payload(execution_key, include_report=True)
 
 
 @router.delete("/backtest-results/{execution_key}")
@@ -96,16 +78,48 @@ def delete_all_backtest_results(request: FastAPIRequest):
 
 @router.post("/backtests")
 def submit_backtest_route(body: BacktestSubmitRequest, request: FastAPIRequest):
-    from trendradar.app.services.backtest_service import submit_backtest
+    from datetime import date
+    from trendradar.app.services.backtest_service import (
+        submit_backtest,
+        validate_backtest_prerequisites,
+    )
+    from trendradar.interfaces.api.presenters import (
+        _now_iso,
+        trading_dates_payload,
+    )
+
+    req = body.model_dump(exclude_none=True)
+    execution_key = req.get("execution_key")
+    signal_set = _signal_repo(request).load(execution_key) if execution_key else None
+    if signal_set is None:
+        raise HTTPException(status_code=404, detail=f"信号集不存在: {execution_key}")
+
+    # Prerequisites: signal dates must leave enough trading days for T+1 buy + hold.
+    dates = [date.fromisoformat(d) for d in trading_dates_payload()["dates"]]
+    reasons = validate_backtest_prerequisites(signal_set, dates)
+    if reasons:
+        raise HTTPException(status_code=400, detail="；".join(reasons))
 
     try:
         job_id = submit_backtest(
             _executor(request),
             _market_store(request),
             _signal_repo(request),
-            body.model_dump(exclude_none=True),
+            req,
         )
-        return {"data": {"job_id": job_id, "status": "submitted"}}
+        return {
+            "execution_id": job_id,
+            "execution_type": "backtest",
+            "type": "backtest",
+            "status": "submitted",
+            "progress_current": 0,
+            "progress_total": 0,
+            "progress_message": "",
+            "error_message": None,
+            "result_url": None,
+            "console_url": f"/console/{job_id}",
+            "created_at": _now_iso(),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

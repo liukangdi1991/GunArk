@@ -44,12 +44,12 @@ class BacktestEngine:
         progress: Callable | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> BacktestResult:
-        signals_by_date = self._group_signals_by_date(signal_set)
-        if not signals_by_date:
-            return BacktestResult()
-
         calendar = market_store.get_calendar()
         if not calendar:
+            return BacktestResult()
+
+        signals_by_date = self._group_signals_by_date(signal_set, calendar)
+        if not signals_by_date:
             return BacktestResult()
 
         state = PortfolioState(cash=self.config.capital.initial_cash)
@@ -84,13 +84,30 @@ class BacktestEngine:
         metrics = self._compute_metrics(equity_curve, trades)
         return BacktestResult(trades=trades, skips=skips, equity_curve=equity_curve, metrics=metrics)
 
-    def _group_signals_by_date(self, signal_set: SignalSet) -> dict[date, list[dict]]:
+    def _group_signals_by_date(
+        self, signal_set: SignalSet, calendar: list[date]
+    ) -> dict[date, list[dict]]:
+        """Map signals to buy dates using trading-day index arithmetic.
+
+        V1 rule: signal at T, buy at T+1 open, target sell at T+N+1 close,
+        where all indices are trading-day indices. Signals whose buy or target
+        date falls beyond the calendar are skipped.
+        """
+        cal_index = {d: i for i, d in enumerate(calendar)}
+        hold = self.config.execution.fixed_hold_n_days
         result: dict[date, list[dict]] = {}
         for sig in signal_set.signals:
             if sig.signal_date is None or not sig.codes:
                 continue
-            buy_date = sig.signal_date + self._delta_one()
-            target_sell_date = self._calc_target_sell_date(sig.signal_date)
+            sig_idx = cal_index.get(sig.signal_date)
+            if sig_idx is None:
+                continue
+            buy_idx = sig_idx + 1
+            sell_idx = sig_idx + hold + 1
+            if buy_idx >= len(calendar) or sell_idx >= len(calendar):
+                continue
+            buy_date = calendar[buy_idx]
+            target_sell_date = calendar[sell_idx]
             for code in sig.codes:
                 result.setdefault(buy_date, []).append(
                     {
@@ -101,13 +118,6 @@ class BacktestEngine:
                     }
                 )
         return result
-
-    def _calc_target_sell_date(self, signal_date: date) -> date:
-        return signal_date + timedelta(days=self.config.execution.fixed_hold_n_days + 1)
-
-    @staticmethod
-    def _delta_one() -> timedelta:
-        return timedelta(days=1)
 
     @staticmethod
     def _to_rows(data):

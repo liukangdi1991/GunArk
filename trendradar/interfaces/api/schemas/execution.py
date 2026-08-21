@@ -6,11 +6,17 @@ from pydantic import BaseModel, Field
 
 
 class ExecutionRequest(BaseModel):
+    type: str | None = None
+    params: dict[str, Any] | None = None
     start_date: str | None = None
     end_date: str | None = None
     codes: list[str] | None = None
     groups: list[str] | None = None
     strategies: list[str] | None = None
+
+
+class DeleteKeysRequest(BaseModel):
+    execution_keys: list[str] | None = None
 
 
 class BatchExecutionRequest(ExecutionRequest):

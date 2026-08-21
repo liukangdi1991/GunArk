@@ -192,6 +192,41 @@ def test_get_calendar_empty_dir(tmp_path):
     assert store.get_calendar() == []
 
 
+def test_get_calendar_refreshes_when_bars_change(tmp_path):
+    """Regression: the calendar.parquet cache must not outlive new bar data."""
+    bars_dir = tmp_path / "bars"
+    _make_bars_file(
+        bars_dir / "000001.parquet", "000001",
+        [date(2024, 1, 5), date(2024, 1, 8)],
+    )
+    store = LocalParquetMarketStore(bars_dir)
+
+    first = store.get_calendar()
+    assert first == [date(2024, 1, 5), date(2024, 1, 8)]
+    assert (bars_dir.parent / "calendar.parquet").exists()
+
+    # New bar file with later dates arrives (e.g. after a market sync).
+    _make_bars_file(
+        bars_dir / "000002.parquet", "000002",
+        [date(2024, 1, 10), date(2024, 1, 15)],
+    )
+    # A real sync happens minutes after the previous one; bump mtime so the
+    # cache invalidation sees the new file (same-second writes would hide it).
+    import os
+    import time
+
+    new_mtime = time.time() + 5
+    os.utime(bars_dir / "000002.parquet", (new_mtime, new_mtime))
+
+    refreshed = store.get_calendar()
+    assert refreshed == [
+        date(2024, 1, 5),
+        date(2024, 1, 8),
+        date(2024, 1, 10),
+        date(2024, 1, 15),
+    ]
+
+
 def test_get_row_returns_single_row_dict(tmp_path):
     bars_dir = tmp_path / "bars"
     _make_bars_file(

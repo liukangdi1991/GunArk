@@ -202,13 +202,21 @@ class LocalParquetMarketStore(MarketDataStore):
         """Scan all parquet files and return sorted unique dates.
 
         Results are cached in ``calendar.parquet`` in the parent directory.
+        The cache is invalidated when any bar file is newer than it (e.g.
+        after a market sync adds or extends history).
         """
         cache_path = self.bars_dir.parent / "calendar.parquet"
         try:
             if cache_path.exists():
-                cached = pl.read_parquet(cache_path)
-                if not cached.is_empty():
-                    return sorted(cached["date"].unique().to_list())
+                newest_bar = 0.0
+                for p in self.bars_dir.glob("*.parquet"):
+                    m = p.stat().st_mtime
+                    if m > newest_bar:
+                        newest_bar = m
+                if newest_bar <= cache_path.stat().st_mtime:
+                    cached = pl.read_parquet(cache_path)
+                    if not cached.is_empty():
+                        return sorted(cached["date"].unique().to_list())
         except Exception:
             pass
 
@@ -216,19 +224,26 @@ class LocalParquetMarketStore(MarketDataStore):
         if not all_paths:
             return []
 
-        date_sets: list[set[date]] = []
-        for p in all_paths:
-            try:
-                df = pl.read_parquet(p, columns=["date"])
-                date_sets.append(set(df["date"].unique().to_list()))
-            except Exception:
-                continue
+        try:
+            dates = (
+                pl.scan_parquet([str(p) for p in all_paths], columns=["date"])
+                .select(pl.col("date").unique())
+                .collect()["date"]
+                .to_list()
+            )
+        except Exception:
+            date_sets: list[set[date]] = []
+            for p in all_paths:
+                try:
+                    df = pl.read_parquet(p, columns=["date"])
+                    date_sets.append(set(df["date"].unique().to_list()))
+                except Exception:
+                    continue
+            if not date_sets:
+                return []
+            dates = sorted(date_sets[0].union(*date_sets[1:]))
 
-        if not date_sets:
-            return []
-
-        unified = date_sets[0].union(*date_sets[1:]) if date_sets else set()
-        result = sorted(unified)
+        result = sorted(dates)
 
         try:
             pl.DataFrame({"date": result}).with_columns(

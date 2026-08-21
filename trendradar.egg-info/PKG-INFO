@@ -1,8 +1,0 @@
-Metadata-Version: 2.4
-Name: trendradar
-Version: 2.0.0.dev0
-Summary: TrendRadar V2 - A-stock quantitive selection system
-Requires-Python: >=3.11
-Requires-Dist: polars>=1.0
-Provides-Extra: dev
-Requires-Dist: pytest>=7.0; extra == "dev"

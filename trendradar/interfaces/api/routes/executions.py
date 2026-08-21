@@ -10,6 +10,7 @@ from trendradar.interfaces.api.schemas.execution import (
     SelectionBacktestRequest,
     BacktestRequest,
     JobStatusResponse,
+    DeleteKeysRequest,
 )
 
 router = APIRouter(prefix="/api", tags=["executions"])
@@ -29,17 +30,17 @@ def _store(request: FastAPIRequest):
 
 @router.post("/executions", response_model=dict)
 def submit_execution(body: ExecutionRequest, request: FastAPIRequest):
-    from trendradar.app.services.selection_service import submit_selection
+    from trendradar.interfaces.api.presenters import submit_execution_payload
 
     try:
-        req_dict = body.model_dump(exclude_none=True)
-        job_id = submit_selection(
+        return submit_execution_payload(
             _executor(request),
             _market_store(request),
-            req_dict,
             _store(request),
+            body.model_dump(exclude_none=True),
         )
-        return {"data": {"job_id": job_id, "status": "submitted"}}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -54,65 +55,56 @@ def get_execution_status(execution_id: str, request: FastAPIRequest):
 
 @router.get("/executions/{execution_id}/console")
 def get_execution_console(execution_id: str, request: FastAPIRequest, offset: int = Query(default=0, ge=0)):
-    console = _executor(request).get_console(execution_id, offset=offset)
-    return {"data": {"job_id": execution_id, "console": console, "offset": offset}}
+    from trendradar.interfaces.api.presenters import console_payload
+
+    try:
+        return console_payload(_executor(request), execution_id, offset=offset)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Execution '{execution_id}' not found")
 
 
 @router.get("/selection-results")
 def list_selection_results(request: FastAPIRequest):
-    from pathlib import Path
-    from trendradar.infrastructure.runtime import runtime_root
-
-    root = runtime_root() / "storage" / "objects" / "executions"
-    items = []
-    if root.exists():
-        for exec_dir in sorted(root.iterdir(), key=lambda p: p.name, reverse=True):
-            manifest = exec_dir / "selection" / "manifest.json"
-            if not manifest.exists():
-                continue
-            try:
-                import json
-                data = json.loads(manifest.read_text(encoding="utf-8"))
-                items.append({
-                    "execution_key": exec_dir.name,
-                    "execution_type": data.get("execution_type"),
-                    "status": data.get("status"),
-                    "created_at": data.get("created_at"),
-                })
-            except Exception:
-                continue
-    return {"data": {"items": items}}
+    from trendradar.interfaces.api.presenters import list_selection_results_payload
+    return list_selection_results_payload()
 
 
 @router.get("/selection-results/{execution_key}")
 def get_selection_result(execution_key: str, request: FastAPIRequest):
     from pathlib import Path
     from trendradar.infrastructure.runtime import runtime_root
+    from trendradar.interfaces.api.presenters import selection_result_payload
 
-    signals_file = runtime_root() / "storage" / "objects" / "executions" / execution_key / "selection" / "signals.json"
+    signals_file = (
+        Path(runtime_root())
+        / "storage" / "objects" / "executions" / execution_key / "selection" / "signals.json"
+    )
     if not signals_file.exists():
         raise HTTPException(status_code=404, detail=f"Selection result not found for '{execution_key}'")
+    return selection_result_payload(execution_key, include_detail=True)
 
-    import json
-    return json.loads(signals_file.read_text(encoding="utf-8"))
+
+@router.delete("/selection-results")
+def delete_selection_results(body: DeleteKeysRequest | None = None, request: FastAPIRequest = None):
+    from trendradar.interfaces.api.presenters import bulk_delete_selections
+
+    keys = body.execution_keys if body else None
+    return bulk_delete_selections(keys)
 
 
 @router.delete("/selection-results/{execution_key}")
 def delete_selection_result(execution_key: str, request: FastAPIRequest):
+    from trendradar.interfaces.api.presenters import bulk_delete_selections
+
     if "/" in execution_key or "\\" in execution_key or ".." in execution_key:
         raise HTTPException(status_code=400, detail="Invalid execution_key")
     from pathlib import Path
     from trendradar.infrastructure.runtime import runtime_root
-    import shutil
 
-    root = runtime_root() / "storage" / "objects" / "executions"
-    target = (root / execution_key).resolve()
-    if not str(target).startswith(str(root.resolve())):
-        raise HTTPException(status_code=400, detail="Invalid execution_key")
-    if not target.exists():
+    root = Path(runtime_root()) / "storage" / "objects" / "executions"
+    if not (root / execution_key).exists():
         raise HTTPException(status_code=404, detail=f"Selection result not found for '{execution_key}'")
-    shutil.rmtree(target)
-    return {"data": {"execution_key": execution_key, "deleted": True}}
+    return bulk_delete_selections([execution_key])
 
 
 @router.post("/executions/{execution_id}/cancel")

@@ -21,3 +21,6 @@ include = ["trendradar*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "trendradar._version.__version__"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

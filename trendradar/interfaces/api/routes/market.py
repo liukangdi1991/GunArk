@@ -20,10 +20,10 @@ def _store(request: FastAPIRequest):
     return request.app.state.store
 
 
-@router.get("/market-data/status", response_model=MarketStatusResponse)
+@router.get("/market-data/status")
 def get_market_status(request: FastAPIRequest):
-    from trendradar.app.services.market_service import get_market_status
-    return get_market_status(_store(request))
+    from trendradar.interfaces.api.presenters import market_status_payload
+    return market_status_payload()
 
 
 @router.post("/market-data/sync")
@@ -44,24 +44,5 @@ def get_trading_dates(
     start: str = Query(default=None),
     end: str = Query(default=None),
 ):
-    from datetime import date
-    from trendradar.infrastructure.runtime import runtime_root
-    from trendradar.domain.market.data_store import LocalParquetMarketStore
-
-    bars_dir = runtime_root() / "storage" / "market" / "bars"
-    market_store = LocalParquetMarketStore(bars_dir)
-
-    try:
-        calendar = market_store.get_calendar()
-    except Exception:
-        calendar = []
-
-    all_dates = sorted(calendar)
-    if start:
-        s = date.fromisoformat(start)
-        all_dates = [d for d in all_dates if d >= s]
-    if end:
-        e = date.fromisoformat(end)
-        all_dates = [d for d in all_dates if d <= e]
-
-    return {"data": {"dates": [str(d) for d in all_dates], "count": len(all_dates)}}
+    from trendradar.interfaces.api.presenters import trading_dates_payload
+    return trading_dates_payload(start, end)

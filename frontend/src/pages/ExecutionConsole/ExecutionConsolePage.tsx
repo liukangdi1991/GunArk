@@ -50,6 +50,7 @@ export function ExecutionConsolePage() {
   const [cancelErrorMessage, setCancelErrorMessage] = useState("");
   const [cancelSubmitting, setCancelSubmitting] = useState(false);
   const [redirected, setRedirected] = useState(false);
+  const redirectedRef = useRef(false);
   const consoleRef = useRef<HTMLDivElement | null>(null);
   const offsetRef = useRef(0);
   const pendingTextRef = useRef("");
@@ -125,17 +126,18 @@ export function ExecutionConsolePage() {
   }, [autoScroll, lines]);
 
   useEffect(() => {
-    if (!execution || execution.status !== "success" || !execution.result_url || redirected) {
+    if (!execution || execution.status !== "success" || !execution.result_url || redirectedRef.current) {
       return;
     }
 
+    redirectedRef.current = true;
     setRedirected(true);
     const timer = window.setTimeout(() => {
       window.location.href = execution.result_url || "/";
     }, 2000);
 
     return () => window.clearTimeout(timer);
-  }, [execution, redirected]);
+  }, [execution]);
 
   const renderedLines = pendingText ? lines.concat(pendingText) : lines;
 

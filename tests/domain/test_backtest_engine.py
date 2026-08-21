@@ -111,7 +111,7 @@ class TestBacktestEngine:
         d1 = _td(d0, 1)
         d_sell = _td(d0, 6)  # hold 5 days, sell on 6th
 
-        all_dates = [d0, d1]
+        all_dates = [d0]
         current = _td(d0, 0)
         while current <= d_sell:
             if current not in all_dates:
@@ -119,15 +119,19 @@ class TestBacktestEngine:
             current = _td(current, 1)
         all_dates = sorted(all_dates)
 
-        store = FakeMarketStore(
-            {
-                "000001": [
-                    {"date": _td(d0, -1), "open": 9.5, "close": 10.0, "high": 10.5, "low": 9.0, "volume": 1000000},
-                    {"date": d1, "open": 10.1, "close": 10.5, "high": 11.0, "low": 10.0, "volume": 2000000},
-                    {"date": d_sell, "open": 11.0, "close": 12.0, "high": 12.5, "low": 10.8, "volume": 3000000},
-                ]
-            }
-        )
+        rows = [
+            {"date": _td(d0, -1), "open": 9.5, "close": 10.0, "high": 10.5, "low": 9.0, "volume": 1000000},
+        ] + [
+            {"date": d, "open": 10.0, "close": 10.0, "high": 10.5, "low": 9.5, "volume": 1000000}
+            for d in all_dates
+        ]
+        for r in rows:
+            if r["date"] == d1:
+                r.update(open=10.1, close=10.5, high=11.0, low=10.0)
+            if r["date"] == d_sell:
+                r.update(open=11.0, close=12.0, high=12.5, low=10.8)
+
+        store = FakeMarketStore({"000001": rows})
 
         signal_set = _make_signal_set(
             "test", "Test",
@@ -151,14 +155,23 @@ class TestBacktestEngine:
         d0 = date(2026, 7, 1)
         d1 = _td(d0, 1)
 
-        store = FakeMarketStore(
-            {
-                "000001": [
-                    {"date": _td(d0, -1), "open": 10.0, "close": 10.0, "high": 10.0, "low": 10.0, "volume": 1000000},
-                    {"date": d1, "open": 11.0, "close": 11.0, "high": 11.0, "low": 11.0, "volume": 2000000},
-                ]
-            }
-        )
+        all_dates = [d0]
+        cur = _td(d0, 1)
+        while cur <= _td(d0, 6):
+            all_dates.append(cur)
+            cur = _td(cur, 1)
+
+        rows = [
+            {"date": _td(d0, -1), "open": 10.0, "close": 10.0, "high": 10.0, "low": 10.0, "volume": 1000000},
+        ] + [
+            {"date": d, "open": 10.0, "close": 10.0, "high": 10.5, "low": 9.5, "volume": 1000000}
+            for d in all_dates
+        ]
+        for r in rows:
+            if r["date"] == d1:
+                r.update(open=11.0, close=11.0, high=11.0, low=11.0)
+
+        store = FakeMarketStore({"000001": rows})
 
         signal_set = _make_signal_set(
             "test", "Test",
@@ -181,18 +194,30 @@ class TestBacktestEngine:
         d1 = _td(d0, 1)
         d_sell = _td(d0, 6)
 
+        all_dates = [d0]
+        cur = _td(d0, 1)
+        while cur <= d_sell:
+            all_dates.append(cur)
+            cur = _td(cur, 1)
+
+        def rows_for(prev_open, prev_close, buy_open, buy_close, sell_open, sell_close):
+            rows = [
+                {"date": _td(d0, -1), "open": prev_open, "close": prev_close, "high": prev_close * 1.01, "low": prev_close * 0.99, "volume": 1000000},
+            ] + [
+                {"date": d, "open": prev_close, "close": prev_close, "high": prev_close * 1.01, "low": prev_close * 0.99, "volume": 1000000}
+                for d in all_dates
+            ]
+            for r in rows:
+                if r["date"] == d1:
+                    r.update(open=buy_open, close=buy_close, high=buy_close * 1.02, low=buy_close * 0.98)
+                if r["date"] == d_sell:
+                    r.update(open=sell_open, close=sell_close, high=sell_close * 1.02, low=sell_close * 0.98)
+            return rows
+
         store = FakeMarketStore(
             {
-                "000001": [
-                    {"date": _td(d0, -1), "open": 9.5, "close": 10.0, "high": 10.5, "low": 9.0, "volume": 1000000},
-                    {"date": d1, "open": 10.1, "close": 10.5, "high": 11.0, "low": 10.0, "volume": 2000000},
-                    {"date": d_sell, "open": 11.0, "close": 12.0, "high": 12.5, "low": 10.8, "volume": 3000000},
-                ],
-                "600519": [
-                    {"date": _td(d0, -1), "open": 49.0, "close": 50.0, "high": 51.0, "low": 48.0, "volume": 500000},
-                    {"date": d1, "open": 50.5, "close": 52.0, "high": 53.0, "low": 50.0, "volume": 600000},
-                    {"date": d_sell, "open": 52.0, "close": 55.0, "high": 56.0, "low": 51.0, "volume": 700000},
-                ],
+                "000001": rows_for(9.5, 10.0, 10.1, 10.5, 11.0, 12.0),
+                "600519": rows_for(49.0, 50.0, 50.5, 52.0, 52.0, 55.0),
             }
         )
 
@@ -212,6 +237,61 @@ class TestBacktestEngine:
         assert len(result.trades) == 2
         codes = {t.code for t in result.trades}
         assert codes == {"000001", "600519"}
+
+    def test_weekend_crossing_signals_use_trading_day_arithmetic(self):
+        """Regression: buy/target dates must use trading-day indices, not calendar days.
+
+        Signal on Thursday with hold=1: target lands on the following Monday
+        (calendar Friday+2 would be Sunday). Previously this crashed with
+        KeyError on the weekend target; Friday signals were also dropped
+        because T+1 fell on Saturday.
+        """
+        # Trading calendar: Mon..Fri week, then next Mon/Tue (weekend skipped)
+        calendar = [
+            date(2026, 6, 1), date(2026, 6, 2), date(2026, 6, 3),
+            date(2026, 6, 4), date(2026, 6, 5),
+            date(2026, 6, 8), date(2026, 6, 9),
+        ]
+        thu, fri, mon, tue = calendar[3], calendar[4], calendar[5], calendar[6]
+
+        store = FakeMarketStore(
+            {
+                "000001": [
+                    {"date": thu, "open": 10.0, "close": 10.0, "high": 10.0, "low": 10.0, "volume": 1000000},
+                    {"date": fri, "open": 10.0, "close": 10.0, "high": 10.0, "low": 10.0, "volume": 1000000},
+                    {"date": mon, "open": 10.0, "close": 10.0, "high": 10.0, "low": 10.0, "volume": 1000000},
+                    {"date": tue, "open": 10.0, "close": 10.0, "high": 10.0, "low": 10.0, "volume": 1000000},
+                ],
+                "600519": [
+                    {"date": thu, "open": 50.0, "close": 50.0, "high": 50.0, "low": 50.0, "volume": 500000},
+                    {"date": fri, "open": 50.0, "close": 50.0, "high": 50.0, "low": 50.0, "volume": 500000},
+                    {"date": mon, "open": 50.0, "close": 50.0, "high": 50.0, "low": 50.0, "volume": 500000},
+                    {"date": tue, "open": 50.0, "close": 50.0, "high": 50.0, "low": 50.0, "volume": 500000},
+                ],
+            }
+        )
+
+        signal_set = _make_signal_set(
+            "test", "Test",
+            {thu: ["000001"], fri: ["600519"]},
+        )
+
+        config = _make_config(
+            capital={"initial_cash": 200000, "mode": "unlimited_cash", "fixed_cash_per_trade": 50000},
+            execution={"fixed_hold_n_days": 1},
+            portfolio={"max_daily_new_positions": 5, "max_positions": 5},
+        )
+        engine = BacktestEngine(config)
+
+        result = engine.run(signal_set, store)
+        # No crash; Thursday signal buys Friday, sells Monday; Friday signal
+        # buys Monday, sells Tuesday.
+        assert len(result.trades) == 2
+        t0, t1 = result.trades
+        assert (t0.code, t0.buy_date, t0.sell_date) == ("000001", fri, mon)
+        assert (t1.code, t1.buy_date, t1.sell_date) == ("600519", mon, tue)
+        for t in result.trades:
+            assert t.sell_postpone_days == 0
 
     def test_equity_curve_shape(self):
         d0 = date(2026, 7, 1)
@@ -264,18 +344,30 @@ class TestBacktestEngine:
         d1 = _td(d0, 1)
         d_sell = _td(d0, 6)
 
+        all_dates = [d0]
+        cur = _td(d0, 1)
+        while cur <= d_sell:
+            all_dates.append(cur)
+            cur = _td(cur, 1)
+
+        def rows_for(prev_open, prev_close, buy_open, buy_close, sell_open, sell_close):
+            rows = [
+                {"date": _td(d0, -1), "open": prev_open, "close": prev_close, "high": prev_close * 1.01, "low": prev_close * 0.99, "volume": 1000000},
+            ] + [
+                {"date": d, "open": prev_close, "close": prev_close, "high": prev_close * 1.01, "low": prev_close * 0.99, "volume": 1000000}
+                for d in all_dates
+            ]
+            for r in rows:
+                if r["date"] == d1:
+                    r.update(open=buy_open, close=buy_close, high=buy_close * 1.02, low=buy_close * 0.98)
+                if r["date"] == d_sell:
+                    r.update(open=sell_open, close=sell_close, high=sell_close * 1.02, low=sell_close * 0.98)
+            return rows
+
         store = FakeMarketStore(
             {
-                "000001": [
-                    {"date": _td(d0, -1), "open": 9.5, "close": 10.0, "high": 10.5, "low": 9.0, "volume": 1000000},
-                    {"date": d1, "open": 50.0, "close": 50.5, "high": 51.0, "low": 49.0, "volume": 2000000},
-                    {"date": d_sell, "open": 52.0, "close": 55.0, "high": 56.0, "low": 51.0, "volume": 3000000},
-                ],
-                "600519": [
-                    {"date": _td(d0, -1), "open": 49.0, "close": 50.0, "high": 51.0, "low": 48.0, "volume": 500000},
-                    {"date": d1, "open": 50.5, "close": 52.0, "high": 53.0, "low": 50.0, "volume": 600000},
-                    {"date": d_sell, "open": 52.0, "close": 55.0, "high": 56.0, "low": 51.0, "volume": 700000},
-                ],
+                "000001": rows_for(9.5, 10.0, 50.0, 50.5, 52.0, 55.0),
+                "600519": rows_for(49.0, 50.0, 50.5, 52.0, 52.0, 55.0),
             }
         )
 
