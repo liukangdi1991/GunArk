@@ -247,3 +247,25 @@ def shard_ranges(start: date, end: date, max_rows: int = _SHARD_MAX_ROWS) -> lis
         ranges.append((cur, seg_end))
         cur = seg_end + timedelta(days=1)
     return ranges
+
+
+def merge_day_bars(day_df, bars_dir: Path) -> list[str]:
+    """Merge one full-market day frame into per-code parquet files.
+
+    New rows overwrite local same-date rows. Returns codes written (new + updated).
+    """
+    bars_dir.mkdir(parents=True, exist_ok=True)
+    written = []
+    for code in day_df["code"].unique().to_list():
+        group = day_df.filter(pl.col("code") == code)
+        target = bars_dir / f"{code}.parquet"
+        if target.exists():
+            local = pl.read_parquet(target)
+            merged = pl.concat(
+                [local.filter(~pl.col("date").is_in(group["date"].implode())), group]
+            ).sort("date")
+        else:
+            merged = group.sort("date")
+        _atomic_write_parquet(merged, target)
+        written.append(str(code))
+    return written
