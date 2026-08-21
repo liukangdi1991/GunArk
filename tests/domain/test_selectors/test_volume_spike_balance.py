@@ -10,7 +10,6 @@ def _make_context(df):
         trade_date=date(2026, 7, 9),
         market_data=df,
         candidate_codes=codes,
-        get_data_dict=lambda: {},
     )
 
 
