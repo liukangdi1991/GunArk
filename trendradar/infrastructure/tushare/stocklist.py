@@ -47,8 +47,19 @@ def sync_stock_list(bars_dir: Path) -> pl.DataFrame:
             .alias("list_date")
         )
 
-    output = (Path(bars_dir).parent / "stock_meta.parquet")
+    output = Path(bars_dir).parent / "stock_meta.parquet"
     output.parent.mkdir(parents=True, exist_ok=True)
-    df.write_parquet(output)
+    # Atomic write: readers never observe a partially-written stock_meta.
+    fd, tmp = __import__("tempfile").mkstemp(dir=output.parent, suffix=".tmp")
+    try:
+        __import__("os").close(fd)
+        df.write_parquet(tmp)
+        __import__("os").replace(tmp, output)
+    except BaseException:
+        try:
+            __import__("os").unlink(tmp)
+        except OSError:
+            pass
+        raise
 
     return df

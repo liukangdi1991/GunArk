@@ -9,6 +9,7 @@ class MarketSyncRequest(BaseModel):
     codes: list[str] | None = None
     start_date: str | None = None
     end_date: str | None = None
+    force: bool = False
 
 
 class MarketStatusResponse(BaseModel):

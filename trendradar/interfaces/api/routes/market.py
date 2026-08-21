@@ -32,9 +32,16 @@ def submit_market_sync(body: MarketSyncRequest, request: FastAPIRequest):
     try:
         job_id = submit_market_sync(
             _executor(request),
-            {"codes": body.codes, "start_date": body.start_date, "end_date": body.end_date},
+            {
+                "codes": body.codes,
+                "start_date": body.start_date,
+                "end_date": body.end_date,
+                "force": body.force,
+            },
         )
         return {"data": {"job_id": job_id}}
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -631,6 +631,8 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
             {
                 "start_date": params.get("start") or params.get("start_date"),
                 "end_date": params.get("end") or params.get("end_date"),
+                "codes": params.get("codes"),
+                "force": params.get("force", False),
             },
         )
         job_type = "market_sync"

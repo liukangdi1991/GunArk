@@ -177,14 +177,26 @@ def test_market_sync_job_registers_execution_and_sync_run(tmp_path, monkeypatch)
 
     from trendradar.app.services import market_service
 
-    def fake_sync_kline(codes, start, end, bars_dir, progress=None, cancel_check=None):
+    def fake_sync_stock_list(bars_dir):
+        return pl.DataFrame({"code": ["000001"], "name": ["平安银行"]})
+
+    def fake_sync_market(pro, bars_dir, cache_dir, request, now_utc=None, progress=None, cancel_check=None):
         bars_dir.mkdir(parents=True, exist_ok=True)
         (bars_dir / "000001.parquet").write_bytes(b"fake")
         if progress:
             progress(1, 1, "000001")
-        return {"synced": 1, "skipped": 0, "failed": 0, "empty": 0}
+        return {"mode": "incremental", "missing_days": 0, "synced_days": 1,
+                "synced_codes": 1, "new_codes": 0, "failed_days": 0,
+                "failed_codes": 0, "skipped_uptodate": False}
 
-    monkeypatch.setattr(market_service, "sync_kline", fake_sync_kline)
+    # The worker now calls stocklist.sync_stock_list (call-time import) and
+    # syncer.sync_market (module attribute reference) instead of sync_kline.
+    monkeypatch.setattr(market_service.syncer_module, "sync_market", fake_sync_market)
+    monkeypatch.setattr(
+        "trendradar.infrastructure.tushare.stocklist.sync_stock_list",
+        fake_sync_stock_list,
+    )
+    monkeypatch.setattr(market_service, "get_pro", lambda: object())
 
     job_id = market_service.submit_market_sync(
         executor,

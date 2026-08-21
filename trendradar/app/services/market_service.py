@@ -8,8 +8,8 @@ from typing import Optional
 
 from trendradar.app.jobs.context import JobContext
 from trendradar.app.jobs.executor import JobExecutor
-from trendradar.infrastructure.tushare.syncer import sync_kline
-from trendradar.infrastructure.tushare.stocklist import sync_stock_list
+from trendradar.infrastructure.tushare import syncer as syncer_module
+from trendradar.infrastructure.tushare.client import get_pro
 
 
 def submit_market_sync(
@@ -23,74 +23,52 @@ def submit_market_sync(
         executor: JobExecutor instance for running async jobs.
         request: dict with keys:
             - codes: list[str] (optional, defaults to all stocks from stock list)
-            - start_date: str (YYYY-MM-DD, optional, defaults to 90 days ago)
-            - end_date: str (YYYY-MM-DD, optional, defaults to today)
+            - start_date: str (YYYY-MM-DD, optional)
+            - end_date: str (YYYY-MM-DD, optional)
+            - force: bool (optional, force full re-sync)
         bars_dir: Path to the bars data directory.
 
     Returns:
         job_id: str
     """
+    from trendradar.infrastructure.runtime import runtime_root
+
     if bars_dir is None:
-        from trendradar.infrastructure.runtime import runtime_root
         bars_dir = runtime_root() / "storage" / "market" / "bars"
+    bars_dir = Path(bars_dir)
+    cache_dir = runtime_root() / "storage" / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
     def worker(ctx: JobContext) -> None:
         ctx.log("Starting market data sync")
-
-        codes = request.get("codes")
-        if codes is None or len(codes) == 0:
-            ctx.log("Fetching stock list from Tushare")
+        # Unconditional stock_meta refresh at start (new-code visibility even
+        # if this sync fails mid-way).
+        from trendradar.infrastructure.tushare.stocklist import sync_stock_list
+        try:
             stock_df = sync_stock_list(bars_dir)
-            if stock_df.is_empty():
-                ctx.fail("Failed to fetch stock list")
-                return
-            codes = stock_df["code"].to_list()
-            ctx.log(f"Resolved {len(codes)} stocks from stock list")
+            ctx.log(f"Refreshed stock list: {stock_df.height} stocks")
+        except Exception as e:
+            ctx.fail(f"stock list refresh failed: {e}")
+            return
 
-        start_str = request.get("start_date")
-        end_str = request.get("end_date")
-
-        if start_str:
-            start = date.fromisoformat(start_str)
-        else:
-            from datetime import timedelta
-            start = date.today() - timedelta(days=90)
-
-        if end_str:
-            end = date.fromisoformat(end_str)
-        else:
-            end = date.today()
-
-        ctx.log(f"Syncing {len(codes)} stocks from {start} to {end}")
-
-        def progress(current: int, total: int, code: str) -> None:
-            if ctx.check_cancelled():
-                return
-            ctx.update_progress(current, total, code)
-
-        def cancel_check() -> bool:
-            return ctx.check_cancelled()
-
-        result = sync_kline(
-            codes=codes,
-            start=start,
-            end=end,
-            bars_dir=bars_dir,
-            progress=progress,
-            cancel_check=cancel_check,
+        result = syncer_module.sync_market(
+            get_pro(),
+            bars_dir,
+            cache_dir,
+            request,
+            progress=lambda cur, total, msg: ctx.update_progress(cur, total, msg),
+            cancel_check=lambda: ctx.check_cancelled(),
         )
-
         if ctx.check_cancelled():
             ctx.fail("Cancelled by user")
             return
-
+        _register_market_sync_metadata(ctx.job_id, request, result)
         ctx.log(
-            f"Sync complete: synced={result['synced']}, skipped={result['skipped']}, "
-            f"failed={result['failed']}, empty={result['empty']}"
+            f"Sync complete: mode={result.get('mode')}, "
+            f"missing_days={result.get('missing_days')}, "
+            f"synced_days={result.get('synced_days')}, "
+            f"failed_codes={result.get('failed_codes')}"
         )
-
-        _register_market_sync_metadata(ctx.job_id, codes, start, end, result)
-
         ctx.succeed(result)
 
     return executor.submit("market_sync", worker, request)
@@ -98,15 +76,19 @@ def submit_market_sync(
 
 def _register_market_sync_metadata(
     execution_key: str,
-    codes: list[str],
-    start: date,
-    end: date,
+    request: dict,
     result: dict,
 ) -> None:
     """Register executions + market_sync_runs rows after a completed sync."""
     from trendradar.infrastructure.runtime import runtime_root
     from trendradar.infrastructure.storage.connection import StorageConnection
     from trendradar.infrastructure.storage.registration import register_execution
+
+    codes = request.get("codes") or []
+    start_str = request.get("start_date")
+    end_str = request.get("end_date")
+    start = date.fromisoformat(start_str) if start_str else date.today()
+    end = date.fromisoformat(end_str) if end_str else date.today()
 
     storage_root = runtime_root() / "storage"
     with StorageConnection(storage_root).connection() as conn:
@@ -121,9 +103,9 @@ def _register_market_sync_metadata(
                 start.isoformat(),
                 end.isoformat(),
                 len(codes),
-                result.get("skipped", 0),
-                result.get("empty", 0),
-                result.get("failed", 0),
+                int(bool(result.get("skipped_uptodate", False))),
+                result.get("empty_count", 0),
+                result.get("failed_codes", 0),
             ),
         )
         conn.commit()

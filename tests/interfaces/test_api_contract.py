@@ -454,3 +454,14 @@ def test_bulk_delete_selection_results(client):
         Path(str(client.app.state.store.storage_root))
         / "objects" / "executions" / "20260820_100000_selection_a1b2"
     ).exists()
+
+
+def test_market_sync_force_passthrough(client):
+    resp = client.post(
+        "/api/market-data/sync",
+        json={"start_date": "2026-08-18", "end_date": "2026-08-19", "force": True, "codes": ["000001"]},
+    )
+    # force is accepted by the schema (200 even though sync job will fail on
+    # missing token in tests; a job id is still produced)
+    assert resp.status_code == 200
+    assert resp.json()["data"]["job_id"]
