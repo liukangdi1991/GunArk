@@ -9,6 +9,7 @@ from trendradar.domain.strategy.selectors.zxdkx_balance import ZXDKXBalanceSelec
 from trendradar.domain.strategy.selectors.perfect_b1 import PerfectB1Selector
 from trendradar.domain.strategy.selectors.big_bullish_volume import BigBullishVolumeSelector
 from trendradar.domain.strategy.selectors.volume_spike_balance import VolumeSpikeBalanceSelector
+from trendradar.domain.strategy.selectors.single_needle_down_20 import SingleNeedleDown20Selector
 
 
 def register_all():
@@ -81,4 +82,11 @@ def register_all():
         selector_class=VolumeSpikeBalanceSelector,
         default_params={"volume_spike_lookback": 30, "volume_spike_multiple": 2.0,
                         "min_spike_elapsed_days": 20},
+    ))
+    register(StrategyDefinition(
+        strategy_id="single_needle_down_20", name="单针下20",
+        description="3日随机指标下探≤20 + 21日区间高位>80 + 流通市值≥50亿",
+        selector_class=SingleNeedleDown20Selector,
+        default_params={"n1": 3, "n2": 21, "short_max": 20,
+                        "long_min": 80, "circ_mv_min_yi": 50},
     ))
