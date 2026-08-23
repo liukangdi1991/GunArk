@@ -1,7 +1,7 @@
 # 行情同步：模式公告与失败重试 设计文档
 
 **日期**: 2026-08-23
-**状态**: 已评审（4 轮后端 review：3.4 acquire 表述修正 + 3.1 分层界定 + uptodate 契约补充，无遗留问题）
+**状态**: 已实现（2026-08-23，7 任务 TDD 完成，270 passed）
 **范围**: `trendradar/infrastructure/tushare/syncer.py`、`trendradar/app/services/market_service.py`、相关测试
 
 ---
