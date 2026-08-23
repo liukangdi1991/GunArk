@@ -131,7 +131,8 @@ Sync complete: mode=full, missing_days=2828, synced_codes=5549, failed_codes=0, 
 **更新**（断言 `mode="init"` → `"full"`）：`tests/infrastructure/test_sync_market.py`、`test_market_service_incremental.py`、`test_sync_{planner,daily,by_stock,integration}.py` 中相关断言、`tests/interfaces/test_api_contract.py`（如涉及）。
 
 **新增**：
-- `plan_sync` 决策：缺口 >20 / ≤20 / force / retry_codes 非空 / uptodate 短路。
+- `decide_mode` 决策：缺口 >20 / ≤20 / force / retry_codes 非空 / uptodate 短路。
+- `plan_sync` 加载包装：req_start 推导、日历失败（抛错 → job fail）、missing 计算。
 - 重试循环：mock 失败→重试→成功（`retry_rounds` 正确）；9 轮上限；间隔注入 0（`retry_interval=0`）；重试轮取消。
 - 限流修复：重试消耗 token（bucket 计数）；`频率超限` 放弃不重试；IP_BAN 600s 冷却路径；acquire 超时返回 None。
 - 字段语义：full 模式 `synced_days=0`；`synced_codes` 累计；`retry_rounds` 存在。
