@@ -12,6 +12,7 @@ from trendradar.domain.strategy.selectors.volume_spike_balance import VolumeSpik
 from trendradar.domain.strategy.selectors.single_needle_down_20 import SingleNeedleDown20Selector
 from trendradar.domain.strategy.selectors.brick_chart import BrickChartSelector
 from trendradar.domain.strategy.selectors.oversold_bottom_fishing import OversoldBottomFishingSelector
+from trendradar.domain.strategy.selectors.ultimate_brick_chart import UltimateBrickChartSelector
 
 
 def register_all():
@@ -107,4 +108,12 @@ def register_all():
                         "m1": 14, "m2": 28, "m3": 57, "m4": 114,
                         "ema1": 10, "dif_fast": 12, "dif_slow": 26,
                         "every_neg": 5, "every_down": 4, "dd2_window": 5},
+    ))
+    register(StrategyDefinition(
+        strategy_id="ultimate_brick_chart", name="极致砖型图选股",
+        description="MT 绿转红(≥昨绿高) + 前3日绿柱 + 多头排列(close≥ZXK>DKK)",
+        selector_class=UltimateBrickChartSelector,
+        default_params={"n": 4, "m": 6, "t": 4,
+                        "m1": 14, "m2": 28, "m3": 57, "m4": 114,
+                        "ema1": 10},
     ))
