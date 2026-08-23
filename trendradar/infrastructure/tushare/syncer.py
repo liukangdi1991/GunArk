@@ -604,8 +604,32 @@ def sync_market(
         pro, codes, plan.start, plan.end, bars_dir,
         done_path, retry_path, progress, cancel_check,
     )
+    failed = result["failed_codes"]
+    retry_rounds = 0
+    while failed and retry_rounds < max_retry_rounds:
+        retry_rounds += 1
+        if progress:
+            progress(0, len(failed),
+                     f"[重试 {retry_rounds}/{max_retry_rounds}] 开始：{len(failed)} 个失败代码")
+        # Cancellable 30s gap (1s granularity)
+        for _ in range(int(retry_interval)):
+            if cancel_check and cancel_check():
+                break
+            time.sleep(1)
+        if cancel_check and cancel_check():
+            break
+
+        def _sub_progress(cur, total, msg):
+            if progress:
+                progress(cur, total, f"[重试 {retry_rounds}/{max_retry_rounds}] {msg}")
+
+        sub = sync_by_stock(pro, failed, plan.start, plan.end, bars_dir,
+                            done_path, retry_path, _sub_progress, cancel_check)
+        failed = sub["failed_codes"]
+        if not failed and progress:
+            progress(0, 0, "全部失败代码已补完")
+
     return {"mode": "full", "missing_days": plan.missing_days,
-            "synced_days": 0, "synced_codes": len(codes) - len(result["failed_codes"]),
-            "new_codes": 0, "failed_days": 0,
-            "failed_codes": len(result["failed_codes"]),
-            "retry_rounds": 0, "skipped_uptodate": False}
+            "synced_days": 0, "synced_codes": len(codes) - len(failed),
+            "new_codes": 0, "failed_days": 0, "failed_codes": len(failed),
+            "retry_rounds": retry_rounds, "skipped_uptodate": False}

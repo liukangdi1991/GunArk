@@ -79,3 +79,50 @@ def test_sync_market_default_now_utc_does_not_crash(tmp_path):
     pro = FakePro(daily_by_day={})
     result = sync_market(pro, bars_dir, tmp_path, {}, progress=None, cancel_check=None)
     assert "mode" in result
+
+
+def test_full_mode_retries_failed_codes(tmp_path, monkeypatch):
+    """mock sync_by_stock: round 1 fails 2 codes, round 2 succeeds all."""
+    import trendradar.infrastructure.tushare.syncer as syncer_mod
+    from datetime import date, datetime, timedelta, timezone
+    from unittest.mock import MagicMock
+
+    import pandas as pd
+    import polars as pl
+
+    bars = tmp_path / "bars"; cache = tmp_path / "cache"
+    bars.mkdir(parents=True); cache.mkdir(parents=True)
+
+    days = [date(2026, 7, 1) + timedelta(days=i) for i in range(25)]
+    pro = MagicMock()
+    pro.trade_cal.return_value = pd.DataFrame({
+        "cal_date": [d.strftime("%Y%m%d") for d in days],
+        "is_open": [1] * len(days),
+    })
+
+    calls = {"n": 0}
+
+    def fake_sync(pro, codes, start, end, bars_dir, done_path, retry_path,
+                  progress=None, cancel_check=None, bucket=None, max_workers=6):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"failed_codes": ["000002", "000003"]}
+        return {"failed_codes": []}
+
+    monkeypatch.setattr(syncer_mod, "sync_by_stock", fake_sync)
+    import trendradar.infrastructure.tushare.stocklist as stocklist_mod
+    monkeypatch.setattr(
+        stocklist_mod, "sync_stock_list",
+        lambda bars_dir: pl.DataFrame({"code": ["000001", "000002", "000003"]}),
+    )
+
+    result = syncer_mod.sync_market(
+        pro, bars, cache,
+        {"start_date": days[0].isoformat(), "end_date": "2026-08-05"},
+        now_utc=datetime(2026, 8, 21, 8, 0, tzinfo=timezone.utc),
+        retry_interval=0, max_retry_rounds=9,
+    )
+    assert result["mode"] == "full"
+    assert result["failed_codes"] == 0  # count of remaining failures (int)
+    assert result["retry_rounds"] == 1
+    assert calls["n"] == 2
