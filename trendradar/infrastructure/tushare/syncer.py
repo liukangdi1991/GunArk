@@ -209,11 +209,11 @@ def _is_up_to_date(path: Path, target_end: date) -> bool:
 
 def _to_ts_code(code: str) -> str:
     code = str(code).zfill(6)
-    if code.startswith(("60", "68", "9")):
-        return f"{code}.SH"
-    elif code.startswith(("4", "8")):
-        return f"{code}.BJ"
-    return f"{code}.SZ"
+    if code.startswith(("60", "68", "900", "901")):
+        return f"{code}.SH"          # 沪主板/科创板/沪B股
+    elif code.startswith(("92", "4", "8")):
+        return f"{code}.BJ"          # 北交所（92 新编号 + 4/8 旧编号）
+    return f"{code}.SZ"              # 深主板/创业板
 
 
 def _fetch_with_retry(

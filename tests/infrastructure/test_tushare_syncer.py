@@ -303,3 +303,14 @@ def test_rate_limit_error_abandons_without_retry():
         result = _fetch_with_retry(pro, "000001", date(2026, 1, 1), date(2026, 1, 31), 3)
     assert result is None
     assert pro.daily.call_count == 1  # no hot retry on per-window rate limit
+
+
+def test_to_ts_code_exchange_suffixes():
+    from trendradar.infrastructure.tushare.syncer import _to_ts_code
+    assert _to_ts_code("600519") == "600519.SH"   # 沪主板
+    assert _to_ts_code("688981") == "688981.SH"   # 科创板
+    assert _to_ts_code("900901") == "900901.SH"   # 沪B股
+    assert _to_ts_code("920099") == "920099.BJ"   # 北交所新编号（回归：曾误判为 .SH）
+    assert _to_ts_code("830799") == "830799.BJ"   # 北交所旧编号
+    assert _to_ts_code("000001") == "000001.SZ"   # 深主板
+    assert _to_ts_code("300750") == "300750.SZ"   # 创业板
