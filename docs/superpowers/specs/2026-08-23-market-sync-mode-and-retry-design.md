@@ -1,7 +1,7 @@
 # 行情同步：模式公告与失败重试 设计文档
 
 **日期**: 2026-08-23
-**状态**: 已评审（两轮后端 review，无遗留问题）
+**状态**: 已评审（4 轮后端 review：3.4 acquire 表述修正 + 3.1 分层界定 + uptodate 契约补充，无遗留问题）
 **范围**: `trendradar/infrastructure/tushare/syncer.py`、`trendradar/app/services/market_service.py`、相关测试
 
 ---
@@ -49,9 +49,14 @@ is_up_to_date 短路                                → uptodate=True（跳过�
 
 **约束**：`sync_market` 接收 `SyncPlan` 并直接使用 `plan.mode`/`plan.missing_days`/`plan.uptodate`，**内部不再重算**（避免双源不一致）。
 
+**分层界定（实施依据）**：
+- `decide_mode(missing_days: int, force: bool, retry_codes: list[str]) -> str` —— **真纯函数**，无 I/O，单测目标。
+- `plan_sync(pro, bars_dir: Path, cache_dir: Path, request: dict) -> SyncPlan` —— 加载包装：解析 req_start/req_end、拉取交易日历（现有分片逻辑）、读 `sync_done.json` 与 `sync_retry_codes.json`、计算 missing、调用 `decide_mode`。复用 `sync_market` 现有的加载代码，不新写逻辑。
+- 已知 minor：`plan_sync` 与 `sync_by_stock` 各拉一次交易日历（后者用于 day-marking）；日历有本地缓存，接受。
+
 ### 3.2 模式公告（同步开始前）
 
-`market_service.submit_market_sync` 的 worker 在调用 `sync_market` 前，根据 `plan` 输出：
+`market_service.submit_market_sync` 的 worker 在调用 `sync_market` 前，根据 `plan` 输出（`plan.uptodate=True` 时跳过 `sync_market`，直接构造结果 `{"mode":"incremental","missing_days":0,"synced_days":0,"synced_codes":0,"new_codes":0,"failed_days":0,"failed_codes":0,"retry_rounds":0,"skipped_uptodate":True}`——保持现有契约）：
 
 ```
 [INFO] 数据缺口 N 天 > 20 天，启用全量同步（按股票拉取全历史）   # full
