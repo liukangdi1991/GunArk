@@ -512,94 +512,47 @@ def sync_market(
     now_utc=None,
     progress=None,
     cancel_check=None,
+    plan=None,                        # SyncPlan | None — computed here when omitted
+    retry_interval: float = 30.0,     # seconds between retry rounds (0 in tests)
+    max_retry_rounds: int = 9,        # retry rounds after the initial pass (10 total batches)
 ) -> dict:
     """Top-level incremental sync orchestrator.
 
     request keys: start_date, end_date, codes, force.
-    Returns result_json stats (mode, missing_days, synced_days, synced_codes,
-    new_codes, failed_days, failed_codes, skipped_uptodate).
+    Mode/gap decisions come from plan_sync (single source); this function
+    only executes. Returns result_json stats (mode, missing_days,
+    synced_days, synced_codes, new_codes, failed_days, failed_codes,
+    retry_rounds, skipped_uptodate).
     """
-    from trendradar.infrastructure.tushare.calendar import (
-        fetch_trade_calendar, load_trade_calendar, save_trade_calendar,
-    )
     from trendradar.infrastructure.tushare.markers import (
-        load_sync_done, save_sync_done, load_retry_codes,
+        load_retry_codes, save_sync_done,
     )
 
-    now = now_utc or datetime.now(timezone.utc)
-    today = now.astimezone(_SHANGHAI).date()
-    force = bool(request.get("force"))
-
-    cal_path = cache_dir / "trade_calendar.parquet"
-    done_path = cache_dir / "sync_done.json"
-    retry_path = cache_dir / "sync_retry_codes.json"
     bars_dir = Path(bars_dir)
     bars_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
+    done_path = cache_dir / "sync_done.json"
+    retry_path = cache_dir / "sync_retry_codes.json"
 
-    # Authoritative calendar: fetch now, fall back to cache, else fail.
-    req_start = date.fromisoformat(request["start_date"]) if request.get("start_date") else None
-    req_end = date.fromisoformat(request["end_date"]) if request.get("end_date") else None
-    if req_end is None:
-        req_end = today
-    try:
-        all_trade = set(fetch_trade_calendar(pro, req_start or date(1990, 1, 1), req_end))
-        save_trade_calendar(cal_path, sorted(all_trade))
-    except Exception:
-        all_trade = set(load_trade_calendar(cal_path) or [])
-        if not all_trade:
-            raise RuntimeError("trade calendar unavailable (fetch failed and no cache)")
+    if plan is None:
+        plan = plan_sync(pro, bars_dir, cache_dir, request, now_utc=now_utc)
 
-    latest = latest_tradeable_day(all_trade, now)
-    req_end = min(req_end, latest)  # clamp future end
-
-    done = load_sync_done(done_path)
-    if not done and bars_dir.exists() and any(bars_dir.glob("*.parquet")):
-        # Legacy first run: strict cross-check — mark only dates present in
-        # EVERY bar file (intersection).
-        from trendradar.domain.market.data_store import LocalParquetMarketStore
-        store = LocalParquetMarketStore(bars_dir)
-        cal = set(store.get_calendar())
-        files = sorted(bars_dir.glob("*.parquet"))
-        common = cal
-        for p in files:
-            try:
-                common &= set(pl.read_parquet(p, columns=["date"])["date"].to_list())
-            except Exception:
-                pass
-        done = common & all_trade
-        save_sync_done(done_path, done)
-
-    if req_start is None:
-        if bars_dir.exists() and any(bars_dir.glob("*.parquet")):
-            local_min = min(set(load_sync_done(done_path)) or [req_end]) if done else None
-            if local_min is None:
-                store = LocalParquetMarketStore(bars_dir)
-                dates = store.get_calendar()
-                local_min = dates[0] if dates else req_end
-            req_start = local_min
-        else:
-            req_start = date(1990, 1, 1)
-
-    if not force and is_up_to_date(
-        local_min=req_start, local_max=latest,
-        req_start=None if request.get("start_date") is None else req_start,
-        latest=latest, done=done, trade_days=all_trade,
-    ):
+    if plan.uptodate:
         return {"mode": "incremental", "missing_days": 0, "synced_days": 0,
                 "synced_codes": 0, "new_codes": 0, "failed_days": 0,
-                "failed_codes": 0, "skipped_uptodate": True}
+                "failed_codes": 0, "retry_rounds": 0, "skipped_uptodate": True}
 
-    missing = missing_trade_days(all_trade, done, req_start, req_end)
-
-    if force or len(missing) <= 20:
+    if plan.mode == "incremental":
         # Daily path
         from trendradar.infrastructure.tushare.rate_limit import TokenBucket
         bucket = TokenBucket()
+        done = set(plan.done)
         failed_days = 0
         synced_days = 0
         synced_codes = 0
         new_codes = 0
+        missing = plan.missing_dates
         total = len(missing)
         for idx, day in enumerate(missing, start=1):
             if cancel_check and cancel_check():
@@ -610,11 +563,10 @@ def sync_market(
                 break
             df = _fetch_daily_by_date(pro, day)
             if df.is_empty():
-                if day == latest:
+                if day == plan.latest:
                     continue  # not done, warning-level, retried next run
                 done.add(day)
                 save_sync_done(done_path, done)
-                failed_days += 0
                 continue
             before = {p.name for p in bars_dir.glob("*.parquet")}
             written = merge_day_bars(df, bars_dir)
@@ -629,19 +581,18 @@ def sync_market(
                 "synced_days": synced_days, "synced_codes": synced_codes,
                 "new_codes": new_codes, "failed_days": failed_days,
                 "failed_codes": len(load_retry_codes(retry_path)),
-                "skipped_uptodate": False}
-    else:
-        # By-stock path (init / large gap / retry subset)
-        from trendradar.infrastructure.tushare.stocklist import sync_stock_list
-        meta = sync_stock_list(bars_dir)
-        codes = meta["code"].to_list() if not meta.is_empty() else []
-        result = sync_by_stock(
-            pro, codes, req_start, req_end, bars_dir,
-            done_path, retry_path, progress, cancel_check,
-        )
-        return {"mode": "init", "missing_days": len(missing),
-                "synced_days": len(missing) if not result["failed_codes"] else 0,
-                "synced_codes": len(codes) - len(result["failed_codes"]),
-                "new_codes": 0, "failed_days": 0,
-                "failed_codes": len(result["failed_codes"]),
-                "skipped_uptodate": False}
+                "retry_rounds": 0, "skipped_uptodate": False}
+
+    # By-stock path (full / large gap / retry subset)
+    from trendradar.infrastructure.tushare.stocklist import sync_stock_list
+    meta = sync_stock_list(bars_dir)
+    codes = meta["code"].to_list() if not meta.is_empty() else []
+    result = sync_by_stock(
+        pro, codes, plan.start, plan.end, bars_dir,
+        done_path, retry_path, progress, cancel_check,
+    )
+    return {"mode": "full", "missing_days": plan.missing_days,
+            "synced_days": 0, "synced_codes": len(codes) - len(result["failed_codes"]),
+            "new_codes": 0, "failed_days": 0,
+            "failed_codes": len(result["failed_codes"]),
+            "retry_rounds": 0, "skipped_uptodate": False}

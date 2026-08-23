@@ -187,7 +187,7 @@ def test_market_sync_job_registers_execution_and_sync_run(tmp_path, monkeypatch)
             progress(1, 1, "000001")
         return {"mode": "incremental", "missing_days": 0, "synced_days": 1,
                 "synced_codes": 1, "new_codes": 0, "failed_days": 0,
-                "failed_codes": 0, "skipped_uptodate": False}
+                "failed_codes": 0, "retry_rounds": 0, "skipped_uptodate": False}
 
     # The worker now calls stocklist.sync_stock_list (call-time import) and
     # syncer.sync_market (module attribute reference) instead of sync_kline.

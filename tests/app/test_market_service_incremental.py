@@ -31,7 +31,7 @@ def test_submit_market_sync_passes_force_and_codes(tmp_path, monkeypatch):
         captured.update(request)
         return {"mode": "incremental", "missing_days": 0, "synced_days": 0,
                 "synced_codes": 0, "new_codes": 0, "failed_days": 0,
-                "failed_codes": 0, "skipped_uptodate": True}
+                "failed_codes": 0, "retry_rounds": 0, "skipped_uptodate": True}
 
     from trendradar.app.services import market_service
     # Patch the symbols referenced inside submit_market_sync's worker:
