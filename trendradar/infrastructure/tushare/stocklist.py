@@ -22,11 +22,11 @@ def sync_stock_list(bars_dir: Path) -> pl.DataFrame:
         fields="ts_code,symbol,name,area,industry,market,list_date",
     )
 
-    if data is None or data.empty:
+    if data is None or not data.to_dict(orient="list"):
         logger.warning("stock_basic returned empty")
         return pl.DataFrame()
 
-    df = pl.from_pandas(data)
+    df = pl.DataFrame(data.to_dict(orient="list"))
 
     column_map = {
         "symbol": "code",

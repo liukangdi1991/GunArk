@@ -19,6 +19,6 @@ def validate_token() -> bool:
     try:
         pro = get_pro()
         result = pro.trade_cal(exchange="SSE", start_date="20200101", end_date="20200101")
-        return result is not None and not result.empty
+        return result is not None and bool(result.to_dict(orient="list"))
     except Exception:
         return False

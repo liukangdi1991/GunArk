@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
-import pandas as pd
 import polars as pl
 
 from trendradar.infrastructure.tushare.client import get_pro
@@ -131,11 +130,11 @@ def _fetch_with_retry(
     return None
 
 
-def _response_to_df(resp: pd.DataFrame, code: str) -> pl.DataFrame:
-    if resp is None or resp.empty:
+def _response_to_df(resp, code: str) -> pl.DataFrame:
+    if resp is None or not resp.to_dict(orient="list"):
         return pl.DataFrame()
 
-    df = pl.from_pandas(resp)
+    df = pl.DataFrame(resp.to_dict(orient="list"))
 
     column_map = {
         "trade_date": "date",
@@ -361,9 +360,9 @@ def _fetch_daily_by_date(pro, day: date):
             return pl.DataFrame()
         df = resp
     else:
-        if resp.empty:
+        if not resp.to_dict(orient="list"):
             return pl.DataFrame()
-        df = pl.from_pandas(resp)
+        df = pl.DataFrame(resp.to_dict(orient="list"))
     df = df.rename(
         {c: {"trade_date": "date", "vol": "volume"}.get(c, c)
          for c in df.columns if c in ("trade_date", "vol")}

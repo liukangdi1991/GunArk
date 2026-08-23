@@ -59,7 +59,7 @@ def fetch_trade_calendar(pro, start: date, end: date) -> list[date]:
             start_date=seg_start.strftime("%Y%m%d"),
             end_date=seg_end.strftime("%Y%m%d"),
         )
-        if resp is not None and not resp.empty:
+        if resp is not None and resp.to_dict(orient="list"):
             # pl.DataFrame(dict-of-lists) avoids pl.from_pandas, which can
             # require pyarrow for some object columns (e.g. sparse early-year
             # trade_cal responses).

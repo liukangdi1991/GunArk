@@ -68,14 +68,6 @@ def register_all():
     ))
 
     register(StrategyDefinition(
-        strategy_id="perfect_b1_volume_stepdown", name="完美B1",
-        description="完美 B1 缩量版",
-        selector_class=PerfectB1Selector,
-        default_params={"j_threshold": 13, "amplitude_limit": 0.07,
-                        "pct_chg_upper": 0.02, "pct_chg_lower": -0.02},
-    ))
-
-    register(StrategyDefinition(
         strategy_id="big_bullish_volume", name="暴力K战法",
         description="大阳线 + 小上影 + 倍量",
         selector_class=BigBullishVolumeSelector,

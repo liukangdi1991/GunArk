@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Any, Callable, List, Optional, Protocol
+from typing import Any, Callable, List, Optional
 
 import polars as pl
 from trendradar.domain.backtest.config import BacktestConfig
@@ -16,13 +16,7 @@ from trendradar.domain.backtest.portfolio import (
     is_holding,
 )
 from trendradar.domain.signal.models import SignalSet
-
-
-class MarketDataStore(Protocol):
-    def get_row(self, code: str, dt: date) -> Optional[dict]: ...
-    def get_previous_close(self, code: str, dt: date) -> Optional[float]: ...
-    def get_calendar(self) -> List[date]: ...
-    def get_rows(self, code: str, start_dt: date, end_dt: date) -> List[dict]: ...
+from trendradar.domain.market.data_store import MarketDataStore
 
 
 @dataclass
