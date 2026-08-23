@@ -17,6 +17,8 @@ from trendradar.infrastructure.tushare.client import get_pro
 logger = logging.getLogger(__name__)
 
 IP_BAN_ERROR_MSG = "每分钟最多访问该接口"
+RATE_LIMIT_MSG = "频率超限"  # matches Tushare "访问接口(daily)频率超限(300次/分钟)"
+
 
 
 def decide_mode(missing_days: int, force: bool, retry_codes: list) -> str:
@@ -215,7 +217,8 @@ def _to_ts_code(code: str) -> str:
 
 
 def _fetch_with_retry(
-    pro, code: str, start: date, end: date, max_retries: int
+    pro, code: str, start: date, end: date, max_retries: int,
+    bucket=None, cancel_check=None,
 ) -> Optional[pl.DataFrame]:
     start_s = start.strftime("%Y%m%d")
     end_s = end.strftime("%Y%m%d")
@@ -228,11 +231,22 @@ def _fetch_with_retry(
     }
 
     for attempt in range(max_retries):
+        if bucket is not None:
+            if not bucket.acquire(timeout=60.0, cancel_check=cancel_check):
+                # Starved/timed out: fail this code; the retry loop (or next
+                # sync run) re-attempts it later. Never block the job forever.
+                return None
         try:
             resp = pro.daily(**params)
             return _response_to_df(resp, code)
         except Exception as e:
             msg = str(e)
+            if RATE_LIMIT_MSG in msg:
+                # Per-window limit (300/min): abandon this code to the retry
+                # loop. Hot-retrying here only adds load into the same window
+                # and multiplies the violation.
+                logger.warning("Rate limit on %s: %s", code, msg)
+                return None
             if IP_BAN_ERROR_MSG in msg:
                 logger.warning(
                     "Rate limit hit on %s attempt %d/%d, cooling 600s",
@@ -426,9 +440,8 @@ def sync_by_stock(
         for seg_start, seg_end in shard_ranges(start, end):
             if cancel_check and cancel_check():
                 return False
-            if not bucket.acquire(cancel_check=cancel_check):
-                return False
-            data = _fetch_with_retry(pro, code, seg_start, seg_end, 3)
+            data = _fetch_with_retry(pro, code, seg_start, seg_end, 3,
+                                     bucket=bucket, cancel_check=cancel_check)
             if data is None:
                 return False
             if data.is_empty():

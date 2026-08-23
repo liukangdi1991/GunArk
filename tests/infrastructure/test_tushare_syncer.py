@@ -268,3 +268,38 @@ class TestSyncKline:
             )
 
         assert result["synced"] <= 1
+
+
+# --- Rate-limit root-cause fixes (Task 4) ---
+def test_retry_consumes_bucket_tokens():
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    from trendradar.infrastructure.tushare.rate_limit import TokenBucket
+    from trendradar.infrastructure.tushare.syncer import _fetch_with_retry
+
+    pro = MagicMock()
+    pro.daily.side_effect = [Exception("boom"), None]  # first attempt fails
+    bucket = TokenBucket(rate_per_min=1, burst=1)       # 1 token only
+    with patch("trendradar.infrastructure.tushare.syncer.time.sleep"):
+        # cancel_check=True makes acquire return False immediately once the
+        # single token is spent (no 60s real-time wait).
+        _fetch_with_retry(pro, "000001", date(2026, 1, 1), date(2026, 1, 31), 3,
+                          bucket=bucket, cancel_check=lambda: True)
+    assert pro.daily.call_count == 1  # second attempt starved: no token left
+
+
+def test_rate_limit_error_abandons_without_retry():
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    from trendradar.infrastructure.tushare.syncer import _fetch_with_retry
+
+    pro = MagicMock()
+    pro.daily.side_effect = [
+        Exception("抱歉，您访问接口(daily)频率超限(300次/分钟)，具体频次详情：https://tushare.pro/document/1?doc_id=108。")
+    ]
+    with patch("trendradar.infrastructure.tushare.syncer.time.sleep"):
+        result = _fetch_with_retry(pro, "000001", date(2026, 1, 1), date(2026, 1, 31), 3)
+    assert result is None
+    assert pro.daily.call_count == 1  # no hot retry on per-window rate limit
