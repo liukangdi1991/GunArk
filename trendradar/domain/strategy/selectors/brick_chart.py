@@ -20,24 +20,10 @@ import time
 
 import polars as pl
 
+from trendradar.domain.strategy.formulas.mt_oscillator import compute_mt
 from trendradar.domain.strategy.protocol import (
     SelectionStrategy, SelectionContext, SelectionResult, WarmupResult,
 )
-
-
-def compute_mt(high: pl.Series, low: pl.Series, close: pl.Series,
-               n: int = 4, m: int = 6, t: int = 4) -> pl.Series:
-    """TDX 砖型图 MT 振荡器（SMA(X,N,1) = ewm(alpha=1/N)）。"""
-    hh = high.rolling_max(n)
-    ll = low.rolling_min(n)
-    span = hh - ll
-    var1 = (hh - close) / span * 100 - 90
-    var2 = var1.ewm_mean(alpha=1.0 / n, adjust=False) + 100
-    var3 = (close - ll) / span * 100
-    var4 = var3.ewm_mean(alpha=1.0 / m, adjust=False)
-    var5 = var4.ewm_mean(alpha=1.0 / m, adjust=False) + 100
-    var6 = var5 - var2
-    return (var6 - t).clip(lower_bound=0.0).alias("mt")
 
 
 class BrickChartSelector(SelectionStrategy):
