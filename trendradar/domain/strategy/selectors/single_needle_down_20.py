@@ -29,10 +29,15 @@ class SingleNeedleDown20Selector(SelectionStrategy):
         n2 = int(params.get("n2", 21))
         c = market_data["close"]
         low = market_data["low"]
-        short = (100 * (c - low.rolling_min(n1)) /
-                 (c.rolling_max(n1) - low.rolling_min(n1)))
-        long_ = (100 * (c - low.rolling_min(n2)) /
-                 (c.rolling_max(n2) - low.rolling_min(n2)))
+        hh3 = c.rolling_max(n1)
+        ll3 = low.rolling_min(n1)
+        span3 = hh3 - ll3
+        # 0-span（一字板）→ null，避免 NaN 穿过 select_day 的 is-None 守卫
+        short = pl.when(span3 > 0).then(100 * (c - ll3) / span3).otherwise(None)
+        hh21 = c.rolling_max(n2)
+        ll21 = low.rolling_min(n2)
+        span21 = hh21 - ll21
+        long_ = pl.when(span21 > 0).then(100 * (c - ll21) / span21).otherwise(None)
         df = market_data.with_columns([
             short.alias("short_stoch"), long_.alias("long_stoch"),
         ])

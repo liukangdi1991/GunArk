@@ -122,3 +122,25 @@ def test_excluded_when_close_below_dkk():
 
 def test_short_history_excluded():
     assert _run(_hist([5, 6, 5, 8])) == []
+
+
+def test_warmup_mt_computed_per_code():
+    """warmup 的 MT 必须按 code 分组计算：跟在别的股票后面不得污染。"""
+    def mkdf(code, base, n=8, drift=0.2):
+        dts = [date(2026, 7, 1) + timedelta(days=i) for i in range(n)]
+        cs = [base + i * drift for i in range(n)]
+        return pl.DataFrame({"code": [code] * n, "date": dts, "open": cs,
+                             "close": cs, "high": [c * 1.03 for c in cs],
+                             "low": [c * 0.97 for c in cs], "volume": [1e6] * n})
+
+    a = mkdf("AAAA", 100.0)
+    b = mkdf("BBBB", 10.0)
+    sel = _defn().selector_class(_defn())
+    w = sel.warmup(pl.concat([a, b]))
+    standalone = compute_mt(b["high"], b["low"], b["close"]).to_list()
+    got = w.grouped["BBBB"]["mt"].to_list()
+    for g, s in zip(got, standalone):
+        if s is None:
+            assert g is None
+        else:
+            assert g is not None and abs(g - s) < 1e-6
