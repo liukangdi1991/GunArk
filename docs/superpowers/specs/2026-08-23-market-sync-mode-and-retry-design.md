@@ -84,7 +84,7 @@ while failed_codes > 0 and rounds < 9:
 ### 3.4 限流修复
 
 1. `_fetch_with_retry` 增加 `bucket` 参数：**每次尝试（含重试）前 `bucket.acquire(timeout=60, cancel_check=...)`**；acquire 超时或取消 → 返回 `None`（记为失败代码），不无限阻塞。
-2. `sync_by_stock` 与 daily 路径的外层 acquire 移除，统一收进 fetch 函数（避免双重计数）。
+2. acquire 位置收敛：`sync_by_stock` 的 `fetch_one` 当前按分片 acquire——移入 `_fetch_with_retry` 每次尝试前（首次+重试都消耗 token），`fetch_one` 不再单独 acquire；daily 路径的循环 acquire 保持（`_fetch_daily_by_date` 无重试，单次调用等价）。避免双重计数。
 3. 限频错误处理：
    - 消息含 **`频率超限`** → **本轮放弃**（返回 `None` → 计入失败 codes → 交重试轮 30s 后处理）。不做 1s/2s/4s 立即重试（避免多 worker 同时退避后再次突发撞墙）。
    - 消息含 `IP_BAN_ERROR_MSG` → 保持 600s 冷却后重试（更严重的封禁信号）。
