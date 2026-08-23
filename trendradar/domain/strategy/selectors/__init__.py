@@ -11,6 +11,7 @@ from trendradar.domain.strategy.selectors.big_bullish_volume import BigBullishVo
 from trendradar.domain.strategy.selectors.volume_spike_balance import VolumeSpikeBalanceSelector
 from trendradar.domain.strategy.selectors.single_needle_down_20 import SingleNeedleDown20Selector
 from trendradar.domain.strategy.selectors.brick_chart import BrickChartSelector
+from trendradar.domain.strategy.selectors.oversold_bottom_fishing import OversoldBottomFishingSelector
 
 
 def register_all():
@@ -97,4 +98,13 @@ def register_all():
         selector_class=BrickChartSelector,
         default_params={"n": 4, "m": 6, "t": 4,
                         "m1": 14, "m2": 28, "m3": 57, "m4": 114},
+    ))
+    register(StrategyDefinition(
+        strategy_id="oversold_bottom_fishing", name="超跌抄底",
+        description="MT 转升 + 收盘二阶差分新高 + 双线下方超跌 + MACD DIF 拐头",
+        selector_class=OversoldBottomFishingSelector,
+        default_params={"n": 4, "m": 6, "t": 4,
+                        "m1": 14, "m2": 28, "m3": 57, "m4": 114,
+                        "ema1": 10, "dif_fast": 12, "dif_slow": 26,
+                        "every_neg": 5, "every_down": 4, "dd2_window": 5},
     ))

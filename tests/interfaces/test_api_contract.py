@@ -231,7 +231,7 @@ def test_strategies_response_shape(client):
     payload = resp.json()
     assert isinstance(payload, dict)
     assert "strategies" in payload
-    assert len(payload["strategies"]) == 11
+    assert len(payload["strategies"]) == 12
     for s in payload["strategies"]:
         assert {"name", "class", "description", "params"} <= set(s)
 
