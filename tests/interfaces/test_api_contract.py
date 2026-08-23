@@ -402,6 +402,9 @@ def test_console_response_shape(client):
     assert "offset" in payload
     assert isinstance(payload["text"], str)
     assert isinstance(payload["more"], bool)
+    # 每条日志独立成行：前端轮询依赖尾随换行，缺失会把相邻两条日志粘成一行
+    if payload["text"]:
+        assert payload["text"].endswith("\n")
 
 
 # ---------------------------------------------------------------------------

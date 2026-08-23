@@ -692,7 +692,8 @@ def console_payload(executor, job_id: str, offset: int = 0) -> dict:
 
     store = JobStore(StorageConnection(runtime_root() / "storage").db_path)
     all_logs = store.get_logs(job_id)
-    text = "\n".join(all_logs[offset:])
+        # 尾随换行：前端轮询用 pendingText 拼接下一批，缺了它会把相邻两条日志粘成一行
+    text = "\n".join(all_logs[offset:]) + "\n"
     progress = parse_progress(all_logs)
 
     status = state.get("status")
