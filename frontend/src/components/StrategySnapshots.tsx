@@ -94,89 +94,66 @@ function describeStrategy(strategy: Strategy): string[] {
   const lines: string[] = [];
 
   if (strategy.class === "ZXDKXBalanceSelector") {
-    lines.push(`长期多空线与短期趋势线的相对距离小于 ${formatRatio(numberParam(params, "zx_stick_limit_threshold"))}。`);
-    lines.push(`选股当日成交量是最近 ${numberParam(params, "recent_volume_window") || "-"} 个交易日新低。`);
-    lines.push(`收盘价不低于长期多空线的 ${formatRatio(numberParam(params, "close_vs_long_term_bull_bear_line_limit_threshold"))}。`);
+    lines.push(`收盘价不超过长期多空线的 ${formatRatio(numberParam(params, "close_vs_long_term_bull_bear_line_limit_threshold"))}。`);
+    lines.push(`近 10 个交易日短期趋势线与长期多空线粘合（偏离率最小值低于 ${formatRatio(numberParam(params, "zx_stick_limit_threshold"))}）。`);
     return lines;
   }
 
   if (strategy.class === "PerfectB1Selector") {
     lines.push(`KDJ 的 J 值小于 ${numberParam(params, "j_threshold") ?? "-"}。`);
-    lines.push(`当日振幅小于 ${formatRatio(numberParam(params, "amplitude_limit"))}。`);
-    lines.push(
-      `当日涨跌幅在 ${formatSignedRatio(numberParam(params, "pct_chg_lower"))} ~ ${formatSignedRatio(numberParam(params, "pct_chg_upper"))} 之间。`,
-    );
-    lines.push(`收盘价高于 ${numberParam(params, "ma_window") || "-"} 日均线。`);
-    lines.push("收盘价高于长期多空线。");
-    lines.push(
-      `最近 ${numberParam(params, "volume_spike_lookback") || "-"} 个交易日内存在上涨倍量柱，成交量至少为前一日的 ${numberParam(params, "volume_spike_multiple") ?? "-"} 倍。`,
-    );
-    lines.push("短期趋势线高于长期多空线。");
-    if (numberParam(params, "volume_step_down_window") !== null) {
-      lines.push(
-        `最近 ${numberParam(params, "volume_step_down_window")} 个交易日内，至少 ${numberParam(params, "min_volume_step_down_days")} 个交易日成交量低于前一日。`,
-      );
-    }
-    if (numberParam(params, "recent_volume_new_low_window") !== null) {
-      lines.push(`选股当日成交量是最近 ${numberParam(params, "recent_volume_new_low_window")} 个交易日新低。`);
-    }
+    lines.push(`当日振幅不超过 ${formatRatio(numberParam(params, "amplitude_limit"))}。`);
+    lines.push(`当日涨跌幅在 ${formatSignedRatio(numberParam(params, "pct_chg_lower"))} ~ ${formatSignedRatio(numberParam(params, "pct_chg_upper"))} 之间。`);
     return lines;
   }
 
   if (strategy.class === "BBIKDJSelector") {
     lines.push(`KDJ 的 J 值小于 ${numberParam(params, "j_threshold") ?? "-"}。`);
-    lines.push(`BBI 至少观察 ${numberParam(params, "bbi_min_window") ?? "-"} 个交易日，并满足上行过滤。`);
-    lines.push(`价格波动范围限制在 ${formatPercentLiteral(numberParam(params, "price_range_pct"))} 内。`);
-    lines.push(`BBI 位置分位低于 ${formatRatio(numberParam(params, "bbi_q_threshold"))}，J 值分位低于 ${formatRatio(numberParam(params, "j_q_threshold"))}。`);
+    lines.push("DIF（EMA12-EMA26）大于 0。");
+    lines.push(`BBI 上行：至少观察 ${numberParam(params, "bbi_min_window") ?? "-"} 个交易日，分位阈值 ${formatRatio(numberParam(params, "bbi_q_threshold"))}。`);
     return lines;
   }
 
   if (strategy.class === "SuperB1Selector") {
-    lines.push(`最近 ${numberParam(params, "lookback_n") ?? "-"} 个交易日内识别短线反转结构。`);
-    lines.push(`收盘缩量阈值为 ${formatRatio(numberParam(params, "close_vol_pct"))}，价格回撤阈值为 ${formatRatio(numberParam(params, "price_drop_pct"))}。`);
-    lines.push(`KDJ 的 J 值小于 ${numberParam(params, "j_threshold") ?? "-"}，并叠加 B1 基础条件。`);
+    lines.push(`KDJ 的 J 值小于 ${numberParam(params, "j_threshold") ?? "-"}。`);
+    lines.push(`当日涨跌幅不超过 ${formatRatio(numberParam(params, "price_drop_pct"))}（避免追高）。`);
+    const closeVolPct = numberParam(params, "close_vol_pct");
+    lines.push(
+      `成交量不低于最近 ${numberParam(params, "lookback_n") ?? "-"} 个交易日日均量的 ${closeVolPct === null ? "-" : formatRatio(1 - closeVolPct)}。`,
+    );
     return lines;
   }
 
   if (strategy.class === "BBIShortLongSelector") {
-    lines.push(`短周期 RSV 使用 ${numberParam(params, "n_short") ?? "-"} 日，长周期 RSV 使用 ${numberParam(params, "n_long") ?? "-"} 日。`);
-    lines.push(`上沿 RSV 阈值为 ${numberParam(params, "upper_rsv_threshold") ?? "-"}，下沿 RSV 阈值为 ${numberParam(params, "lower_rsv_threshold") ?? "-"}。`);
-    lines.push(`BBI 至少观察 ${numberParam(params, "bbi_min_window") ?? "-"} 个交易日，并满足斜率过滤。`);
+    lines.push(`短期均线（${numberParam(params, "n_short") ?? "-"} 日）高于长期均线（${numberParam(params, "n_long") ?? "-"} 日）。`);
+    lines.push(`BBI 上行：至少观察 ${numberParam(params, "bbi_min_window") ?? "-"} 个交易日。`);
     return lines;
   }
 
   if (strategy.class === "PeakKDJSelector") {
-    lines.push(`先识别最近 ${numberParam(params, "max_window") ?? "-"} 个交易日的峰值回撤结构。`);
-    lines.push(`波动阈值为 ${formatRatio(numberParam(params, "fluc_threshold"))}，缺口阈值为 ${formatRatio(numberParam(params, "gap_threshold"))}。`);
-    lines.push(`KDJ 的 J 值小于 ${numberParam(params, "j_threshold") ?? "-"}，J 值分位低于 ${formatRatio(numberParam(params, "j_q_threshold"))}。`);
+    lines.push(`KDJ 的 J 值小于 ${numberParam(params, "j_threshold") ?? "-"}。`);
+    lines.push(`近 ${numberParam(params, "max_window") ?? "-"} 个交易日区间波动（高低点差/高点）不小于 ${formatRatio(numberParam(params, "fluc_threshold"))}。`);
+    lines.push(`收盘价较区间高点回撤不小于 ${formatRatio(numberParam(params, "gap_threshold"))}。`);
     return lines;
   }
 
   if (strategy.class === "MA60CrossVolumeWaveSelector") {
-    lines.push(`最近 ${numberParam(params, "lookback_n") ?? "-"} 个交易日内出现有效上穿 60 日均线。`);
-    lines.push(`成交量至少放大到前一日的 ${numberParam(params, "vol_multiple") ?? "-"} 倍。`);
-    lines.push(`60 日均线斜率观察 ${numberParam(params, "ma60_slope_days") ?? "-"} 个交易日，KDJ 的 J 值小于 ${numberParam(params, "j_threshold") ?? "-"}。`);
+    lines.push("收盘价站上 60 日均线。");
+    lines.push(`成交量不低于最近 ${numberParam(params, "lookback_n") ?? "-"} 个交易日日均量的 ${numberParam(params, "vol_multiple") ?? "-"} 倍。`);
+    lines.push(`KDJ 的 J 值小于 ${numberParam(params, "j_threshold") ?? "-"}。`);
     return lines;
   }
 
   if (strategy.class === "BigBullishVolumeSelector") {
-    lines.push(`当日涨幅至少达到 ${formatRatio(numberParam(params, "up_pct_threshold"))}，并要求阳线收盘。`);
+    lines.push(`当日涨幅（收盘相对开盘）至少达到 ${formatRatio(numberParam(params, "up_pct_threshold"))}。`);
     lines.push(`上影线比例不超过 ${formatRatio(numberParam(params, "upper_wick_pct_max"))}。`);
-    lines.push(`成交量观察 ${numberParam(params, "vol_lookback_n") ?? "-"} 个交易日，放量倍数至少为 ${numberParam(params, "vol_multiple") ?? "-"} 倍。`);
-    lines.push(`收盘价不高于短期趋势线的 ${numberParam(params, "close_lt_short_term_trend_line_mult") ?? "-"} 倍，避免明显追高。`);
+    lines.push(`成交量不低于前一日的 ${numberParam(params, "vol_multiple") ?? "-"} 倍。`);
     return lines;
   }
 
   if (strategy.class === "VolumeSpikeBalanceSelector") {
-    lines.push(
-      `近 ${numberParam(params, "volume_spike_lookback") ?? "-"} 个交易日中存在上涨倍量柱，成交量大于前一日的 ${numberParam(params, "volume_spike_multiple") ?? "-"} 倍。`,
-    );
-    lines.push(`倍量柱到选股日需大于 ${numberParam(params, "min_spike_elapsed_days") ?? "-"} 个交易日。`);
-    lines.push("选股当日成交量是倍量柱到选股日以来最低。");
-    lines.push(
-      `最近 ${numberParam(params, "zx_stick_window") ?? "-"} 个交易日每天两线黏合，相对距离小于 ${formatRatio(numberParam(params, "zx_stick_limit_threshold"))}。`,
-    );
-    lines.push("选股当日收盘价低于长期多空线。");
+    lines.push(`近 ${numberParam(params, "volume_spike_lookback") ?? "-"} 个交易日内存在上涨倍量柱（成交量大于前一日 ${numberParam(params, "volume_spike_multiple") ?? "-"} 倍且收阳）。`);
+    lines.push(`距倍量柱至少 ${numberParam(params, "min_spike_elapsed_days") ?? "-"} 个交易日。`);
+    lines.push("选股当日成交量不超过倍量柱之后的最低成交量，且收盘价低于长期多空线。");
     return lines;
   }
 
