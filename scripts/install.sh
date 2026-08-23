@@ -13,6 +13,7 @@ require_tushare_token
 compose build
 compose up -d
 initialize_storage_schema
+tag_built_image
 
 APP_PORT="$(grep -E '^APP_PORT=' deploy/.env | tail -1 | cut -d= -f2 || true)"
 APP_PORT="${APP_PORT:-8818}"

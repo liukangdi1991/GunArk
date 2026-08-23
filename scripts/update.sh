@@ -14,3 +14,4 @@ git pull --ff-only
 compose build
 compose up -d
 initialize_storage_schema
+tag_built_image

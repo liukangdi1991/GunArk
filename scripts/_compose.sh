@@ -60,6 +60,13 @@ require_tushare_token() {
   fi
 }
 
+tag_built_image() {
+  # 给刚构建的镜像打版本标签，支持回滚：docker tag trend-radar:2.0.0-<oldsha> trend-radar:latest && docker compose up -d
+  local sha
+  sha="$(git -C "${PROJECT_ROOT}" rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)"
+  docker tag "${APP_SLUG}:latest" "${APP_SLUG}:2.0.0-${sha}"
+  echo "镜像版本标签: ${APP_SLUG}:2.0.0-${sha}"
+}
 wait_for_app_container() {
   local attempt
   for attempt in {1..60}; do

@@ -11,3 +11,4 @@ ensure_deploy_layout
 require_tushare_token
 compose up -d --build
 initialize_storage_schema
+tag_built_image

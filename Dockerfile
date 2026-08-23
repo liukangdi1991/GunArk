@@ -20,6 +20,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends libgomp1 tzdata \
     && rm -rf /var/lib/apt/lists/*
 
+# pip 镜像源（默认清华；可覆盖：docker build --build-arg PIP_INDEX_URL=https://pypi.org/simple）
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ENV PIP_INDEX_URL=${PIP_INDEX_URL}
+
 COPY requirements.txt ./
 RUN python -m pip install --upgrade pip \
     && python -m pip install -r requirements.txt
