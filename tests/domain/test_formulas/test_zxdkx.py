@@ -40,3 +40,23 @@ def test_zx_stick_condition():
     result = zx_stick_condition(short, long, threshold=0.04, window=3)
     assert len(result) == 5
     assert result.name == "zx_stick_condition"
+
+
+def test_compute_zx_lines_long_line_is_four_ma_average():
+    # 200 个常量收盘价：四条均线都应等于收盘价
+    df = pl.DataFrame({"close": [10.0] * 200})
+    short_line, long_line = compute_zx_lines(df)
+    assert short_line[-1] == 10.0
+    assert long_line[-1] == 10.0
+
+
+def test_compute_zx_lines_long_line_uses_ma14_and_ma28():
+    # 线性递增：四线平均（含 ma14/ma28）< 只取长线两条的均值（修复前）
+    df = pl.DataFrame({"close": [float(i) for i in range(1, 201)]})
+    _, long_line = compute_zx_lines(df)
+    ma14 = sum(range(187, 201)) / 14
+    ma28 = sum(range(173, 201)) / 28
+    ma57 = sum(range(144, 201)) / 57
+    ma114 = sum(range(87, 201)) / 114
+    assert long_line[-1] is not None
+    assert abs(long_line[-1] - (ma14 + ma28 + ma57 + ma114) / 4.0) < 1e-6

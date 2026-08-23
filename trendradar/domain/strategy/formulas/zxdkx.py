@@ -10,10 +10,10 @@ def compute_zx_lines(
 ) -> tuple[pl.Series, pl.Series]:
     close = df["close"]
     ma1 = close.rolling_mean(m1)
-
+    ma2 = close.rolling_mean(m2)
     ma3 = close.rolling_mean(m3)
     ma4 = close.rolling_mean(m4)
-    long_line = (ma3 + ma3 + ma4 + ma4) / 4
+    long_line = (ma1 + ma2 + ma3 + ma4) / 4
 
     return ma1.alias("short_term_trend_line"), long_line.alias("long_term_bull_bear_line")
 
