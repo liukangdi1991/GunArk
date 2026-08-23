@@ -557,8 +557,8 @@ def sync_market(
                 "synced_codes": 0, "new_codes": 0, "failed_days": 0,
                 "failed_codes": 0, "retry_rounds": 0, "skipped_uptodate": True}
 
-    if plan.mode == "incremental":
-        # Daily path
+    if plan.mode == "incremental" and not request.get("codes"):
+        # Daily path（指定 codes 时强制 by_stock：按代码同步不受 mode 约束）
         from trendradar.infrastructure.tushare.rate_limit import TokenBucket
         bucket = TokenBucket()
         done = set(plan.done)
