@@ -126,3 +126,50 @@ def test_full_mode_retries_failed_codes(tmp_path, monkeypatch):
     assert result["failed_codes"] == 0  # count of remaining failures (int)
     assert result["retry_rounds"] == 1
     assert calls["n"] == 2
+
+
+def test_sync_market_codes_param_restricts_and_bypasses_uptodate(tmp_path, monkeypatch):
+    """codes 参数: 只同步指定代码，且不被 up-to-date 短路跳过。"""
+    import trendradar.infrastructure.tushare.syncer as syncer_mod
+    from datetime import date, datetime, timedelta, timezone
+    from unittest.mock import MagicMock
+
+    import pandas as pd
+    import polars as pl
+
+    bars = tmp_path / "bars"; cache = tmp_path / "cache"
+    bars.mkdir(parents=True); cache.mkdir(parents=True)
+
+    days = [date(2026, 7, 1) + timedelta(days=i) for i in range(3)]
+    pro = MagicMock()
+    pro.trade_cal.return_value = pd.DataFrame({
+        "cal_date": [d.strftime("%Y%m%d") for d in days],
+        "is_open": [1] * len(days),
+    })
+
+    captured = {"codes": None}
+
+    def fake_sync(pro, codes, start, end, bars_dir, done_path, retry_path,
+                  progress=None, cancel_check=None, bucket=None, max_workers=6):
+        captured["codes"] = list(codes)
+        return {"failed_codes": []}
+
+    monkeypatch.setattr(syncer_mod, "sync_by_stock", fake_sync)
+    import trendradar.infrastructure.tushare.stocklist as stocklist_mod
+    monkeypatch.setattr(
+        stocklist_mod, "sync_stock_list",
+        lambda bars_dir: pl.DataFrame({"code": ["000001", "920099", "600519"]}),
+    )
+
+    # 日期已标记 done（up-to-date），但指定 codes 时必须绕过短路去拉
+    import json as _json
+    (cache / "sync_done.json").write_text(
+        _json.dumps({"dates": [d.isoformat() for d in days]}))
+
+    result = syncer_mod.sync_market(
+        pro, bars, cache,
+        {"codes": ["920099"], "start_date": days[0].isoformat(), "end_date": days[-1].isoformat()},
+        now_utc=datetime(2026, 8, 21, 8, 0, tzinfo=timezone.utc),
+    )
+    assert result["skipped_uptodate"] is False
+    assert captured["codes"] == ["920099"]

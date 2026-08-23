@@ -551,7 +551,8 @@ def sync_market(
     if plan is None:
         plan = plan_sync(pro, bars_dir, cache_dir, request, now_utc=now_utc)
 
-    if plan.uptodate:
+    if plan.uptodate and not request.get("codes"):
+        # 指定 codes 时绕过 up-to-date 短路：新上市/缺失代码即使日期范围已覆盖也要拉
         return {"mode": "incremental", "missing_days": 0, "synced_days": 0,
                 "synced_codes": 0, "new_codes": 0, "failed_days": 0,
                 "failed_codes": 0, "retry_rounds": 0, "skipped_uptodate": True}
@@ -599,7 +600,11 @@ def sync_market(
     # By-stock path (full / large gap / retry subset)
     from trendradar.infrastructure.tushare.stocklist import sync_stock_list
     meta = sync_stock_list(bars_dir)
-    codes = meta["code"].to_list() if not meta.is_empty() else []
+    req_codes = request.get("codes")
+    if req_codes:
+        codes = list(req_codes)   # 指定 codes：只同步这些
+    else:
+        codes = meta["code"].to_list() if not meta.is_empty() else []
     result = sync_by_stock(
         pro, codes, plan.start, plan.end, bars_dir,
         done_path, retry_path, progress, cancel_check,
