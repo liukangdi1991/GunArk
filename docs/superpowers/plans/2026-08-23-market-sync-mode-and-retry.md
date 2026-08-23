@@ -114,10 +114,11 @@ def _run_plan(tmp_path, trade_days, request):
 
 
 def test_plan_large_gap_is_full(tmp_path):
-    days = [date(2026, 8, 3), date(2026, 8, 4), date(2026, 8, 5)]
-    p = _run_plan(tmp_path, days, {"start_date": "2026-08-03", "end_date": "2026-08-05"})
+    # 25 missing trade days (>20) → full mode
+    days = [date(2026, 7, 1) + timedelta(days=i) for i in range(25)]
+    p = _run_plan(tmp_path, days, {"start_date": days[0].isoformat(), "end_date": days[-1].isoformat()})
     assert p.mode == "full"
-    assert p.missing_days == 3
+    assert p.missing_days == 25
     assert p.uptodate is False
 
 

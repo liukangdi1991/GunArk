@@ -1,11 +1,10 @@
 """Tushare daily kline syncer with rate limiting, retry, and atomic write."""
 
-from __future__ import annotations
-
 import logging
 import os
 import tempfile
 import time
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
@@ -19,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 IP_BAN_ERROR_MSG = "每分钟最多访问该接口"
 
+
 def decide_mode(missing_days: int, force: bool, retry_codes: list) -> str:
     """full (by-stock backfill/retry) vs incremental (per-day) mode.
 
@@ -30,6 +30,115 @@ def decide_mode(missing_days: int, force: bool, retry_codes: list) -> str:
     if force or missing_days > 20:
         return "full"
     return "incremental"
+
+
+@dataclass(frozen=True)
+class SyncPlan:
+    """Sync decision + execution context, computed once by plan_sync."""
+
+    mode: str
+    missing_days: int
+    missing_dates: list  # list[date]
+    start: date
+    end: date
+    latest: date
+    all_trade: set  # set[date]
+    done: set  # set[date]
+    uptodate: bool
+    force: bool
+    retry_codes: list  # list[str]
+
+
+def plan_sync(pro, bars_dir: Path, cache_dir: Path, request: dict,
+              now_utc=None) -> SyncPlan:
+    """Compute the sync plan (mode, gap, context) before executing.
+
+    Single decision source: sync_market consumes the returned SyncPlan and
+    does not recompute mode/missing. Loading mirrors the previous sync_market
+    head: calendar (fetch → cache → fail), done ledger (+ legacy first-run
+    cross-check), req_start derivation, up-to-date short-circuit.
+    """
+    from trendradar.infrastructure.tushare.calendar import (
+        fetch_trade_calendar, load_trade_calendar, save_trade_calendar,
+    )
+    from trendradar.infrastructure.tushare.markers import (
+        load_sync_done, save_sync_done, load_retry_codes,
+    )
+
+    now = now_utc or datetime.now(timezone.utc)
+    today = now.astimezone(_SHANGHAI).date()
+    force = bool(request.get("force"))
+
+    cal_path = cache_dir / "trade_calendar.parquet"
+    done_path = cache_dir / "sync_done.json"
+    retry_path = cache_dir / "sync_retry_codes.json"
+    bars_dir = Path(bars_dir)
+    bars_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # Authoritative calendar: fetch now, fall back to cache, else fail.
+    req_start = date.fromisoformat(request["start_date"]) if request.get("start_date") else None
+    req_end = date.fromisoformat(request["end_date"]) if request.get("end_date") else None
+    if req_end is None:
+        req_end = today
+    try:
+        all_trade = set(fetch_trade_calendar(pro, req_start or date(1990, 1, 1), req_end))
+        save_trade_calendar(cal_path, sorted(all_trade))
+    except Exception:
+        all_trade = set(load_trade_calendar(cal_path) or [])
+        if not all_trade:
+            raise RuntimeError("trade calendar unavailable (fetch failed and no cache)")
+
+    latest = latest_tradeable_day(all_trade, now)
+    req_end = min(req_end, latest)  # clamp future end
+
+    done = load_sync_done(done_path)
+    if not done and bars_dir.exists() and any(bars_dir.glob("*.parquet")):
+        # Legacy first run: strict cross-check — mark only dates present in
+        # EVERY bar file (intersection).
+        from trendradar.domain.market.data_store import LocalParquetMarketStore
+        store = LocalParquetMarketStore(bars_dir)
+        cal = set(store.get_calendar())
+        files = sorted(bars_dir.glob("*.parquet"))
+        common = cal
+        for p in files:
+            try:
+                common &= set(pl.read_parquet(p, columns=["date"])["date"].to_list())
+            except Exception:
+                pass
+        done = common & all_trade
+        save_sync_done(done_path, done)
+
+    if req_start is None:
+        if bars_dir.exists() and any(bars_dir.glob("*.parquet")):
+            local_min = min(set(load_sync_done(done_path)) or [req_end]) if done else None
+            if local_min is None:
+                store = LocalParquetMarketStore(bars_dir)
+                dates = store.get_calendar()
+                local_min = dates[0] if dates else req_end
+            req_start = local_min
+        else:
+            req_start = date(1990, 1, 1)
+
+    retry_codes = load_retry_codes(retry_path)
+    uptodate = (not force) and is_up_to_date(
+        local_min=req_start, local_max=latest,
+        req_start=None if request.get("start_date") is None else req_start,
+        latest=latest, done=done, trade_days=all_trade,
+    )
+    if uptodate:
+        missing_dates = []
+        missing_days = 0
+    else:
+        missing_dates = missing_trade_days(all_trade, done, req_start, req_end)
+        missing_days = len(missing_dates)
+
+    mode = decide_mode(missing_days, force, retry_codes)
+    return SyncPlan(
+        mode=mode, missing_days=missing_days, missing_dates=missing_dates,
+        start=req_start, end=req_end, latest=latest, all_trade=all_trade,
+        done=done, uptodate=uptodate, force=force, retry_codes=retry_codes,
+    )
 
 
 def sync_kline(
