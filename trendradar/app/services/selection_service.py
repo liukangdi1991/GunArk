@@ -19,6 +19,23 @@ from trendradar.domain.strategy.protocol import (
 )
 from trendradar.domain.strategy.registry import get as get_defn, list_all
 from trendradar.domain.strategy.resolver import resolve as resolve_strategies
+from trendradar.infrastructure.tushare.market_cap import daily_basic_circ_mv
+
+
+def _needs_market_cap(resolved) -> bool:
+    """Any resolved strategy requires per-day float market cap in context."""
+    return any(getattr(d.selector_class, "REQUIRES_MARKET_CAP", False) for d in resolved)
+
+
+def _build_market_cap_map(pro, trading_dates) -> dict:
+    """Per-date {code: circ_mv} map; fetch failures degrade to None (never raise)."""
+    result: dict = {}
+    for d in trading_dates:
+        try:
+            result[d] = daily_basic_circ_mv(pro, d)
+        except Exception as e:
+            result[d] = None
+    return result
 
 
 def _get_strategy_resolve_input(store) -> tuple[list[dict], list[dict], dict[str, dict]]:
@@ -98,6 +115,12 @@ def _run_selection(
         return SignalSet(execution_key=ctx.job_id)
 
     ctx.log(f"Processing {len(trading_dates)} trading dates from {trading_dates[0]} to {trading_dates[-1]}")
+    need_mcap = _needs_market_cap(resolved)
+    mc_map: dict = {}
+    if need_mcap:
+        from trendradar.infrastructure.tushare.client import get_pro
+        ctx.log("策略需要流通市值，按交易日拉取 daily_basic")
+        mc_map = _build_market_cap_map(get_pro(), trading_dates)
 
     max_window = 120
     extended_start = trading_dates[0] - timedelta(days=max_window * 2)
@@ -161,6 +184,7 @@ def _run_selection(
             trade_date=trade_date,
             market_data=market_data,
             candidate_codes=candidate_codes,
+            market_cap=mc_map.get(trade_date),
         )
 
         for defn in resolved:
