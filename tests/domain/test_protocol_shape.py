@@ -28,3 +28,10 @@ def test_selection_result_fields_unchanged():
 def test_protocol_has_warmup_and_select_day():
     assert callable(getattr(SelectionStrategy, "warmup", None))
     assert callable(getattr(SelectionStrategy, "select_day", None))
+
+
+def test_selection_context_market_cap_field_defaults_none():
+    import dataclasses
+    fields = {f.name: f.default for f in dataclasses.fields(SelectionContext)}
+    assert "market_cap" in fields
+    assert fields["market_cap"] is None

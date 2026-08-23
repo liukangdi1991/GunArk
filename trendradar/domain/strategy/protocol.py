@@ -31,6 +31,7 @@ class SelectionContext:
     trade_date: date
     candidate_codes: list[str] | None = None   # None = full market (runner always passes a list today)
     market_data: pl.DataFrame = field(default_factory=pl.DataFrame)
+    market_cap: dict[str, float] | None = None   # 当日全市场 code→流通市值(万元)；需要市值的策略读取
 
 
 @dataclass(frozen=True)
