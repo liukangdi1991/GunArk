@@ -41,6 +41,7 @@ def submit_market_sync(
 
     def worker(ctx: JobContext) -> None:
         ctx.log("Starting market data sync")
+        pro = get_pro()
         # Unconditional stock_meta refresh at start (new-code visibility even
         # if this sync fails mid-way).
         from trendradar.infrastructure.tushare.stocklist import sync_stock_list
@@ -51,25 +52,50 @@ def submit_market_sync(
             ctx.fail(f"stock list refresh failed: {e}")
             return
 
+        from trendradar.infrastructure.tushare.syncer import plan_sync
+        plan = plan_sync(pro, bars_dir, cache_dir, request)
+
+        def _complete(result: dict) -> None:
+            _register_market_sync_metadata(ctx.job_id, request, result)
+            ctx.log(
+                f"Sync complete: mode={result.get('mode')}, "
+                f"missing_days={result.get('missing_days')}, "
+                f"synced_days={result.get('synced_days')}, "
+                f"synced_codes={result.get('synced_codes')}, "
+                f"failed_codes={result.get('failed_codes')}, "
+                f"retry_rounds={result.get('retry_rounds')}"
+            )
+            ctx.succeed(result)
+
+        if plan.uptodate:
+            ctx.log("行情已是最新，跳过同步")
+            _complete({"mode": "incremental", "missing_days": 0, "synced_days": 0,
+                       "synced_codes": 0, "new_codes": 0, "failed_days": 0,
+                       "failed_codes": 0, "retry_rounds": 0, "skipped_uptodate": True})
+            return
+        if plan.mode == "full":
+            if plan.retry_codes:
+                ctx.log(f"存在 {len(plan.retry_codes)} 个失败代码待补，启用全量同步（按股票补拉）")
+            elif plan.force:
+                ctx.log("已请求强制全量同步（按股票拉取全历史）")
+            else:
+                ctx.log(f"数据缺口 {plan.missing_days} 天 > 20 天，启用全量同步（按股票拉取全历史）")
+        else:
+            ctx.log(f"数据缺口 {plan.missing_days} 天 ≤ 20 天，启用增量同步（按日拉取）")
+
         result = syncer_module.sync_market(
-            get_pro(),
+            pro,
             bars_dir,
             cache_dir,
             request,
+            plan=plan,
             progress=lambda cur, total, msg: ctx.update_progress(cur, total, msg),
             cancel_check=lambda: ctx.check_cancelled(),
         )
         if ctx.check_cancelled():
             ctx.fail("Cancelled by user")
             return
-        _register_market_sync_metadata(ctx.job_id, request, result)
-        ctx.log(
-            f"Sync complete: mode={result.get('mode')}, "
-            f"missing_days={result.get('missing_days')}, "
-            f"synced_days={result.get('synced_days')}, "
-            f"failed_codes={result.get('failed_codes')}"
-        )
-        ctx.succeed(result)
+        _complete(result)
 
     return executor.submit("market_sync", worker, request)
 

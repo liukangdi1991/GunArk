@@ -177,10 +177,22 @@ def test_market_sync_job_registers_execution_and_sync_run(tmp_path, monkeypatch)
 
     from trendradar.app.services import market_service
 
+    from datetime import date
+
+    from trendradar.infrastructure.tushare.syncer import SyncPlan
+
     def fake_sync_stock_list(bars_dir):
         return pl.DataFrame({"code": ["000001"], "name": ["平安银行"]})
 
-    def fake_sync_market(pro, bars_dir, cache_dir, request, now_utc=None, progress=None, cancel_check=None):
+    def fake_plan_sync(pro, bars_dir, cache_dir, request, now_utc=None):
+        return SyncPlan(
+            mode="incremental", missing_days=0, missing_dates=[],
+            start=date(2026, 8, 1), end=date(2026, 8, 20), latest=date(2026, 8, 20),
+            all_trade=set(), done=set(), uptodate=False, force=False, retry_codes=[],
+        )
+
+    def fake_sync_market(pro, bars_dir, cache_dir, request, now_utc=None, progress=None,
+                         cancel_check=None, plan=None):
         bars_dir.mkdir(parents=True, exist_ok=True)
         (bars_dir / "000001.parquet").write_bytes(b"fake")
         if progress:
@@ -190,7 +202,8 @@ def test_market_sync_job_registers_execution_and_sync_run(tmp_path, monkeypatch)
                 "failed_codes": 0, "retry_rounds": 0, "skipped_uptodate": False}
 
     # The worker now calls stocklist.sync_stock_list (call-time import) and
-    # syncer.sync_market (module attribute reference) instead of sync_kline.
+    # syncer.sync_market / plan_sync (module attribute references).
+    monkeypatch.setattr(market_service.syncer_module, "plan_sync", fake_plan_sync)
     monkeypatch.setattr(market_service.syncer_module, "sync_market", fake_sync_market)
     monkeypatch.setattr(
         "trendradar.infrastructure.tushare.stocklist.sync_stock_list",
