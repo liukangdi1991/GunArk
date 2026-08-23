@@ -37,6 +37,14 @@ def _build_market_cap_map(pro, trading_dates) -> dict:
             result[d] = None
     return result
 
+def _filter_warmup(warmup: WarmupResult | None, candidate_codes: list) -> WarmupResult | None:
+    """Keep only codes that traded on the selection date (suspended stocks have
+    stale last bars and must not be judged)."""
+    if warmup is None:
+        return None
+    grouped = {c: warmup.grouped[c] for c in candidate_codes if c in warmup.grouped}
+    return WarmupResult(grouped=grouped)
+
 
 def _get_strategy_resolve_input(store) -> tuple[list[dict], list[dict], dict[str, dict]]:
     """Load strategy groups, members, and settings from DB."""
@@ -191,11 +199,14 @@ def _run_selection(
             if ctx.check_cancelled():
                 ctx.fail("Cancelled by user")
                 return SignalSet(execution_key=ctx.job_id)
-            if warmups.get(defn.strategy_id) is None:
+            warmup = warmups.get(defn.strategy_id)
+            if warmup is None:
                 continue
             try:
                 selector = selectors[defn.strategy_id]
-                result = selector.select_day(context, warmups[defn.strategy_id])
+                # 只判当日有行情的股票：停牌股（最后 bar 早于选股日）不参与判定
+                day_warmup = _filter_warmup(warmup, candidate_codes)
+                result = selector.select_day(context, day_warmup)
                 if result.selected_codes:
                     all_signals.append(StrategySignal(
                         strategy_id=result.strategy_id,
