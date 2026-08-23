@@ -116,12 +116,69 @@ def test_submit_market_sync_short_circuits_when_uptodate(tmp_path, monkeypatch):
 
     job_id = market_service.submit_market_sync(
         ex,
-        {"codes": ["000001"], "start_date": "2026-08-01", "end_date": "2026-08-20"},
+        {"start_date": "2026-08-01", "end_date": "2026-08-20"},
         bars_dir=tmp_path / "storage" / "market" / "bars",
     )
     try:
         ex._jobs[job_id].future.result(timeout=10)
         assert ex.get_state(job_id)["status"] == "success"
-        assert calls["sync_market"] == 0  # short-circuited before sync
+        assert calls["sync_market"] == 0  # 无 codes 且 up-to-date → 短路
+    finally:
+        ex.shutdown(wait=True)
+
+
+def test_submit_market_sync_with_codes_bypasses_uptodate(tmp_path, monkeypatch):
+    """指定 codes 时即使 up-to-date 也必须执行同步。"""
+    monkeypatch.setenv("TREND_RADAR_RUNTIME_ROOT", str(tmp_path))
+    sc = StorageConnection(tmp_path / "storage")
+    sc.storage_root.mkdir(parents=True, exist_ok=True)
+    init_schema(sc.connect())
+    ex = JobExecutor(JobStore(sc.db_path))
+
+    from datetime import date
+
+    import polars as pl
+
+    from trendradar.infrastructure.tushare.syncer import SyncPlan
+
+    def fake_sync_stock_list(bars_dir):
+        return pl.DataFrame({"code": ["920099"], "name": ["瑞华技术"]})
+
+    def fake_plan_sync(pro, bars_dir, cache_dir, request, now_utc=None):
+        return SyncPlan(
+            mode="incremental", missing_days=0, missing_dates=[],
+            start=date(2026, 8, 1), end=date(2026, 8, 20), latest=date(2026, 8, 20),
+            all_trade=set(), done=set(), uptodate=True, force=False, retry_codes=[],
+        )
+
+    calls = {"sync_market": 0, "request_codes": None}
+
+    def fake_sync_market(pro, bars_dir, cache_dir, request, now_utc=None, progress=None,
+                         cancel_check=None, plan=None):
+        calls["sync_market"] += 1
+        calls["request_codes"] = request.get("codes")
+        return {"mode": "incremental", "missing_days": 0, "synced_days": 0,
+                "synced_codes": 0, "new_codes": 0, "failed_days": 0,
+                "failed_codes": 0, "retry_rounds": 0, "skipped_uptodate": False}
+
+    from trendradar.app.services import market_service
+    monkeypatch.setattr(market_service.syncer_module, "plan_sync", fake_plan_sync)
+    monkeypatch.setattr(market_service.syncer_module, "sync_market", fake_sync_market)
+    monkeypatch.setattr(
+        "trendradar.infrastructure.tushare.stocklist.sync_stock_list",
+        fake_sync_stock_list,
+    )
+    monkeypatch.setattr(market_service, "get_pro", lambda: object())
+
+    job_id = market_service.submit_market_sync(
+        ex,
+        {"codes": ["920099"], "start_date": "2026-08-01", "end_date": "2026-08-20"},
+        bars_dir=tmp_path / "storage" / "market" / "bars",
+    )
+    try:
+        ex._jobs[job_id].future.result(timeout=10)
+        assert ex.get_state(job_id)["status"] == "success"
+        assert calls["sync_market"] == 1  # 未短路
+        assert calls["request_codes"] == ["920099"]
     finally:
         ex.shutdown(wait=True)

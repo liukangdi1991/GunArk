@@ -67,7 +67,8 @@ def submit_market_sync(
             )
             ctx.succeed(result)
 
-        if plan.uptodate:
+        if plan.uptodate and not request.get("codes"):
+            # 指定 codes 时不短路：新上市/缺失代码即使日期范围已覆盖也要拉
             ctx.log("行情已是最新，跳过同步")
             _complete({"mode": "incremental", "missing_days": 0, "synced_days": 0,
                        "synced_codes": 0, "new_codes": 0, "failed_days": 0,
