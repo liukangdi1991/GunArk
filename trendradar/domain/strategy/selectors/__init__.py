@@ -10,6 +10,7 @@ from trendradar.domain.strategy.selectors.perfect_b1 import PerfectB1Selector
 from trendradar.domain.strategy.selectors.big_bullish_volume import BigBullishVolumeSelector
 from trendradar.domain.strategy.selectors.volume_spike_balance import VolumeSpikeBalanceSelector
 from trendradar.domain.strategy.selectors.single_needle_down_20 import SingleNeedleDown20Selector
+from trendradar.domain.strategy.selectors.brick_chart import BrickChartSelector
 
 
 def register_all():
@@ -89,4 +90,11 @@ def register_all():
         selector_class=SingleNeedleDown20Selector,
         default_params={"n1": 3, "n2": 21, "short_max": 20,
                         "long_min": 80, "circ_mv_min_yi": 50},
+    ))
+    register(StrategyDefinition(
+        strategy_id="brick_chart", name="砖型图",
+        description="MT 振荡器转升 + 前 3 日绿柱 + 收盘站上四线均值",
+        selector_class=BrickChartSelector,
+        default_params={"n": 4, "m": 6, "t": 4,
+                        "m1": 14, "m2": 28, "m3": 57, "m4": 114},
     ))
