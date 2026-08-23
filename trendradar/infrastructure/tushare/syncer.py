@@ -19,6 +19,18 @@ logger = logging.getLogger(__name__)
 
 IP_BAN_ERROR_MSG = "每分钟最多访问该接口"
 
+def decide_mode(missing_days: int, force: bool, retry_codes: list) -> str:
+    """full (by-stock backfill/retry) vs incremental (per-day) mode.
+
+    retry_codes non-empty always forces full so leftover failures get
+    re-synced; force or a calendar gap > 20 days also selects full.
+    """
+    if retry_codes:
+        return "full"
+    if force or missing_days > 20:
+        return "full"
+    return "incremental"
+
 
 def sync_kline(
     codes: list[str],
