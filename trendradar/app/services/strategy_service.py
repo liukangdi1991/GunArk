@@ -23,121 +23,120 @@ def list_strategy_groups(store) -> list[dict]:
     """List all strategy groups with members.
 
     Args:
-        store: StorageConnection instance (provides .connect() -> sqlite3.Connection)
+        store: StorageConnection instance (provides .connection() context manager)
     """
-    conn = store.connect()
-    groups = conn.execute(
-        "SELECT id, name, description, enabled, sort_order, created_at, updated_at "
-        "FROM strategy_groups ORDER BY sort_order ASC"
-    ).fetchall()
-
-    result = []
-    for g in groups:
-        d = _dict_from_row(g)
-        members = conn.execute(
-            "SELECT strategy_id, sort_order FROM strategy_group_members "
-            "WHERE group_id = ? ORDER BY sort_order ASC",
-            (g["id"],),
+    with store.connection() as conn:
+        groups = conn.execute(
+            "SELECT id, name, description, enabled, sort_order, created_at, updated_at "
+            "FROM strategy_groups ORDER BY sort_order ASC"
         ).fetchall()
-        d["members"] = [_dict_from_row(m) for m in members]
-        result.append(d)
-    return result
+
+        result = []
+        for g in groups:
+            d = _dict_from_row(g)
+            members = conn.execute(
+                "SELECT strategy_id, sort_order FROM strategy_group_members "
+                "WHERE group_id = ? ORDER BY sort_order ASC",
+                (g["id"],),
+            ).fetchall()
+            d["members"] = [_dict_from_row(m) for m in members]
+            result.append(d)
+        return result
 
 
 def create_strategy_group(store, name: str, description: str = "") -> dict:
     import re
-    conn = store.connect()
-    base = re.sub(r"[^a-zA-Z0-9_\u4e00-\u9fff]", "_", name.lower().replace(" ", "_"))
-    group_id = base
-    counter = 1
-    while conn.execute("SELECT 1 FROM strategy_groups WHERE id = ?", (group_id,)).fetchone():
-        group_id = f"{base}_{counter}"
-        counter += 1
-    now = _now_iso()
-    conn.execute(
-        "INSERT INTO strategy_groups (id, name, description, enabled, sort_order, created_at, updated_at) "
-        "VALUES (?, ?, ?, 1, 0, ?, ?)",
-        (group_id, name, description, now, now),
-    )
-    conn.commit()
-    return {
-        "id": group_id,
-        "name": name,
-        "description": description,
-        "enabled": True,
-        "sort_order": 0,
-        "created_at": now,
-        "updated_at": now,
-        "members": [],
-    }
+    with store.connection() as conn:
+        base = re.sub(r"[^a-zA-Z0-9_\u4e00-\u9fff]", "_", name.lower().replace(" ", "_"))
+        group_id = base
+        counter = 1
+        while conn.execute("SELECT 1 FROM strategy_groups WHERE id = ?", (group_id,)).fetchone():
+            group_id = f"{base}_{counter}"
+            counter += 1
+        now = _now_iso()
+        conn.execute(
+            "INSERT INTO strategy_groups (id, name, description, enabled, sort_order, created_at, updated_at) "
+            "VALUES (?, ?, ?, 1, 0, ?, ?)",
+            (group_id, name, description, now, now),
+        )
+        conn.commit()
+        return {
+            "id": group_id,
+            "name": name,
+            "description": description,
+            "enabled": True,
+            "sort_order": 0,
+            "created_at": now,
+            "updated_at": now,
+            "members": [],
+        }
 
 
 def update_strategy_group(store, group_id: str, updates: dict) -> dict:
-    conn = store.connect()
+    with store.connection() as conn:
+        existing = conn.execute(
+            "SELECT * FROM strategy_groups WHERE id = ?", (group_id,)
+        ).fetchone()
+        if existing is None:
+            raise ValueError(f"Strategy group '{group_id}' not found")
 
-    existing = conn.execute(
-        "SELECT * FROM strategy_groups WHERE id = ?", (group_id,)
-    ).fetchone()
-    if existing is None:
-        raise ValueError(f"Strategy group '{group_id}' not found")
+        now = _now_iso()
+        fields = []
+        params = []
 
-    now = _now_iso()
-    fields = []
-    params = []
+        if "name" in updates:
+            fields.append("name = ?")
+            params.append(updates["name"])
+        if "description" in updates:
+            fields.append("description = ?")
+            params.append(updates["description"])
+        if "enabled" in updates:
+            fields.append("enabled = ?")
+            params.append(1 if updates["enabled"] else 0)
 
-    if "name" in updates:
-        fields.append("name = ?")
-        params.append(updates["name"])
-    if "description" in updates:
-        fields.append("description = ?")
-        params.append(updates["description"])
-    if "enabled" in updates:
-        fields.append("enabled = ?")
-        params.append(1 if updates["enabled"] else 0)
-
-    if fields:
-        fields.append("updated_at = ?")
-        params.append(now)
-        params.append(group_id)
-        conn.execute(
-            f"UPDATE strategy_groups SET {', '.join(fields)} WHERE id = ?",
-            params,
-        )
-
-    if "members" in updates:
-        conn.execute(
-            "DELETE FROM strategy_group_members WHERE group_id = ?",
-            (group_id,),
-        )
-        for i, member in enumerate(updates["members"]):
-            sid = member if isinstance(member, str) else member.get("strategy_id", "")
-            sort_order = i if isinstance(member, str) else member.get("sort_order", i)
+        if fields:
+            fields.append("updated_at = ?")
+            params.append(now)
+            params.append(group_id)
             conn.execute(
-                "INSERT INTO strategy_group_members (group_id, strategy_id, sort_order) VALUES (?, ?, ?)",
-                (group_id, sid, sort_order),
+                f"UPDATE strategy_groups SET {', '.join(fields)} WHERE id = ?",
+                params,
             )
 
-    conn.commit()
+        if "members" in updates:
+            conn.execute(
+                "DELETE FROM strategy_group_members WHERE group_id = ?",
+                (group_id,),
+            )
+            for i, member in enumerate(updates["members"]):
+                sid = member if isinstance(member, str) else member.get("strategy_id", "")
+                sort_order = i if isinstance(member, str) else member.get("sort_order", i)
+                conn.execute(
+                    "INSERT INTO strategy_group_members (group_id, strategy_id, sort_order) VALUES (?, ?, ?)",
+                    (group_id, sid, sort_order),
+                )
 
-    return _get_group_dict(conn, group_id)
+        conn.commit()
+
+        return _get_group_dict(conn, group_id)
 
 
 def delete_strategy_group(store, group_id: str) -> dict:
     if group_id == "default":
         raise ValueError("Cannot delete the default strategy group")
-    conn = store.connect()
-    existing = conn.execute(
-        "SELECT * FROM strategy_groups WHERE id = ?", (group_id,)
-    ).fetchone()
-    if existing is None:
-        raise ValueError(f"Strategy group '{group_id}' not found")
+    with store.connection() as conn:
+        existing = conn.execute(
+            "SELECT * FROM strategy_groups WHERE id = ?", (group_id,)
+        ).fetchone()
+        if existing is None:
+            raise ValueError(f"Strategy group '{group_id}' not found")
 
-    result = _dict_from_row(existing)
-    _migrate_orphan_strategies(conn, group_id)
-    conn.execute("DELETE FROM strategy_group_members WHERE group_id = ?", (group_id,))
-    conn.execute("DELETE FROM strategy_groups WHERE id = ?", (group_id,))
-    conn.commit()
-    return result
+        result = _dict_from_row(existing)
+        _migrate_orphan_strategies(conn, group_id)
+        conn.execute("DELETE FROM strategy_group_members WHERE group_id = ?", (group_id,))
+        conn.execute("DELETE FROM strategy_groups WHERE id = ?", (group_id,))
+        conn.commit()
+        return result
 
 
 def _migrate_orphan_strategies(conn, group_id: str) -> None:
@@ -216,10 +215,10 @@ def ensure_default_group(store) -> None:
 
 def get_strategy_settings(store) -> list[dict]:
     """Get all strategy settings from the database."""
-    conn = store.connect()
-    rows = conn.execute(
-        "SELECT strategy_id, enabled, params_json, updated_at FROM strategy_settings"
-    ).fetchall()
+    with store.connection() as conn:
+        rows = conn.execute(
+            "SELECT strategy_id, enabled, params_json, updated_at FROM strategy_settings"
+        ).fetchall()
 
     defs = list_all()
     def_by_id = {d.strategy_id: d for d in defs}
@@ -254,42 +253,42 @@ def get_strategy_settings(store) -> list[dict]:
 
 
 def update_strategy_settings(store, strategy_id: str, updates: dict) -> dict:
-    conn = store.connect()
     now = _now_iso()
 
     defn = get(strategy_id)
     if defn is None:
         raise ValueError(f"Strategy '{strategy_id}' not found in registry")
 
-    existing = conn.execute(
-        "SELECT * FROM strategy_settings WHERE strategy_id = ?", (strategy_id,)
-    ).fetchone()
+    with store.connection() as conn:
+        existing = conn.execute(
+            "SELECT * FROM strategy_settings WHERE strategy_id = ?", (strategy_id,)
+        ).fetchone()
 
-    enabled = updates.get("enabled", True)
-    params = updates.get("params", {})
-    if existing is None:
-        if not isinstance(enabled, bool):
-            enabled = True
-        params_json = json.dumps(params, ensure_ascii=False)
-        conn.execute(
-            "INSERT INTO strategy_settings (strategy_id, enabled, params_json, updated_at) VALUES (?, ?, ?, ?)",
-            (strategy_id, 1 if enabled else 0, params_json, now),
-        )
-    else:
-        if "enabled" in updates:
-            enabled_val = 1 if updates["enabled"] else 0
-        else:
-            enabled_val = existing["enabled"]
-        if "params" in updates:
+        enabled = updates.get("enabled", True)
+        params = updates.get("params", {})
+        if existing is None:
+            if not isinstance(enabled, bool):
+                enabled = True
             params_json = json.dumps(params, ensure_ascii=False)
+            conn.execute(
+                "INSERT INTO strategy_settings (strategy_id, enabled, params_json, updated_at) VALUES (?, ?, ?, ?)",
+                (strategy_id, 1 if enabled else 0, params_json, now),
+            )
         else:
-            params_json = existing["params_json"]
-        conn.execute(
-            "UPDATE strategy_settings SET enabled = ?, params_json = ?, updated_at = ? WHERE strategy_id = ?",
-            (enabled_val, params_json, now, strategy_id),
-        )
+            if "enabled" in updates:
+                enabled_val = 1 if updates["enabled"] else 0
+            else:
+                enabled_val = existing["enabled"]
+            if "params" in updates:
+                params_json = json.dumps(params, ensure_ascii=False)
+            else:
+                params_json = existing["params_json"]
+            conn.execute(
+                "UPDATE strategy_settings SET enabled = ?, params_json = ?, updated_at = ? WHERE strategy_id = ?",
+                (enabled_val, params_json, now, strategy_id),
+            )
 
-    conn.commit()
+        conn.commit()
 
     return {
         "strategy_id": strategy_id,
