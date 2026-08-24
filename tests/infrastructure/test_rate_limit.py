@@ -12,9 +12,9 @@ def test_acquire_blocks_until_refill():
     bucket = TokenBucket(rate_per_min=60, burst=2)  # 1 token/sec
     assert bucket.acquire() is True
     assert bucket.acquire() is True
-    t0 = time.time()
+    t0 = time.monotonic()  # 墙钟可能回跳（WSL2 时钟跳变）→ 用单调钟
     assert bucket.acquire(timeout=2.0) is True  # waits ~1s for refill
-    assert 0.8 <= time.time() - t0 < 2.0
+    assert 0.8 <= time.monotonic() - t0 < 2.0
 
 
 def test_acquire_returns_false_on_cancel():
