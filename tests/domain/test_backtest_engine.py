@@ -387,3 +387,62 @@ class TestBacktestEngine:
         assert len(result.trades) <= 1
         if result.trades:
             assert result.trades[0].total_cost <= 50000
+
+
+class TestUltraShort:
+    """超短线：信号日 T 收盘买入，T+1 收盘卖出（entry_on_signal_day + entry_at_close + hold=1）。"""
+
+    def _config(self):
+        return _make_config(execution={
+            "entry_on_signal_day": True,
+            "entry_at_close": True,
+            "fixed_hold_n_days": 1,
+        })
+
+    def _rows(self):
+        return {
+            "000001": [
+                {"date": date(2026, 7, 1), "open": 9.5, "close": 9.8, "high": 9.9, "low": 9.4},
+                {"date": date(2026, 7, 2), "open": 9.9, "close": 10.0, "high": 10.1, "low": 9.8},
+                {"date": date(2026, 7, 3), "open": 10.2, "close": 11.0, "high": 11.2, "low": 10.1},
+            ],
+        }
+
+    def test_buys_signal_day_close_sells_next_close(self):
+        engine = BacktestEngine(self._config())
+        store = FakeMarketStore(self._rows())
+        signal_set = _make_signal_set("t", "T", {date(2026, 7, 2): ["000001"]})
+        result = engine.run(signal_set, store)
+        assert len(result.trades) == 1
+        t = result.trades[0]
+        assert t.buy_date == date(2026, 7, 2)       # T 日买入（不是 T+1）
+        assert abs(t.buy_price - 10.0 * 1.0002) < 1e-6   # T 收盘价 + 2bp 买入滑点
+        assert t.sell_date == date(2026, 7, 3)      # T+1 卖出
+        assert abs(t.sell_price - 11.0 * 0.9998) < 1e-6  # T+1 收盘价 - 2bp 卖出滑点
+
+    def test_skips_open_limit_up(self):
+        rows = self._rows()
+        # T 日开盘涨停 10.78（前收 9.8 的 +10%）→ 放弃
+        rows["000001"][1] = {"date": date(2026, 7, 2), "open": 10.78, "close": 10.0,
+                             "high": 10.78, "low": 9.9}
+        engine = BacktestEngine(self._config())
+        store = FakeMarketStore(rows)
+        signal_set = _make_signal_set("t", "T", {date(2026, 7, 2): ["000001"]})
+        result = engine.run(signal_set, store)
+        assert result.trades == []
+        assert any(s.stage == "buy" for s in result.skips)
+
+    def test_postpones_limit_down_sell(self):
+        rows = self._rows()
+        # T+1 收盘跌停 9.0（前收 10.0 的 -10%）→ 顺延到 T+2
+        rows["000001"][2] = {"date": date(2026, 7, 3), "open": 9.0, "close": 9.0,
+                             "high": 9.05, "low": 9.0}
+        rows["000001"].append({"date": date(2026, 7, 6), "open": 9.2, "close": 9.5,
+                               "high": 9.6, "low": 9.1})
+        engine = BacktestEngine(self._config())
+        store = FakeMarketStore(rows)
+        signal_set = _make_signal_set("t", "T", {date(2026, 7, 2): ["000001"]})
+        result = engine.run(signal_set, store)
+        assert len(result.trades) == 1
+        assert result.trades[0].sell_date == date(2026, 7, 6)
+        assert result.trades[0].sell_postpone_days == 1

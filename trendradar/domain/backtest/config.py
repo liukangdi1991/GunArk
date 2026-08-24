@@ -23,6 +23,8 @@ class ExecutionConfig:
     skip_if_suspended: bool = True
     force_sell_on_two_day_close_below_long_term_bull_bear_line: bool = False
     close_below_recent_low_stop_window: Optional[int] = None
+    entry_on_signal_day: bool = False   # 信号日当日入场（默认 T+1 入场）——超短线
+    entry_at_close: bool = False        # 入场价用收盘价（默认开盘价）——超短线
 
 
 @dataclass(frozen=True)

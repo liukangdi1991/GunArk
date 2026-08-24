@@ -83,12 +83,14 @@ class BacktestEngine:
     ) -> dict[date, list[dict]]:
         """Map signals to buy dates using trading-day index arithmetic.
 
-        V1 rule: signal at T, buy at T+1 open, target sell at T+N+1 close,
-        where all indices are trading-day indices. Signals whose buy or target
-        date falls beyond the calendar are skipped.
+        V1 rule: signal at T, buy at T+1 open (or T close when
+        entry_on_signal_day), target sell at buy+N close. All indices are
+        trading-day indices. Signals whose buy or target date falls beyond the
+        calendar are skipped.
         """
         cal_index = {d: i for i, d in enumerate(calendar)}
         hold = self.config.execution.fixed_hold_n_days
+        entry_offset = 0 if self.config.execution.entry_on_signal_day else 1
         result: dict[date, list[dict]] = {}
         for sig in signal_set.signals:
             if sig.signal_date is None or not sig.codes:
@@ -96,8 +98,8 @@ class BacktestEngine:
             sig_idx = cal_index.get(sig.signal_date)
             if sig_idx is None:
                 continue
-            buy_idx = sig_idx + 1
-            sell_idx = sig_idx + hold + 1
+            buy_idx = sig_idx + entry_offset
+            sell_idx = buy_idx + hold
             if buy_idx >= len(calendar) or sell_idx >= len(calendar):
                 continue
             buy_date = calendar[buy_idx]
@@ -186,7 +188,7 @@ class BacktestEngine:
                 )
                 continue
 
-            open_price = float(row["open"])
+            open_price = float(row["close"] if self.config.execution.entry_at_close else row["open"])
             if self.config.capital.mode == "unlimited_cash":
                 budget = float(self.config.capital.fixed_cash_per_trade)
             else:

@@ -88,6 +88,8 @@ def _build_config(request: dict) -> BacktestConfig:
             "force_sell_on_two_day_close_below_long_term_bull_bear_line", False
         ),
         close_below_recent_low_stop_window=exe.get("close_below_recent_low_stop_window"),
+        entry_on_signal_day=exe.get("entry_on_signal_day", False),
+        entry_at_close=exe.get("entry_at_close", False),
     )
     costs = CostConfig(
         commission_rate=cost.get("commission_rate", 0.0003),
