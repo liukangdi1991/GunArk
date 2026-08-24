@@ -214,6 +214,33 @@ def list_selection_results_payload() -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _stock_meta_map() -> dict:
+    """code -> {name, industry} from stock_meta.parquet (前端"名称/板块"列）。"""
+    import polars as pl
+
+    from trendradar.infrastructure.runtime import runtime_root
+
+    path = runtime_root() / "storage" / "market" / "stock_meta.parquet"
+    try:
+        df = pl.read_parquet(path)
+        return {
+            r["code"]: {"name": r.get("name"), "industry": r.get("industry")}
+            for r in df.to_dicts()
+        }
+    except Exception:
+        return {}
+
+
+def _enrich_stock_info(rows: list, meta_map: dict) -> list:
+    """Trades/skips 补 name/industry（缺失代码保持原样）。"""
+    for r in rows:
+        info = meta_map.get(r.get("code"))
+        if info:
+            r["name"] = info.get("name")
+            r["industry"] = info.get("industry")
+    return rows
+
+
 def _backtest_config(key: str) -> dict:
     """Read the original request (mode/cash) from the jobs table."""
     import sqlite3
@@ -375,12 +402,17 @@ def backtest_result_payload(key: str, include_report: bool = False) -> dict:
     if not include_report:
         return run
 
+    # 交易/跳过明细补股票名称与板块（前端"名称"列）
+    meta_map = _stock_meta_map()
+    trades = _enrich_stock_info(result.get("trades", []), meta_map)
+    skips = _enrich_stock_info(result.get("skips", []), meta_map)
+
     return {
         "result": run,
         "artifacts": _backtest_artifacts(key),
-        "trades": result.get("trades", []),
+        "trades": trades,
         "equity": result.get("equity_curve", []),
-        "skips": result.get("skips", []),
+        "skips": skips,
     }
 
 

@@ -598,3 +598,14 @@ def test_backtest_from_selection_injects_ultra_short_execution(monkeypatch):
     assert captured["execution"] == {
         "entry_on_signal_day": True, "entry_at_close": True, "fixed_hold_n_days": 1,
     }
+
+
+def test_enrich_stock_info_adds_name_and_industry():
+    from trendradar.interfaces.api.presenters import _enrich_stock_info
+    trades = [{"code": "000001"}, {"code": "999999"}]
+    meta = {"000001": {"name": "平安银行", "industry": "银行"}}
+    out = _enrich_stock_info(trades, meta)
+    assert out[0]["name"] == "平安银行"
+    assert out[0]["industry"] == "银行"
+    # 缺失代码保持原样（无 name 键）
+    assert "name" not in out[1]
