@@ -158,6 +158,33 @@ function describeStrategy(strategy: Strategy): string[] {
   }
 
   return fallbackLines.length ? fallbackLines : ["未配置策略说明，本次报告已保存运行时策略快照。"];
+  if (strategy.class === "SingleNeedleDown20Selector") {
+    lines.push(`${numberParam(params, "n1") ?? "-"} 日随机指标 ≤ ${numberParam(params, "short_max") ?? "-"}。`);
+    lines.push(`${numberParam(params, "n2") ?? "-"} 日区间随机指标 > ${numberParam(params, "long_min") ?? "-"}。`);
+    lines.push(`流通市值 ≥ ${numberParam(params, "circ_mv_min_yi") ?? "-"} 亿。`);
+    return lines;
+  }
+
+  if (strategy.class === "BrickChartSelector") {
+    lines.push(`MT 振荡器（${numberParam(params, "n") ?? "-"} 日窗口）今日转升，红柱高度 ≥ 昨日绿柱高度。`);
+    lines.push("今日之前连续 3 日绿柱。");
+    lines.push("收盘价 ≥ 四线均值（MA14/28/57/114 平均）。");
+    return lines;
+  }
+
+  if (strategy.class === "OversoldBottomFishingSelector") {
+    lines.push("MT 振荡器转升且前 3 日绿柱（红柱高度 ≥ 昨日绿柱）。");
+    lines.push(`收盘二阶差分 > 0 且为近 ${numberParam(params, "dd2_window") ?? "-"} 日最高（企稳拐点）。`);
+    lines.push("收盘 < ZXK < DKK（超跌区域，ZXK 为 EMA10 双平滑）。");
+    lines.push(`MACD DIF 近 ${numberParam(params, "every_neg") ?? "-"} 日为负、今日走平/回升，前 ${numberParam(params, "every_down") ?? "-"} 日持续下行。`);
+    return lines;
+  }
+
+  if (strategy.class === "UltimateBrickChartSelector") {
+    lines.push("MT 振荡器转升且前 3 日连续绿柱（红柱高度 ≥ 昨日绿柱）。");
+    lines.push(`多头排列：收盘 ≥ ZXK > DKK（ZXK 为 EMA${numberParam(params, "ema1") ?? "-"} 双平滑）。`);
+    return lines;
+  }
 }
 
 export function StrategySnapshots({
