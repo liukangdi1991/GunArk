@@ -73,10 +73,22 @@ def test_sync_market_up_to_date_zero_daily_calls(tmp_path):
     assert pro.daily_calls == []
 
 
-def test_sync_market_default_now_utc_does_not_crash(tmp_path):
-    """Regression: no now_utc passed -> datetime.now(timezone.utc) default path."""
+def test_sync_market_default_now_utc_does_not_crash(tmp_path, monkeypatch):
+    """Regression: no now_utc passed -> datetime.now(timezone.utc) default path.
+
+    Hermetic: 真实 now_utc 让缺口可能在 20 天阈值两侧翻转（by_stock 路径会真调
+    Tushare stock_basic）——mock 股票列表，两条路径都不出网。
+    """
+    import polars as pl
+
+    import trendradar.infrastructure.tushare.stocklist as stocklist_mod
+
     bars_dir = tmp_path / "bars"
     pro = FakePro(daily_by_day={})
+    monkeypatch.setattr(
+        stocklist_mod, "sync_stock_list",
+        lambda bars_dir: pl.DataFrame({"code": []}),
+    )
     result = sync_market(pro, bars_dir, tmp_path, {}, progress=None, cancel_check=None)
     assert "mode" in result
 
@@ -173,3 +185,49 @@ def test_sync_market_codes_param_restricts_and_bypasses_uptodate(tmp_path, monke
     )
     assert result["skipped_uptodate"] is False
     assert captured["codes"] == ["920099"]
+
+
+def test_incremental_sync_catches_up_new_listings(tmp_path, monkeypatch):
+    """日路径同步前自动补齐股票列表里有但无 bars 的新上市代码。"""
+    import trendradar.infrastructure.tushare.syncer as syncer_mod
+    from datetime import date, datetime, timezone
+    from unittest.mock import MagicMock
+
+    import pandas as pd
+    import polars as pl
+
+    bars = tmp_path / "bars"; cache = tmp_path / "cache"
+    bars.mkdir(parents=True); cache.mkdir(parents=True)
+    (bars / "000001.parquet").write_bytes(b"x")  # 已有代码
+
+    days = [date(2026, 8, 20), date(2026, 8, 21)]
+    pro = MagicMock()
+    pro.trade_cal.return_value = pd.DataFrame({
+        "cal_date": [d.strftime("%Y%m%d") for d in days],
+        "is_open": [1] * len(days),
+    })
+
+    captured = {"codes": None}
+
+    def fake_sync(pro, codes, start, end, bars_dir, done_path, retry_path,
+                  progress=None, cancel_check=None, bucket=None, max_workers=6):
+        captured["codes"] = list(codes)
+        for c in codes:
+            (bars_dir / f"{c}.parquet").write_bytes(b"x")
+        return {"failed_codes": []}
+
+    monkeypatch.setattr(syncer_mod, "sync_by_stock", fake_sync)
+    import trendradar.infrastructure.tushare.stocklist as stocklist_mod
+    monkeypatch.setattr(
+        stocklist_mod, "sync_stock_list",
+        lambda bars_dir: pl.DataFrame({"code": ["000001", "920099"]}),
+    )
+    monkeypatch.setattr(syncer_mod, "_fetch_daily_by_date", lambda pro, day: pl.DataFrame())
+
+    result = syncer_mod.sync_market(
+        pro, bars, cache,
+        {"start_date": days[0].isoformat(), "end_date": days[1].isoformat()},
+        now_utc=datetime(2026, 8, 21, 8, 0, tzinfo=timezone.utc),
+    )
+    assert captured["codes"] == ["920099"]  # 只补新股，不重拉已有代码
+    assert result["new_codes"] == 1
