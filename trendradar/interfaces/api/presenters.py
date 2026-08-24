@@ -237,7 +237,7 @@ def _backtest_config(key: str) -> dict:
         "capital_mode": params.get("mode") or request.get("capital", {}).get("mode", "unlimited_cash"),
         "cash_per_trade": params.get("cash_per_trade") or request.get("capital", {}).get("fixed_cash_per_trade", 50000),
         "execution": execution,
-        "trade_strategy": params.get("trade_strategy"),
+        "trade_strategy": params.get("trade_strategy") or request.get("trade_strategy"),
     }
 
 
@@ -627,6 +627,7 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
                     "fixed_cash_per_trade": params.get("cash_per_trade", 50000),
                 },
                 "execution": _trade_strategy_execution(params.get("trade_strategy")),
+                "trade_strategy": params.get("trade_strategy"),
             },
         )
         job_type = "backtest"
@@ -647,6 +648,7 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
                     },
                     "execution": _trade_strategy_execution(params.get("trade_strategy")),
                 },
+                "trade_strategy": params.get("trade_strategy"),
             },
         )
         job_type = "selection_backtest"
