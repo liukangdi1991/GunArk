@@ -231,9 +231,13 @@ def _backtest_config(key: str) -> dict:
         return {"capital_mode": "unlimited_cash", "cash_per_trade": 50000}
     request = json.loads(row[0])
     params = request.get("params") or {}
+    # execution 可能位于顶层（backtest_from_selection）或 backtest 下（selection_backtest）
+    execution = request.get("execution") or (request.get("backtest") or {}).get("execution") or {}
     return {
         "capital_mode": params.get("mode") or request.get("capital", {}).get("mode", "unlimited_cash"),
         "cash_per_trade": params.get("cash_per_trade") or request.get("capital", {}).get("fixed_cash_per_trade", 50000),
+        "execution": execution,
+        "trade_strategy": params.get("trade_strategy"),
     }
 
 
@@ -355,6 +359,10 @@ def backtest_result_payload(key: str, include_report: bool = False) -> dict:
         "strategies": strategies,
         "capital_mode": config["capital_mode"],
         "cash_per_trade": config["cash_per_trade"],
+        "trade_rule": {
+            **config.get("execution", {}),
+            "trade_strategy": config.get("trade_strategy"),
+        },
         "strategy_snapshots": [],
         "status": "success",
         "summary": summaries,
