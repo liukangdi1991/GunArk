@@ -54,10 +54,14 @@ function describeTradeRule(
     : tradeStrategyLabel(tradeStrategy);
   const recentLowWindow = numberParam(params, "close_below_recent_low_stop_window");
   const lines = [
-    "选股日为 T 日，T+1 按开盘价买入，并计入买入滑点和交易费用。",
+    params["entry_on_signal_day"]
+      ? "选股日（T 日）按收盘价买入，并计入买入滑点和交易费用。"
+      : "选股日为 T 日，T+1 按开盘价买入，并计入买入滑点和交易费用。",
     holdDays === null
       ? "卖出日按当前交易规则执行，并计入卖出滑点和交易费用。"
-      : `默认持仓 ${holdDays} 个交易日，T+${holdDays + 1} 按收盘价卖出，并计入卖出滑点和交易费用。`,
+      : params["entry_on_signal_day"]
+        ? `T+${holdDays} 按收盘价卖出（超短线，持股 ${holdDays} 日）。`
+        : `默认持仓 ${holdDays} 个交易日，T+${holdDays + 1} 按收盘价卖出，并计入卖出滑点和交易费用。`,
   ];
   if (tradeStrategyName !== "-") {
     lines.unshift(`交易策略为${tradeStrategyName}。`);
