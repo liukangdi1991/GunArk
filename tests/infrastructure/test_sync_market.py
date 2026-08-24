@@ -2,8 +2,22 @@ from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import polars as pl
+import pytest
 
 from trendradar.infrastructure.tushare.syncer import sync_market
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_stock_list(monkeypatch):
+    """新股补齐会读/拉股票列表——默认 mock 空列表保持 hermetic（显式 mock 的测试覆盖它）。"""
+    import polars as pl
+
+    import trendradar.infrastructure.tushare.stocklist as stocklist_mod
+
+    monkeypatch.setattr(
+        stocklist_mod, "sync_stock_list",
+        lambda bars_dir: pl.DataFrame({"code": []}),
+    )
 
 
 class FakePro:
