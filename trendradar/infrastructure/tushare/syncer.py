@@ -568,6 +568,24 @@ def sync_market(
         new_codes = 0
         missing = plan.missing_dates
         total = len(missing)
+        # 新上市补齐（尽力而为）：股票列表有但无 bars 的代码先拉；
+        # 列表刷新失败不影响日路径主流程（by_stock 路径仍会全量覆盖）
+        try:
+            from trendradar.infrastructure.tushare.stocklist import sync_stock_list
+            meta = sync_stock_list(bars_dir)
+            all_codes = meta["code"].to_list() if not meta.is_empty() else []
+            existing = {p.stem for p in bars_dir.glob("*.parquet")}
+            new_listed = [c for c in all_codes if c not in existing]
+            if new_listed:
+                if progress:
+                    progress(0, len(new_listed), f"补齐 {len(new_listed)} 只新上市股票")
+                before = {p.name for p in bars_dir.glob("*.parquet")}
+                sync_by_stock(pro, new_listed, plan.start, plan.end, bars_dir,
+                              done_path, retry_path, progress, cancel_check)
+                after = {p.name for p in bars_dir.glob("*.parquet")}
+                new_codes += len(after - before)
+        except Exception:
+            pass  # 尽力而为：失败则本次不补，下次同步再试
         for idx, day in enumerate(missing, start=1):
             if cancel_check and cancel_check():
                 break
