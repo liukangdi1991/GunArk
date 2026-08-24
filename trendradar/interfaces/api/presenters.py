@@ -525,6 +525,20 @@ def trading_dates_payload(start: str | None = None, end: str | None = None) -> d
 # ---------------------------------------------------------------------------
 
 
+_TRADE_STRATEGY_EXECUTION = {
+    "ultra_short": {
+        "entry_on_signal_day": True,
+        "entry_at_close": True,
+        "fixed_hold_n_days": 1,
+    },
+}
+
+
+def _trade_strategy_execution(trade_strategy: str | None) -> dict:
+    """Map a UI trade-strategy value to backend execution params (超短线等）。"""
+    return dict(_TRADE_STRATEGY_EXECUTION.get(trade_strategy or "", {}))
+
+
 def submit_execution_payload(executor, market_store, store, request: dict) -> dict:
     """Dispatch a frontend-style {type, params} submission.
 
@@ -541,6 +555,7 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
         submit_batch_selection,
         submit_selection,
     )
+
     from trendradar.domain.signal.repository import SignalRepository
     from trendradar.infrastructure.storage.artifact_store import ArtifactStore
 
@@ -603,6 +618,7 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
                     "mode": params.get("mode", "unlimited_cash"),
                     "fixed_cash_per_trade": params.get("cash_per_trade", 50000),
                 },
+                "execution": _trade_strategy_execution(params.get("trade_strategy")),
             },
         )
         job_type = "backtest"
@@ -621,6 +637,7 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
                         "mode": params.get("mode", "unlimited_cash"),
                         "fixed_cash_per_trade": params.get("cash_per_trade", 50000),
                     },
+                    "execution": _trade_strategy_execution(params.get("trade_strategy")),
                 },
             },
         )

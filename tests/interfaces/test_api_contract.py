@@ -468,3 +468,49 @@ def test_market_sync_force_passthrough(client):
     # missing token in tests; a job id is still produced)
     assert resp.status_code == 200
     assert resp.json()["data"]["job_id"]
+
+
+def test_ultra_short_trade_strategy_maps_to_execution():
+    from trendradar.interfaces.api.presenters import _trade_strategy_execution
+    assert _trade_strategy_execution("ultra_short") == {
+        "entry_on_signal_day": True, "entry_at_close": True, "fixed_hold_n_days": 1,
+    }
+    # 现有止损选项不接线（保持现状）
+    assert _trade_strategy_execution("long_term_bull_bear_stop") == {}
+    assert _trade_strategy_execution("ten_day_low_stop") == {}
+    assert _trade_strategy_execution(None) == {}
+
+
+def test_backtest_from_selection_injects_ultra_short_execution(monkeypatch):
+    from trendradar.app.services import backtest_service as bs
+    from trendradar.domain.signal.models import SignalSet
+    from trendradar.interfaces.api import presenters as p
+
+    captured = {}
+
+    def fake_submit(executor, market_store, repo, request):
+        captured.update(request)
+        return "job_x"
+
+    monkeypatch.setattr(bs, "submit_backtest", fake_submit)
+    monkeypatch.setattr(bs, "validate_backtest_prerequisites", lambda *a, **k: [])
+    monkeypatch.setattr(p, "trading_dates_payload", lambda: {"dates": []})
+    fake_repo = type("R", (), {"load": lambda self, k: SignalSet()})()
+    # dispatch 内部用真实 SignalRepository——patch 其类以注入 fake repo
+    monkeypatch.setattr(
+        "trendradar.domain.signal.repository.SignalRepository",
+        lambda store: fake_repo,
+    )
+
+    p.submit_execution_payload(None, None, None, {
+        "type": "backtest_from_selection",
+        "params": {
+            "selection_execution_keys": ["k1"],
+            "trade_strategy": "ultra_short",
+            "mode": "unlimited_cash",
+            "cash_per_trade": 50000,
+        },
+    })
+    assert captured["execution"] == {
+        "entry_on_signal_day": True, "entry_at_close": True, "fixed_hold_n_days": 1,
+    }
