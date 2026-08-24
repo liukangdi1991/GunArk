@@ -37,7 +37,7 @@ def _row(code, day, close):
             "vol": 1000.0, "amount": 10000.0}
 
 
-def test_head_gap_backfill_regression(tmp_path):
+def test_head_gap_backfill_regression(tmp_path, monkeypatch):
     """The exact bug from the spec: earlier start must backfill the head gap."""
     days = [date(2026, 8, 18), date(2026, 8, 19), date(2026, 8, 20), date(2026, 8, 21)]
     pro = FakePro(set(days), {
@@ -45,6 +45,12 @@ def test_head_gap_backfill_regression(tmp_path):
     })
     bars_dir = tmp_path / "bars"
     cache = tmp_path / "cache"
+    # 新股补齐会调 sync_stock_list（真实 Tushare）——mock 为空列表保持 hermetic
+    import trendradar.infrastructure.tushare.stocklist as stocklist_mod
+    monkeypatch.setattr(
+        stocklist_mod, "sync_stock_list",
+        lambda bars_dir: pl.DataFrame({"code": []}),
+    )
 
     # First run covers 08-18..08-20
     sync_market(pro, bars_dir, cache, {"start_date": "2026-08-18", "end_date": "2026-08-20"},
