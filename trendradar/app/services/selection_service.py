@@ -356,8 +356,7 @@ def submit_batch_selection(
     Args:
         executor: JobExecutor instance.
         market_store: MarketDataStore instance.
-        request: dict with optional keys: groups, strategies, start_date, end_date, codes,
-                 plus batch-specific: batch_size (int), batch_interval_days (int).
+        request: dict with optional keys: groups, strategies, start_date, end_date, codes.
         store: StorageConnection instance.
 
     Returns:
@@ -365,9 +364,6 @@ def submit_batch_selection(
     """
     def worker(ctx: JobContext) -> None:
         ctx.log("Starting batch selection job")
-
-        batch_size = request.get("batch_size", 50)
-        interval_days = request.get("batch_interval_days", 7)
 
         signal_set = _run_selection(ctx, market_store, request, store)
 
@@ -395,8 +391,6 @@ def submit_batch_selection(
             "signal_to": str(signal_set.signal_to) if signal_set.signal_to else None,
             "strategies": len(signal_set.strategies_snapshot),
             "mode": "batch",
-            "batch_size": batch_size,
-            "interval_days": interval_days,
         }
         ctx.succeed(result)
 

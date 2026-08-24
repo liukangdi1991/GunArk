@@ -6,7 +6,6 @@ from fastapi import APIRouter, HTTPException, Query, Request as FastAPIRequest
 
 from trendradar.interfaces.api.schemas.execution import (
     ExecutionRequest,
-    BatchExecutionRequest,
     SelectionBacktestRequest,
     BacktestRequest,
     JobStatusResponse,

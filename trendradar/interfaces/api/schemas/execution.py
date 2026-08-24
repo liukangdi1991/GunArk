@@ -19,11 +19,6 @@ class DeleteKeysRequest(BaseModel):
     execution_keys: list[str] | None = None
 
 
-class BatchExecutionRequest(ExecutionRequest):
-    batch_size: int = Field(default=50, ge=1)
-    batch_interval_days: int = Field(default=7, ge=1)
-
-
 class SelectionBacktestRequest(BaseModel):
     start_date: str | None = None
     end_date: str | None = None
