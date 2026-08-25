@@ -22,3 +22,14 @@ def test_atomic_write_no_partial_on_failure(tmp_path):
     except TypeError:
         pass
     assert target.read_text() == "safe"
+
+
+def test_atomic_write_fsyncs_before_replace(tmp_path, monkeypatch):
+    import os
+
+    import trendradar.infrastructure.filesystem.atomic as atomic
+
+    fsynced = []
+    monkeypatch.setattr(os, "fsync", lambda fd: fsynced.append(fd))
+    atomic.atomic_write(tmp_path / "test.txt", b"hello")
+    assert fsynced, "fsync must be called before os.replace"

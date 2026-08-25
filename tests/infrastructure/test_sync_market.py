@@ -68,6 +68,100 @@ def test_sync_market_small_gap_uses_daily_path(tmp_path):
     assert (bars_dir / "000001.parquet").exists()
 
 
+def test_sync_market_exclude_boards_filters_daily_rows(tmp_path):
+    bars_dir = tmp_path / "bars"
+    pro = FakePro(daily_by_day={
+        "20260819": pl.DataFrame([
+            _row("000001", date(2026, 8, 19)),
+            _row("300001", date(2026, 8, 19)),
+            _row("688001", date(2026, 8, 19)),
+        ]),
+    })
+    result = sync_market(
+        pro, bars_dir, tmp_path, {"exclude_boards": ["gem", "star"]},
+        now_utc=datetime(2026, 8, 20, 9, 0, tzinfo=timezone.utc),
+        progress=None, cancel_check=None,
+    )
+    assert result["mode"] == "incremental"
+    assert (bars_dir / "000001.parquet").exists()
+    assert not (bars_dir / "300001.parquet").exists()
+    assert not (bars_dir / "688001.parquet").exists()
+
+
+def test_sync_market_exclude_boards_filters_by_stock_codes(tmp_path, monkeypatch):
+    import trendradar.infrastructure.tushare.syncer as syncer_mod
+    import trendradar.infrastructure.tushare.stocklist as stocklist_mod
+
+    captured = {}
+
+    def fake_sync_by_stock(pro, codes, *args, **kwargs):
+        captured["codes"] = codes
+        return {"failed_codes": []}
+
+    monkeypatch.setattr(syncer_mod, "sync_by_stock", fake_sync_by_stock)
+    meta = pl.DataFrame({"code": ["000001", "300001", "688001", "430001"]})
+    monkeypatch.setattr(stocklist_mod, "sync_stock_list", lambda bars_dir: meta)
+
+    bars_dir = tmp_path / "bars"
+    pro = FakePro()
+    result = sync_market(
+        pro, bars_dir, tmp_path,
+        {"exclude_boards": ["gem", "star", "bj"], "force": True},
+        now_utc=datetime(2026, 8, 20, 9, 0, tzinfo=timezone.utc),
+        progress=None, cancel_check=None,
+    )
+    assert result["mode"] == "full"
+    assert captured["codes"] == ["000001"]
+
+
+def test_sync_market_daily_exception_skips_without_done(tmp_path):
+    """增量日路径接口异常：不崩溃、异常日不标 done（下轮重试可补）。"""
+    bars_dir = tmp_path / "bars"
+
+    class BoomPro(FakePro):
+        def daily(self, **kwargs):
+            if "trade_date" in kwargs:
+                raise Exception("每分钟最多访问该接口")
+            return super().daily(**kwargs)
+
+    pro = BoomPro()
+    result = sync_market(
+        pro, bars_dir, tmp_path, {},
+        now_utc=datetime(2026, 8, 20, 9, 0, tzinfo=timezone.utc),
+        progress=None, cancel_check=None,
+    )
+    assert result["mode"] == "incremental"
+
+    from trendradar.infrastructure.tushare.markers import load_sync_done
+    done = load_sync_done(tmp_path / "sync_done.json")
+    assert not any(d >= date(2026, 8, 18) for d in done)
+
+
+def test_sync_by_stock_explicit_codes_not_overridden_by_retry(tmp_path, monkeypatch):
+    import trendradar.infrastructure.tushare.syncer as syncer_mod
+    from trendradar.infrastructure.tushare.markers import save_retry_codes
+
+    bars_dir = tmp_path / "bars"
+    retry_path = tmp_path / "sync_retry_codes.json"
+    done_path = tmp_path / "sync_done.json"
+    save_retry_codes(retry_path, ["999999"])  # 上次失败的残留
+
+    captured = []
+
+    def fake_fetch(pro, code, seg_start, seg_end, retries, **kwargs):
+        captured.append(code)
+        return pl.DataFrame()
+
+    monkeypatch.setattr(syncer_mod, "_fetch_with_retry", fake_fetch)
+    pro = FakePro()
+    syncer_mod.sync_by_stock(
+        pro, ["000001"], date(2026, 8, 18), date(2026, 8, 20),
+        bars_dir, done_path, retry_path, retry_failed=False,
+    )
+    # 显式指定的 codes 不能被残留 retry_codes 覆盖
+    assert captured == ["000001"]
+
+
 def test_sync_market_up_to_date_zero_daily_calls(tmp_path):
     bars_dir = tmp_path / "bars"
     # Seed all days via a first run, then second run should not call daily
@@ -129,7 +223,8 @@ def test_full_mode_retries_failed_codes(tmp_path, monkeypatch):
     calls = {"n": 0}
 
     def fake_sync(pro, codes, start, end, bars_dir, done_path, retry_path,
-                  progress=None, cancel_check=None, bucket=None, max_workers=6):
+                  progress=None, cancel_check=None, bucket=None, max_workers=6,
+                  retry_failed=True):
         calls["n"] += 1
         if calls["n"] == 1:
             return {"failed_codes": ["000002", "000003"]}
@@ -224,7 +319,8 @@ def test_incremental_sync_catches_up_new_listings(tmp_path, monkeypatch):
     captured = {"codes": None}
 
     def fake_sync(pro, codes, start, end, bars_dir, done_path, retry_path,
-                  progress=None, cancel_check=None, bucket=None, max_workers=6):
+                  progress=None, cancel_check=None, bucket=None, max_workers=6,
+                  retry_failed=True):
         captured["codes"] = list(codes)
         for c in codes:
             (bars_dir / f"{c}.parquet").write_bytes(b"x")

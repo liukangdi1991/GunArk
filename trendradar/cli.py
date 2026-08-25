@@ -46,6 +46,12 @@ def cmd_init_v2(args: argparse.Namespace) -> None:
                 shutil.rmtree(full)
             elif full.exists():
                 full.unlink()
+                if full.name == "app.db":
+                    # WAL 模式下未干净关闭会残留 -wal/-shm，不删会让旧数据被恢复
+                    for suffix in ("-wal", "-shm"):
+                        side = root / f"app.db{suffix}"
+                        if side.exists():
+                            side.unlink()
         if old_db_dir.exists():
             shutil.rmtree(old_db_dir)
 

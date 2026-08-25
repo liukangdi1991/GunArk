@@ -383,6 +383,41 @@ def shard_ranges(start: date, end: date, max_rows: int = _SHARD_MAX_ROWS) -> lis
     return ranges
 
 
+_BOARD_PREFIXES = {
+    "gem": ("300", "301"),
+    "star": ("688", "689"),
+    "bj": ("4", "8"),
+}
+
+
+def _exclude_prefixes(exclude_boards) -> tuple | None:
+    if not exclude_boards:
+        return None
+    prefixes = []
+    for b in exclude_boards:
+        prefixes.extend(_BOARD_PREFIXES.get(b, ()))
+    return tuple(prefixes) or None
+
+
+def _filter_excluded_boards(df, exclude_boards):
+    """Drop rows whose code belongs to an excluded board (incremental path)."""
+    prefixes = _exclude_prefixes(exclude_boards)
+    if prefixes is None or df.is_empty():
+        return df
+    expr = ~pl.col("code").str.starts_with(prefixes[0])
+    for p in prefixes[1:]:
+        expr = expr & ~pl.col("code").str.starts_with(p)
+    return df.filter(expr)
+
+
+def _filter_excluded_codes(codes: list[str], exclude_boards) -> list[str]:
+    """Drop codes belonging to an excluded board (by-stock path)."""
+    prefixes = _exclude_prefixes(exclude_boards)
+    if prefixes is None:
+        return codes
+    return [c for c in codes if not c.startswith(prefixes)]
+
+
 def merge_day_bars(day_df, bars_dir: Path) -> list[str]:
     """Merge one full-market day frame into per-code parquet files.
 
@@ -417,6 +452,7 @@ def sync_by_stock(
     cancel_check=None,
     bucket=None,
     max_workers: int = 6,
+    retry_failed: bool = True,
 ) -> dict:
     """Fetch full history per stock (sharded), merge into bars.
 
@@ -434,7 +470,8 @@ def sync_by_stock(
     if bucket is None:
         bucket = TokenBucket()
     trade_days = set(fetch_trade_calendar(pro, start, end))
-    codes = load_retry_codes(retry_path) or codes
+    if retry_failed:
+        codes = load_retry_codes(retry_path) or codes
 
     def fetch_one(code: str) -> bool:
         for seg_start, seg_end in shard_ranges(start, end):
@@ -488,7 +525,7 @@ def _fetch_daily_by_date(pro, day: date):
     """Fetch one full-market trading day and normalize to bar schema."""
     resp = pro.daily(trade_date=day.strftime("%Y%m%d"))
     if resp is None:
-        return pl.DataFrame()
+        return None  # 接口无响应：调用方不标 done，留待下轮重试
     if isinstance(resp, pl.DataFrame):
         if resp.is_empty():
             return pl.DataFrame()
@@ -586,7 +623,8 @@ def sync_market(
                     progress(0, len(new_listed), f"补齐 {len(new_listed)} 只新上市股票")
                 before = {p.name for p in bars_dir.glob("*.parquet")}
                 sync_by_stock(pro, new_listed, plan.start, plan.end, bars_dir,
-                              done_path, retry_path, progress, cancel_check)
+                              done_path, retry_path, progress, cancel_check,
+                              retry_failed=False)
                 after = {p.name for p in bars_dir.glob("*.parquet")}
                 new_codes += len(after - before)
         except Exception:
@@ -598,7 +636,15 @@ def sync_market(
                 progress(idx, total, str(day))
             if not bucket.acquire(cancel_check=cancel_check):
                 break
-            df = _fetch_daily_by_date(pro, day)
+            try:
+                df = _fetch_daily_by_date(pro, day)
+            except Exception as e:
+                # 限流/IP 封禁等接口异常：不标 done，本轮跳过，下轮重试
+                logger.warning("daily fetch failed for %s: %s", day, e)
+                continue
+            if df is None:
+                continue  # 无响应：不标 done
+            df = _filter_excluded_boards(df, request.get("exclude_boards"))
             if df.is_empty():
                 if day == plan.latest:
                     continue  # not done, warning-level, retried next run
@@ -628,6 +674,7 @@ def sync_market(
         codes = list(req_codes)   # 指定 codes：只同步这些
     else:
         codes = meta["code"].to_list() if not meta.is_empty() else []
+    codes = _filter_excluded_codes(codes, request.get("exclude_boards"))
     result = sync_by_stock(
         pro, codes, plan.start, plan.end, bars_dir,
         done_path, retry_path, progress, cancel_check,
@@ -652,7 +699,8 @@ def sync_market(
                 progress(cur, total, f"[重试 {retry_rounds}/{max_retry_rounds}] {msg}")
 
         sub = sync_by_stock(pro, failed, plan.start, plan.end, bars_dir,
-                            done_path, retry_path, _sub_progress, cancel_check)
+                            done_path, retry_path, _sub_progress, cancel_check,
+                            retry_failed=False)
         failed = sub["failed_codes"]
         if not failed and progress:
             progress(0, 0, "全部失败代码已补完")
