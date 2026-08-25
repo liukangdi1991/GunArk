@@ -144,8 +144,9 @@ class BacktestEngine:
         signal_by_code = {s["code"]: s for s in day_signals if s["code"] in filtered_codes}
         candidates = sorted(signal_by_code.keys())
 
+        max_daily = self.config.portfolio.max_daily_new_positions
         slots = min(
-            self.config.portfolio.max_daily_new_positions or len(candidates),
+            len(candidates) if max_daily is None else max_daily,
             available_open_slots(state, self.config.portfolio.max_positions),
         )
         if slots <= 0:
@@ -174,7 +175,13 @@ class BacktestEngine:
                 continue
 
             prev_close = market_store.get_previous_close(code, cur_date)
-            if self.config.execution.reject_if_limit_up_on_buy and is_limit_up(row["open"], prev_close, code=code):
+            # entry_on_signal_day 的信号在收盘后产生，必须按收盘价入场（且按收盘价判涨停）
+            entry_at_close = (
+                self.config.execution.entry_at_close
+                or self.config.execution.entry_on_signal_day
+            )
+            entry_price = row["close"] if entry_at_close else row["open"]
+            if self.config.execution.reject_if_limit_up_on_buy and is_limit_up(entry_price, prev_close, code=code):
                 skips.append(
                     SkipRecord(
                         strategy=sig["strategy"],
@@ -188,7 +195,7 @@ class BacktestEngine:
                 )
                 continue
 
-            open_price = float(row["close"] if self.config.execution.entry_at_close else row["open"])
+            open_price = float(entry_price)
             if self.config.capital.mode == "unlimited_cash":
                 budget = float(self.config.capital.fixed_cash_per_trade)
             else:

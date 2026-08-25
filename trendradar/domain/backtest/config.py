@@ -20,7 +20,6 @@ class ExecutionConfig:
     max_sell_postpone_days: int = 10
     reject_if_limit_up_on_buy: bool = True
     postpone_if_limit_down_on_sell: bool = True
-    skip_if_suspended: bool = True
     force_sell_on_two_day_close_below_long_term_bull_bear_line: bool = False
     close_below_recent_low_stop_window: Optional[int] = None
     entry_on_signal_day: bool = False   # 信号日当日入场（默认 T+1 入场）——超短线
@@ -31,7 +30,7 @@ class ExecutionConfig:
 class CostConfig:
     commission_rate: float = 0.0003
     commission_min: float = 5.0
-    stamp_duty_rate_sell: float = 0.0001
+    stamp_duty_rate_sell: float = 0.0005  # 现行 A 股卖出印花税 0.05%（2023-08 起）
     transfer_fee_rate: float = 0.00001
     slippage_buy_bp: float = 2.0
     slippage_sell_bp: float = 2.0

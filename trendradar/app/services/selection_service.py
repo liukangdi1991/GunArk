@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 import json
 import time
 from datetime import date, timedelta
@@ -37,12 +38,27 @@ def _build_market_cap_map(pro, trading_dates) -> dict:
             result[d] = None
     return result
 
-def _filter_warmup(warmup: WarmupResult | None, candidate_codes: list) -> WarmupResult | None:
+def _filter_warmup(
+    warmup: WarmupResult | None,
+    candidate_codes: list,
+    trade_date: date,
+    dates_by_code: dict[str, list[date]],
+) -> WarmupResult | None:
     """Keep only codes that traded on the selection date (suspended stocks have
-    stale last bars and must not be judged)."""
+    stale last bars and must not be judged) and truncate each history at
+    trade_date so selectors judge that day, not the range end (no lookahead).
+
+    Histories are date-sorted (runner sorts by [code, date]); bisect + slice
+    keeps truncation O(1) per code instead of O(rows) per code per day.
+    """
     if warmup is None:
         return None
-    grouped = {c: warmup.grouped[c] for c in candidate_codes if c in warmup.grouped}
+    grouped = {}
+    for c in candidate_codes:
+        if c not in warmup.grouped:
+            continue
+        pos = bisect.bisect_right(dates_by_code[c], trade_date)
+        grouped[c] = warmup.grouped[c].slice(0, pos)
     return WarmupResult(grouped=grouped)
 
 
@@ -146,6 +162,10 @@ def _run_selection(
         ctx.log("No market data loaded")
         return SignalSet(execution_key=ctx.job_id)
     market_data = market_data.sort(["code", "date"])   # ordering responsibility (runner)
+    dates_by_code = {
+        g["code"][0]: g["date"].to_list()
+        for g in market_data.partition_by("code")
+    }
 
     ctx.log(f"Loaded {market_data.height} market data rows")
 
@@ -205,7 +225,7 @@ def _run_selection(
             try:
                 selector = selectors[defn.strategy_id]
                 # 只判当日有行情的股票：停牌股（最后 bar 早于选股日）不参与判定
-                day_warmup = _filter_warmup(warmup, candidate_codes)
+                day_warmup = _filter_warmup(warmup, candidate_codes, trade_date, dates_by_code)
                 result = selector.select_day(context, day_warmup)
                 if result.selected_codes:
                     all_signals.append(StrategySignal(

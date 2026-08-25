@@ -3,7 +3,7 @@ import polars as pl
 from trendradar.domain.strategy.protocol import (
     SelectionStrategy, SelectionContext, SelectionResult, WarmupResult,
 )
-from trendradar.domain.strategy.formulas.kdj import compute_kdj
+from trendradar.domain.strategy.formulas.kdj import compute_kdj_grouped
 from trendradar.domain.strategy.formulas.ma import compute_ma
 
 
@@ -12,7 +12,7 @@ class MA60VolumeWaveSelector(SelectionStrategy):
         self.definition = definition
 
     def warmup(self, market_data: pl.DataFrame) -> WarmupResult:
-        _, _, j_series = compute_kdj(market_data)
+        j_series = compute_kdj_grouped(market_data)
         ma60_series = compute_ma(market_data, 60)
         df = market_data.with_columns([j_series.alias("j"), ma60_series.alias("ma_60")])
         grouped = {g["code"][0]: g for g in df.partition_by("code")}

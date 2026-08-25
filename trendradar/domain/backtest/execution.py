@@ -13,9 +13,8 @@ class FillResult:
     fee: float
 
 
-def _limit_pct(*, code: str = "", is_st: bool = False) -> float:
-    if is_st:
-        return 0.05
+def _limit_pct(*, code: str = "") -> float:
+    # 2024-08 新规：风险警示股（ST/*ST）涨跌幅与普通股一致，无单独档位
     normalized = str(code or "").strip()
     if normalized.startswith(("300", "301", "688", "689")):
         return 0.20
@@ -28,28 +27,28 @@ def _round_tick(value: float) -> float:
     return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
-def limit_up_price(prev_close: float, *, code: str = "", is_st: bool = False) -> float:
-    return _round_tick(float(prev_close) * (1 + _limit_pct(code=code, is_st=is_st)))
+def limit_up_price(prev_close: float, *, code: str = "") -> float:
+    return _round_tick(float(prev_close) * (1 + _limit_pct(code=code)))
 
 
-def limit_down_price(prev_close: float, *, code: str = "", is_st: bool = False) -> float:
-    return _round_tick(float(prev_close) * (1 - _limit_pct(code=code, is_st=is_st)))
+def limit_down_price(prev_close: float, *, code: str = "") -> float:
+    return _round_tick(float(prev_close) * (1 - _limit_pct(code=code)))
 
 
 def is_limit_up(
-    price: float, prev_close: float | None, *, code: str = "", eps: float = 1e-6, is_st: bool = False
+    price: float, prev_close: float | None, *, code: str = "", eps: float = 1e-6
 ) -> bool:
     if prev_close is None or float(prev_close) <= 0:
         return False
-    return float(price) >= limit_up_price(float(prev_close), code=code, is_st=is_st) - eps
+    return float(price) >= limit_up_price(float(prev_close), code=code) - eps
 
 
 def is_limit_down(
-    price: float, prev_close: float | None, *, code: str = "", eps: float = 1e-6, is_st: bool = False
+    price: float, prev_close: float | None, *, code: str = "", eps: float = 1e-6
 ) -> bool:
     if prev_close is None or float(prev_close) <= 0:
         return False
-    return float(price) <= limit_down_price(float(prev_close), code=code, is_st=is_st) + eps
+    return float(price) <= limit_down_price(float(prev_close), code=code) + eps
 
 
 def calc_buy_fill(open_price: float, shares: int, costs: CostConfig) -> FillResult:

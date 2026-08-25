@@ -10,3 +10,13 @@ def compute_dif(df: pl.DataFrame, fast: int = 12, slow: int = 26) -> pl.Series:
     ema_fast = close.ewm_mean(span=fast, adjust=False)
     ema_slow = close.ewm_mean(span=slow, adjust=False)
     return (ema_fast - ema_slow).alias("dif")
+
+
+def compute_dif_grouped(df: pl.DataFrame, fast: int = 12, slow: int = 26) -> pl.Series:
+    """DIF series computed per code: recursive ewm must never cross stocks."""
+    if df.is_empty():
+        return pl.Series("dif", [], dtype=pl.Float64)
+    parts = []
+    for g in df.partition_by("code"):
+        parts.append(compute_dif(g, fast, slow))
+    return pl.concat(parts).alias("dif")

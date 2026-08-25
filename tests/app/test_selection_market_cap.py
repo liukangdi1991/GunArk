@@ -25,13 +25,30 @@ def test_filter_warmup_keeps_only_candidate_codes():
     from trendradar.app.services.selection_service import _filter_warmup
 
     w = WarmupResult(grouped={
-        "000001": pl.DataFrame({"code": ["000001"]}),
-        "000002": pl.DataFrame({"code": ["000002"]}),
+        "000001": pl.DataFrame({"code": ["000001"], "date": [date(2026, 8, 21)]}),
+        "000002": pl.DataFrame({"code": ["000002"], "date": [date(2026, 8, 21)]}),
     })
-    out = _filter_warmup(w, ["000001"])
+    dates_by_code = {"000001": [date(2026, 8, 21)], "000002": [date(2026, 8, 21)]}
+    out = _filter_warmup(w, ["000001"], date(2026, 8, 21), dates_by_code)
     assert list(out.grouped) == ["000001"]
     # 候选集里的代码不在 warmup 中 → 跳过
-    out2 = _filter_warmup(w, ["000001", "999999"])
+    out2 = _filter_warmup(w, ["000001", "999999"], date(2026, 8, 21), dates_by_code)
     assert list(out2.grouped) == ["000001"]
     # warmup 为 None → None
-    assert _filter_warmup(None, ["000001"]) is None
+    assert _filter_warmup(None, ["000001"], date(2026, 8, 21), dates_by_code) is None
+
+
+def test_filter_warmup_truncates_history_at_trade_date():
+    import polars as pl
+
+    from trendradar.domain.strategy.protocol import WarmupResult
+    from trendradar.app.services.selection_service import _filter_warmup
+
+    hist = pl.DataFrame({
+        "code": ["000001"] * 3,
+        "date": [date(2026, 8, 19), date(2026, 8, 20), date(2026, 8, 21)],
+    })
+    w = WarmupResult(grouped={"000001": hist})
+    dates_by_code = {"000001": [date(2026, 8, 19), date(2026, 8, 20), date(2026, 8, 21)]}
+    out = _filter_warmup(w, ["000001"], date(2026, 8, 20), dates_by_code)
+    assert out.grouped["000001"]["date"].to_list() == [date(2026, 8, 19), date(2026, 8, 20)]

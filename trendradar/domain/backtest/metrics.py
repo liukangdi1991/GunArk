@@ -31,7 +31,12 @@ def compute_summary(
     total_return = (last_equity / first_equity - 1.0) if first_equity > 0 else 0.0
 
     periods = max(1, len(nav) - 1)
-    annual_return = (1 + total_return) ** (risk_cfg.trading_days_per_year / periods) - 1.0
+    # 权益为负时 total_return < -1，(1+total_return) 为负底数分数次幂会产生复数——夹断
+    annual_return = (
+        -1.0
+        if last_equity <= 0
+        else (1 + total_return) ** (risk_cfg.trading_days_per_year / periods) - 1.0
+    )
 
     rolling_max = nav.cum_max()
     drawdown = nav / rolling_max - 1.0

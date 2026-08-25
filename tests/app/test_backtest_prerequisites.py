@@ -30,10 +30,17 @@ def _signal_set(signal_dates: list[date]) -> SignalSet:
     )
 
 
-def _validate(signal_set: SignalSet, calendar: list[date], hold: int = 5) -> list[str]:
+def _validate(
+    signal_set: SignalSet,
+    calendar: list[date],
+    hold: int = 5,
+    entry_on_signal_day: bool = False,
+) -> list[str]:
     from trendradar.app.services.backtest_service import validate_backtest_prerequisites
 
-    return validate_backtest_prerequisites(signal_set, calendar, fixed_hold_n_days=hold)
+    return validate_backtest_prerequisites(
+        signal_set, calendar, fixed_hold_n_days=hold, entry_on_signal_day=entry_on_signal_day,
+    )
 
 
 def test_empty_signal_set_is_blocked():
@@ -85,3 +92,11 @@ def test_hold_one_boundary():
     # hold=1: need sig_idx + 2 < len -> sig_idx <= 7 passes, 8 blocks
     assert _validate(_signal_set([cal[7]]), cal, hold=1) == []
     assert len(_validate(_signal_set([cal[8]]), cal, hold=1)) >= 1
+
+
+def test_ultra_short_tail_signal_passes():
+    """entry_on_signal_day + hold=1: signal on the second-to-last trading day
+    still has room (entry same day, sell next) — must not be blocked."""
+    cal = _calendar(10)
+    signals = _signal_set([cal[-2]])
+    assert _validate(signals, cal, hold=1, entry_on_signal_day=True) == []

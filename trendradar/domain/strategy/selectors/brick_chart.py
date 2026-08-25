@@ -34,12 +34,20 @@ class BrickChartSelector(SelectionStrategy):
 
     def warmup(self, market_data: pl.DataFrame) -> WarmupResult:
         from trendradar.domain.strategy.formulas.zxdkx import compute_zx_lines
-        _, long_line = compute_zx_lines(market_data)  # 四线平均 = DKK（扁平列；判定行窗口在股内，边界无影响）
+        p = self.definition.default_params
+        _, long_line = compute_zx_lines(
+            market_data,
+            m1=p.get("m1", 14), m2=p.get("m2", 28),
+            m3=p.get("m3", 57), m4=p.get("m4", 114),
+        )  # 四线平均 = DKK（扁平列；判定行窗口在股内，边界无影响）
         # MT 是 SMA 递归，必须按 code 分组计算——扁平列会把上一只股票的 ewm 状态带进来
         # （runner 保证 market_data 按 [code, date] 排序，partition/concat 不改变行序，dkk 对齐安全）
         parts = []
         for g in market_data.partition_by("code"):
-            mt = compute_mt(g["high"], g["low"], g["close"])
+            mt = compute_mt(
+                g["high"], g["low"], g["close"],
+                n=p.get("n", 4), m=p.get("m", 6), t=p.get("t", 4),
+            )
             parts.append(g.with_columns([mt]))
         df = pl.concat(parts)
         df = df.with_columns([long_line.alias("dkk")])

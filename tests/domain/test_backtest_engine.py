@@ -189,6 +189,71 @@ class TestBacktestEngine:
         assert len(result.skips) == 1
         assert result.skips[0].reason == "涨停无法买入"
 
+    def test_signal_day_close_limit_up_rejected(self):
+        """entry_on_signal_day uses the close as the entry price, so a close
+        limit-up (open not) must reject the buy — no lookahead open fills."""
+        d0 = date(2026, 7, 1)
+
+        all_dates = [d0]
+        cur = _td(d0, 1)
+        while cur <= _td(d0, 4):
+            all_dates.append(cur)
+            cur = _td(cur, 1)
+
+        rows = [
+            {"date": _td(d0, -1), "open": 10.0, "close": 10.0, "high": 10.0, "low": 10.0, "volume": 1000000},
+        ] + [
+            {"date": d, "open": 10.0, "close": 10.0, "high": 10.5, "low": 9.5, "volume": 1000000}
+            for d in all_dates
+        ]
+        # 信号日：开盘 9.5（未涨停），收盘 11.0（相对昨收 10.0 = +10% 涨停）
+        for r in rows:
+            if r["date"] == d0:
+                r.update(open=9.5, close=11.0, high=11.0, low=9.5)
+
+        store = FakeMarketStore({"000001": rows})
+        signal_set = _make_signal_set("test", "Test", {d0: ["000001"]})
+        config = _make_config(
+            capital={"initial_cash": 100000, "mode": "unlimited_cash", "fixed_cash_per_trade": 50000},
+            execution={"fixed_hold_n_days": 1, "entry_on_signal_day": True},
+        )
+        result = BacktestEngine(config).run(signal_set, store)
+        assert len(result.trades) == 0
+        assert len(result.skips) == 1
+        assert result.skips[0].reason == "涨停无法买入"
+
+    def test_signal_day_close_entry_price_is_close(self):
+        """entry_on_signal_day must fill at the signal-day close, never the open."""
+        d0 = date(2026, 7, 1)
+
+        all_dates = [d0]
+        cur = _td(d0, 1)
+        while cur <= _td(d0, 3):
+            all_dates.append(cur)
+            cur = _td(cur, 1)
+
+        rows = [
+            {"date": _td(d0, -1), "open": 10.0, "close": 10.0, "high": 10.0, "low": 10.0, "volume": 1000000},
+        ] + [
+            {"date": d, "open": 10.0, "close": 10.0, "high": 10.5, "low": 9.5, "volume": 1000000}
+            for d in all_dates
+        ]
+        # 信号日：open 9.5, close 10.5（+5%，未涨停）
+        for r in rows:
+            if r["date"] == d0:
+                r.update(open=9.5, close=10.5, high=10.6, low=9.5)
+
+        store = FakeMarketStore({"000001": rows})
+        signal_set = _make_signal_set("test", "Test", {d0: ["000001"]})
+        config = _make_config(
+            capital={"initial_cash": 100000, "mode": "unlimited_cash", "fixed_cash_per_trade": 50000},
+            execution={"fixed_hold_n_days": 1, "entry_on_signal_day": True},
+        )
+        result = BacktestEngine(config).run(signal_set, store)
+        assert len(result.trades) == 1
+        assert result.trades[0].buy_date == d0
+        assert result.trades[0].buy_price == pytest.approx(10.5 * 1.0002)  # close + 2bp 买入滑点
+
     def test_multiple_positions(self):
         d0 = date(2026, 7, 1)
         d1 = _td(d0, 1)
@@ -420,17 +485,31 @@ class TestUltraShort:
         assert t.sell_date == date(2026, 7, 3)      # T+1 卖出
         assert abs(t.sell_price - 11.0 * 0.9998) < 1e-6  # T+1 收盘价 - 2bp 卖出滑点
 
-    def test_skips_open_limit_up(self):
+    def test_open_limit_up_but_close_tradeable_buys(self):
+        """收盘买入按收盘价判涨停：T 日开盘涨停但收盘回落（可买）→ 应买入。"""
         rows = self._rows()
-        # T 日开盘涨停 10.78（前收 9.8 的 +10%）→ 放弃
+        # T 日开盘涨停 10.78（前收 9.8 的 +10%），收盘 10.0 未涨停
         rows["000001"][1] = {"date": date(2026, 7, 2), "open": 10.78, "close": 10.0,
                              "high": 10.78, "low": 9.9}
         engine = BacktestEngine(self._config())
         store = FakeMarketStore(rows)
         signal_set = _make_signal_set("t", "T", {date(2026, 7, 2): ["000001"]})
         result = engine.run(signal_set, store)
+        assert len(result.trades) == 1
+        assert abs(result.trades[0].buy_price - 10.0 * 1.0002) < 1e-6
+
+    def test_skips_close_limit_up(self):
+        """收盘涨停（+10%）→ 收盘价买不进 → 放弃。"""
+        rows = self._rows()
+        # T 日收盘 10.78 = 前收 9.8 的 +10% 涨停
+        rows["000001"][1] = {"date": date(2026, 7, 2), "open": 9.9, "close": 10.78,
+                             "high": 10.78, "low": 9.8}
+        engine = BacktestEngine(self._config())
+        store = FakeMarketStore(rows)
+        signal_set = _make_signal_set("t", "T", {date(2026, 7, 2): ["000001"]})
+        result = engine.run(signal_set, store)
         assert result.trades == []
-        assert any(s.stage == "buy" for s in result.skips)
+        assert any(s.stage == "buy" and s.reason == "涨停无法买入" for s in result.skips)
 
     def test_postpones_limit_down_sell(self):
         rows = self._rows()

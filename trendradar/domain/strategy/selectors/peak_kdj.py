@@ -3,7 +3,7 @@ import polars as pl
 from trendradar.domain.strategy.protocol import (
     SelectionStrategy, SelectionContext, SelectionResult, WarmupResult,
 )
-from trendradar.domain.strategy.formulas.kdj import compute_kdj
+from trendradar.domain.strategy.formulas.kdj import compute_kdj_grouped
 
 
 class PeakKDJSelector(SelectionStrategy):
@@ -11,7 +11,7 @@ class PeakKDJSelector(SelectionStrategy):
         self.definition = definition
 
     def warmup(self, market_data: pl.DataFrame) -> WarmupResult:
-        _, _, j_series = compute_kdj(market_data)
+        j_series = compute_kdj_grouped(market_data)
         df = market_data.with_columns([j_series.alias("j")])
         grouped = {g["code"][0]: g for g in df.partition_by("code")}
         return WarmupResult(grouped=grouped)

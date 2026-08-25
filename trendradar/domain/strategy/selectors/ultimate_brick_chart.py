@@ -28,17 +28,35 @@ class UltimateBrickChartSelector(SelectionStrategy):
 
     def warmup(self, market_data: pl.DataFrame) -> WarmupResult:
         from trendradar.domain.strategy.formulas.zxdkx import compute_zx_lines
-        _, dkk = compute_zx_lines(market_data)  # 四线平均（扁平列；判定行 MA114 窗口在股内）
+        p = self.definition.default_params
+        _, dkk = compute_zx_lines(
+            market_data,
+            m1=p.get("m1", 14), m2=p.get("m2", 28),
+            m3=p.get("m3", 57), m4=p.get("m4", 114),
+        )  # 四线平均（扁平列；判定行 MA114 窗口在股内）
         # ewm 递归必须按 code 分组（禁跨股票污染）
+        ema1 = p.get("ema1", 10)
+        alpha = 2.0 / (ema1 + 1)
         parts = []
         for g in market_data.partition_by("code"):
             close = g["close"]
-            mt = compute_mt(g["high"], g["low"], close)
-            zxk = close.ewm_mean(alpha=2 / 11, adjust=False).ewm_mean(alpha=2 / 11, adjust=False)
+            mt = compute_mt(
+                g["high"], g["low"], close,
+                n=p.get("n", 4), m=p.get("m", 6), t=p.get("t", 4),
+            )
+            zxk = close.ewm_mean(alpha=alpha, adjust=False).ewm_mean(alpha=alpha, adjust=False)
             parts.append(g.with_columns([mt, zxk.alias("zxk")]))
         df = pl.concat(parts).with_columns([dkk.alias("dkk")])
         grouped = {g["code"][0]: g for g in df.partition_by("code")}
         return WarmupResult(grouped=grouped)
+
+    def select_day(self, context: SelectionContext, warmup: WarmupResult) -> SelectionResult:
+        t0 = time.time()
+        m4 = self.definition.default_params.get("m4", 114)
+        selected = []
+        for code, hist in warmup.grouped.items():
+            if len(hist) < m4 + 1:   # DKK 需 MA(m4)
+                continue
 
     def select_day(self, context: SelectionContext, warmup: WarmupResult) -> SelectionResult:
         t0 = time.time()

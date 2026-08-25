@@ -18,9 +18,6 @@ class TestLimitPrices:
     def test_limit_up_price_main_board(self):
         assert limit_up_price(10.0) == pytest.approx(11.0)
 
-    def test_limit_up_price_st(self):
-        assert limit_up_price(10.0, is_st=True) == pytest.approx(10.5)
-
     def test_limit_up_price_gem(self):
         assert limit_up_price(10.0, code="300001") == pytest.approx(12.0)
 
@@ -36,9 +33,6 @@ class TestLimitPrices:
 
     def test_limit_down_price_main_board(self):
         assert limit_down_price(10.0) == pytest.approx(9.0)
-
-    def test_limit_down_price_st(self):
-        assert limit_down_price(10.0, is_st=True) == pytest.approx(9.5)
 
     def test_limit_down_price_gem(self):
         assert limit_down_price(10.0, code="300001") == pytest.approx(8.0)

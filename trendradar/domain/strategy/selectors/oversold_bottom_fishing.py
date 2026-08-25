@@ -30,15 +30,27 @@ class OversoldBottomFishingSelector(SelectionStrategy):
 
     def warmup(self, market_data: pl.DataFrame) -> WarmupResult:
         from trendradar.domain.strategy.formulas.zxdkx import compute_zx_lines
-        _, dkk = compute_zx_lines(market_data)  # 四线平均（扁平列；判定行 MA114 窗口在股内）
+        p = self.definition.default_params
+        _, dkk = compute_zx_lines(
+            market_data,
+            m1=p.get("m1", 14), m2=p.get("m2", 28),
+            m3=p.get("m3", 57), m4=p.get("m4", 114),
+        )  # 四线平均（扁平列；判定行 MA114 窗口在股内）
         # ewm/位移类指标必须按 code 分组——扁平列会跨股票污染（SMA/EMA 递归 + shift）
+        ema1 = p.get("ema1", 10)
+        zxk_alpha = 2.0 / (ema1 + 1)
+        diff_fast = p.get("dif_fast", 12)
+        diff_slow = p.get("dif_slow", 26)
         parts = []
         for g in market_data.partition_by("code"):
             close = g["close"]
-            mt = compute_mt(g["high"], g["low"], close)
-            zxk = close.ewm_mean(alpha=2 / 11, adjust=False).ewm_mean(alpha=2 / 11, adjust=False)
-            diff = (close.ewm_mean(alpha=2 / 13, adjust=False)
-                    - close.ewm_mean(alpha=2 / 27, adjust=False))
+            mt = compute_mt(
+                g["high"], g["low"], close,
+                n=p.get("n", 4), m=p.get("m", 6), t=p.get("t", 4),
+            )
+            zxk = close.ewm_mean(alpha=zxk_alpha, adjust=False).ewm_mean(alpha=zxk_alpha, adjust=False)
+            diff = (close.ewm_mean(alpha=2.0 / (diff_fast + 1), adjust=False)
+                    - close.ewm_mean(alpha=2.0 / (diff_slow + 1), adjust=False))
             dd2 = close - 2 * close.shift(1) + close.shift(2)
             parts.append(g.with_columns([
                 mt, zxk.alias("zxk"), diff.alias("diff"), dd2.alias("dd2"),
@@ -49,9 +61,14 @@ class OversoldBottomFishingSelector(SelectionStrategy):
 
     def select_day(self, context: SelectionContext, warmup: WarmupResult) -> SelectionResult:
         t0 = time.time()
+        p = self.definition.default_params
+        m4 = p.get("m4", 114)
+        dd2_window = p.get("dd2_window", 5)
+        every_neg = p.get("every_neg", 5)
+        every_down = p.get("every_down", 4)
         selected = []
         for code, hist in warmup.grouped.items():
-            if len(hist) < 115:   # DKK 需 MA114
+            if len(hist) < m4 + 1:   # DKK 需 MA(m4)
                 continue
             latest = hist.row(-1, named=True)
             # null/NaN 一律排除（0-span 一字板等）
@@ -65,18 +82,18 @@ class OversoldBottomFishingSelector(SelectionStrategy):
                 continue  # C1
             dd2 = hist["dd2"].to_list()
             dd2_t = dd2[-1]
-            if not (dd2_t > 0 and dd2_t == max(dd2[-5:])):
+            if not (dd2_t > 0 and dd2_t == max(dd2[-dd2_window:])):
                 continue  # C2
             if not (latest["zxk"] < latest["dkk"]):
                 continue  # C3
             if not (latest["close"] < latest["zxk"]):
                 continue  # C4
             diff = hist["diff"].to_list()
-            if not (all(d < 0 for d in diff[-5:])          # EVERY(DIFF<0,5) 含今日
-                    and diff[-1] >= diff[-2]                # 今日走平/回升（仍为负）
-                    and diff[-2] < diff[-3] and diff[-3] < diff[-4]
-                    and diff[-4] < diff[-5] and diff[-5] < diff[-6]):  # 今日之前 4 日持续下行
-                continue  # C5
+            # C5：EVERY(DIFF<0, every_neg) 含今日 + 今日走平/回升 + 此前 every_down 日持续下行
+            if not (all(d < 0 for d in diff[-every_neg:])
+                    and diff[-1] >= diff[-2]
+                    and all(diff[-i - 1] < diff[-i - 2] for i in range(1, every_down + 1))):
+                continue
             selected.append(code)
         return SelectionResult(
             strategy_id=self.definition.strategy_id,
