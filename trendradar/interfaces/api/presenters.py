@@ -296,7 +296,10 @@ def _backtest_summary(key: str, result: dict, metrics: dict) -> list[dict]:
             },
         )
         row["trade_count"] += 1
-        row["total_return_pct"] += float(t.get("return_pct") or 0.0)
+        # 按投入资金加权的策略收益率（sum(profit)/sum(buy_price*shares)），
+        # 避免"每笔收益率简单相加"产生误导性的巨大数值
+        row["_profit_sum"] = row.get("_profit_sum", 0.0) + float(t.get("profit") or 0.0)
+        row["_cost_sum"] = row.get("_cost_sum", 0.0) + float(t.get("buy_price") or 0.0) * float(t.get("shares") or 0)
         if float(t.get("return_pct") or 0.0) > 0:
             row["win_rate_pct"] = (
                 (row["win_rate_pct"] * (row["trade_count"] - 1) + 100.0)
@@ -329,6 +332,10 @@ def _backtest_summary(key: str, result: dict, metrics: dict) -> list[dict]:
             },
         )
         row["skip_count"] += 1
+    for row in by_strategy.values():
+        cost = row.pop("_cost_sum", 0.0)
+        profit = row.pop("_profit_sum", 0.0)
+        row["total_return_pct"] = (profit / cost * 100.0) if cost > 0 else 0.0
     return list(by_strategy.values())
 
 
