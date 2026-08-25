@@ -440,7 +440,7 @@ def test_backtest_submit_passes_when_signal_has_future_days(client):
 # ---------------------------------------------------------------------------
 
 
-def test_bulk_delete_selection_results(client):
+def test_bulk_delete_selection_results(client, tmp_path):
     resp = client.request(
         "DELETE",
         "/api/selection-results",
@@ -454,9 +454,90 @@ def test_bulk_delete_selection_results(client):
 
     # file gone
     assert not (
-        Path(str(client.app.state.store.storage_root))
-        / "objects" / "executions" / "20260820_100000_selection_a1b2"
+        tmp_path / "storage" / "objects" / "executions" / "20260820_100000_selection_a1b2" / "selection" / "signals.json"
     ).exists()
+
+
+def test_delete_selection_blocked_by_backtest_reference(client, tmp_path):
+    import sqlite3
+
+    db = tmp_path / "storage" / "app.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "INSERT INTO executions (execution_key, execution_type) VALUES (?, ?)",
+        ("20260820_100000_selection_a2b3", "selection"),
+    )
+    conn.execute(
+        "INSERT INTO execution_links (source_execution_key, target_execution_key, link_type) "
+        "VALUES (?, ?, 'backtest_uses_selection')",
+        ("20260820_100000_selection_a2b3", "bt_xyz"),
+    )
+    conn.commit()
+    conn.close()
+
+    resp = client.request(
+        "DELETE",
+        "/api/selection-results",
+        json={"execution_keys": ["20260820_100000_selection_a2b3"]},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["deleted"] == 0
+    assert payload["file_errors"], "referenced selection must be reported in file_errors"
+    assert (
+        tmp_path / "storage" / "objects" / "executions" / "20260820_100000_selection_a2b3"
+    ).is_dir()
+
+
+def test_delete_backtest_result_rejects_dot(client, tmp_path):
+    """'.' must not resolve to the executions root and wipe every result.
+
+    The literal "/." is normalized away by HTTP clients (httpx rewrites it to
+    "/"), so probe with the percent-encoded form that reaches the single-key
+    route with execution_key == ".".
+    """
+    resp = client.request("DELETE", "/api/backtest-results/%2E")
+    assert resp.status_code == 400
+    root = tmp_path / "storage" / "objects" / "executions"
+    assert (root / "20260820_100100_backtest_c3d4").is_dir()
+    assert (root / "20260820_100000_selection_a1b2").is_dir()
+
+
+def test_delete_backtest_result_rejects_non_backtest_dir(client, tmp_path):
+    """Only directories confirmed to hold a backtest may be deleted."""
+    resp = client.request("DELETE", "/api/backtest-results/20260820_100000_selection_a1b2")
+    assert resp.status_code == 404
+    assert (tmp_path / "storage" / "objects" / "executions" / "20260820_100000_selection_a1b2").is_dir()
+
+
+def test_bulk_delete_backtest_results_respects_keys(client, tmp_path):
+    """DELETE /backtest-results with execution_keys deletes only those, in the
+    same contract shape as selection deletes."""
+    resp = client.request(
+        "DELETE",
+        "/api/backtest-results",
+        json={"execution_keys": ["20260820_100100_backtest_c3d4", "nonexistent_key"]},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert set(payload) >= {"result_type", "requested", "deleted", "missing", "file_errors"}
+    assert payload["result_type"] == "backtest"
+    assert payload["requested"] == 2
+    assert payload["deleted"] == 1
+    assert payload["missing"] == ["nonexistent_key"]
+    root = tmp_path / "storage" / "objects" / "executions"
+    assert not (root / "20260820_100100_backtest_c3d4").exists()
+    assert (root / "20260820_100000_selection_a1b2").is_dir()
+
+
+def test_bulk_delete_backtest_results_no_body_deletes_all(client, tmp_path):
+    resp = client.request("DELETE", "/api/backtest-results")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["result_type"] == "backtest"
+    assert payload["deleted"] == 1
+    assert not (tmp_path / "storage" / "objects" / "executions" / "20260820_100100_backtest_c3d4").exists()
+    assert (tmp_path / "storage" / "objects" / "executions" / "20260820_100000_selection_a1b2").is_dir()
 
 
 def test_market_sync_force_passthrough(client):
@@ -475,9 +556,12 @@ def test_ultra_short_trade_strategy_maps_to_execution():
     assert _trade_strategy_execution("ultra_short") == {
         "entry_on_signal_day": True, "entry_at_close": True, "fixed_hold_n_days": 1,
     }
-    # 现有止损选项不接线（保持现状）
-    assert _trade_strategy_execution("long_term_bull_bear_stop") == {}
-    assert _trade_strategy_execution("ten_day_low_stop") == {}
+    assert _trade_strategy_execution("long_term_bull_bear_stop") == {
+        "force_sell_on_two_day_close_below_long_term_bull_bear_line": True,
+    }
+    assert _trade_strategy_execution("ten_day_low_stop") == {
+        "close_below_recent_low_stop_window": 10,
+    }
     assert _trade_strategy_execution(None) == {}
 
 

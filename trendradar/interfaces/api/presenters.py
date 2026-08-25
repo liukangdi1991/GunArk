@@ -231,11 +231,12 @@ def _backtest_config(key: str) -> dict:
         return {"capital_mode": "unlimited_cash", "cash_per_trade": 50000}
     request = json.loads(row[0])
     params = request.get("params") or {}
-    # execution 可能位于顶层（backtest_from_selection）或 backtest 下（selection_backtest）
+    # execution/capital 可能位于顶层（backtest_from_selection）或 backtest 下（selection_backtest）
     execution = request.get("execution") or (request.get("backtest") or {}).get("execution") or {}
+    capital = request.get("capital") or (request.get("backtest") or {}).get("capital") or {}
     return {
-        "capital_mode": params.get("mode") or request.get("capital", {}).get("mode", "unlimited_cash"),
-        "cash_per_trade": params.get("cash_per_trade") or request.get("capital", {}).get("fixed_cash_per_trade", 50000),
+        "capital_mode": params.get("mode") or capital.get("mode", "unlimited_cash"),
+        "cash_per_trade": params.get("cash_per_trade") or capital.get("fixed_cash_per_trade", 50000),
         "execution": execution,
         "trade_strategy": params.get("trade_strategy") or request.get("trade_strategy"),
     }
@@ -258,7 +259,7 @@ def _backtest_summary(key: str, result: dict, metrics: dict) -> list[dict]:
                 "annual_return_pct": metrics.get("annual_return_pct") or 0.0,
                 "max_drawdown_pct": metrics.get("max_drawdown_pct") or 0.0,
                 "sharpe": metrics.get("sharpe") or 0.0,
-                "final_cash": 0.0,
+                "final_cash": metrics.get("final_cash") or 0.0,
                 "initial_cash": metrics.get("initial_cash") or 0.0,
                 "open_positions": 0,
                 "capital_mode": "",
@@ -291,7 +292,7 @@ def _backtest_summary(key: str, result: dict, metrics: dict) -> list[dict]:
                 "annual_return_pct": metrics.get("annual_return_pct") or 0.0,
                 "max_drawdown_pct": metrics.get("max_drawdown_pct") or 0.0,
                 "sharpe": metrics.get("sharpe") or 0.0,
-                "final_cash": 0.0,
+                "final_cash": metrics.get("final_cash") or 0.0,
                 "initial_cash": metrics.get("initial_cash") or 0.0,
                 "open_positions": 0,
                 "capital_mode": "",
@@ -534,6 +535,12 @@ def trading_dates_payload(start: str | None = None, end: str | None = None) -> d
 
 
 _TRADE_STRATEGY_EXECUTION = {
+    "long_term_bull_bear_stop": {
+        "force_sell_on_two_day_close_below_long_term_bull_bear_line": True,
+    },
+    "ten_day_low_stop": {
+        "close_below_recent_low_stop_window": 10,
+    },
     "ultra_short": {
         "entry_on_signal_day": True,
         "entry_at_close": True,
@@ -612,7 +619,13 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
         )
 
         dates = [date.fromisoformat(d) for d in trading_dates_payload()["dates"]]
-        reasons = validate_backtest_prerequisites(signal_set, dates)
+        execution = _trade_strategy_execution(params.get("trade_strategy"))
+        reasons = validate_backtest_prerequisites(
+            signal_set,
+            dates,
+            fixed_hold_n_days=execution.get("fixed_hold_n_days", 5),
+            entry_on_signal_day=execution.get("entry_on_signal_day", False),
+        )
         if reasons:
             raise ValueError("；".join(reasons))
 
@@ -626,7 +639,7 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
                     "mode": params.get("mode", "unlimited_cash"),
                     "fixed_cash_per_trade": params.get("cash_per_trade", 50000),
                 },
-                "execution": _trade_strategy_execution(params.get("trade_strategy")),
+                "execution": execution,
                 "trade_strategy": params.get("trade_strategy"),
             },
         )
@@ -660,6 +673,7 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
                 "end_date": params.get("end") or params.get("end_date"),
                 "codes": params.get("codes"),
                 "force": params.get("force", False),
+                "exclude_boards": params.get("exclude_boards"),
             },
         )
         job_type = "market_sync"
@@ -755,6 +769,24 @@ def console_payload(executor, job_id: str, offset: int = 0) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _referencing_backtests(selection_key: str) -> list[str]:
+    """execution_links backtest keys that consume this selection."""
+    import sqlite3
+
+    db = _storage_root() / "app.db"
+    try:
+        conn = sqlite3.connect(str(db))
+        rows = conn.execute(
+            "SELECT target_execution_key FROM execution_links "
+            "WHERE source_execution_key = ? AND link_type = 'backtest_uses_selection'",
+            (selection_key,),
+        ).fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+    except Exception:
+        return []
+
+
 def bulk_delete_selections(execution_keys: list[str] | None = None) -> dict:
     import shutil
 
@@ -778,7 +810,67 @@ def bulk_delete_selections(execution_keys: list[str] | None = None) -> dict:
         key
         for key in (execution_keys or [])
         if not (root / key).exists()
+        or not (root / key / "selection" / "signals.json").exists()
     ]
+    deleted = 0
+    deleted = 0
+    file_errors = []
+    for d in targets:
+        refs = _referencing_backtests(d.name)
+        if refs:
+            file_errors.append(
+                f"选股 {d.name} 被回测 {', '.join(refs)} 引用，未删除"
+            )
+            continue
+        try:
+            shutil.rmtree(d)
+            deleted += 1
+        except Exception:
+            pass
+    return {
+        "result_type": "selection",
+        "requested": len(execution_keys) if execution_keys is not None else deleted,
+        "deleted": deleted,
+        "missing": missing,
+        "file_errors": file_errors,
+    }
+
+
+def bulk_delete_backtests(execution_keys: list[str] | None = None) -> dict:
+    """Delete backtest execution directories; shape mirrors selection deletes.
+
+    None = clear every directory holding a backtest (no-body request).
+    Keys = delete only those; entries that do not exist or are not a backtest
+    are reported in ``missing`` (computed before deletion, so a deleted key is
+    never misreported as missing).
+    """
+    import shutil
+
+    root = _executions_root()
+
+    def _is_backtest(d: Path) -> bool:
+        return d.is_dir() and (d / "backtest" / "metrics.json").exists()
+
+    if execution_keys is None:
+        targets = [
+            d
+            for d in (root.iterdir() if root.is_dir() else [])
+            if _is_backtest(d)
+        ]
+        missing = []
+    else:
+        targets = []
+        missing = []
+        for key in execution_keys:
+            if "/" in key or "\\" in key or ".." in key or "." in key:
+                missing.append(key)
+                continue
+            d = root / key
+            if _is_backtest(d):
+                targets.append(d)
+            else:
+                missing.append(key)
+
     deleted = 0
     for d in targets:
         try:
@@ -787,7 +879,7 @@ def bulk_delete_selections(execution_keys: list[str] | None = None) -> dict:
         except Exception:
             pass
     return {
-        "result_type": "selection",
+        "result_type": "backtest",
         "requested": len(execution_keys) if execution_keys is not None else deleted,
         "deleted": deleted,
         "missing": missing,

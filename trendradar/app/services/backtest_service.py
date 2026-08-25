@@ -24,6 +24,7 @@ def validate_backtest_prerequisites(
     signal_set: SignalSet,
     trading_dates: list[date],
     fixed_hold_n_days: int = 5,
+    entry_on_signal_day: bool = False,
 ) -> list[str]:
     """Return blocking reasons for a backtest; empty list means it can run.
 
@@ -41,7 +42,8 @@ def validate_backtest_prerequisites(
         return ["信号集缺少信号日期，无法回测。"]
 
     cal_index = {d: i for i, d in enumerate(trading_dates)}
-    needed = fixed_hold_n_days + 1  # T+1 buy + N-day hold to T+N+1
+    # 信号日入场（entry_on_signal_day）当天即可买入；否则 T+1 买入
+    needed = fixed_hold_n_days + (0 if entry_on_signal_day else 1)
     tradeable = [
         d
         for d in signal_dates
@@ -55,9 +57,10 @@ def validate_backtest_prerequisites(
     if last_idx is None:
         return [f"信号日 {last_sig} 不在交易日历中，无法确定买入日。"]
 
+    entry_desc = "信号日买入" if entry_on_signal_day else "T+1 买入"
     return [
         f"信号集内所有信号日均无足够交易日完成买入+持仓（需 {needed} 个："
-        f"T+1 买入 + 持仓 {fixed_hold_n_days} 日）。最新信号日 {last_sig} 之后仅剩 "
+        f"{entry_desc} + 持仓 {fixed_hold_n_days} 日）。最新信号日 {last_sig} 之后仅剩 "
         f"{len(trading_dates) - 1 - last_idx} 个交易日，回测将没有任何交易。"
         f"请选择更早的选股区间，或先同步更新行情数据（当前行情截止 {trading_dates[-1]}）。"
     ]
@@ -83,7 +86,6 @@ def _build_config(request: dict) -> BacktestConfig:
         max_sell_postpone_days=exe.get("max_sell_postpone_days", 10),
         reject_if_limit_up_on_buy=exe.get("reject_if_limit_up_on_buy", True),
         postpone_if_limit_down_on_sell=exe.get("postpone_if_limit_down_on_sell", True),
-        skip_if_suspended=exe.get("skip_if_suspended", True),
         force_sell_on_two_day_close_below_long_term_bull_bear_line=exe.get(
             "force_sell_on_two_day_close_below_long_term_bull_bear_line", False
         ),
@@ -155,6 +157,7 @@ def _run_backtest_worker(
 
     trades_data = [
         {
+            "execution_key": ctx.job_id,
             "strategy": t.strategy,
             "code": t.code,
             "signal_date": str(t.signal_date),
@@ -165,12 +168,14 @@ def _run_backtest_worker(
             "shares": t.shares,
             "profit": t.profit,
             "return_pct": t.return_pct,
+            "sell_postpone_days": t.sell_postpone_days,
         }
         for t in result.trades
     ]
 
     skip_data = [
         {
+            "execution_key": ctx.job_id,
             "strategy": s.strategy,
             "code": s.code,
             "signal_date": str(s.signal_date),
@@ -183,6 +188,8 @@ def _run_backtest_worker(
 
     equity_data = [
         {
+            "execution_key": ctx.job_id,
+            "strategy": "",
             "date": str(e["date"]),
             "cash": e["cash"],
             "equity": e["equity"],
@@ -191,8 +198,14 @@ def _run_backtest_worker(
         for e in result.equity_curve
     ]
 
+    metrics = dict(result.metrics)
+    metrics["initial_cash"] = config.capital.initial_cash
+    metrics["final_cash"] = (
+        result.equity_curve[-1]["cash"] if result.equity_curve else config.capital.initial_cash
+    )
+
     output = {
-        "metrics": result.metrics,
+        "metrics": metrics,
         "trade_count": len(result.trades),
         "skip_count": len(result.skips),
         "trades": trades_data,
@@ -233,7 +246,10 @@ def _run_backtest_worker(
 
         _register_backtest_metadata(ctx.job_id, out_dir)
 
-        _link_backtest_to_selection(signal_set.execution_key, ctx.job_id)
+        # 组合管线（selection_backtest）中选股与回测共用同一 job_id——
+        # 跳过自引用链接，避免血缘把回测自身当成来源选股
+        if signal_set.execution_key != ctx.job_id:
+            _link_backtest_to_selection(signal_set.execution_key, ctx.job_id)
 
     ctx.succeed(output)
 

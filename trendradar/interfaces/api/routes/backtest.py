@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request as FastAPIRequest
 
 from trendradar.interfaces.api.schemas.execution import (
     BacktestRequest as BacktestSubmitRequest,
+    DeleteKeysRequest,
     SelectionBacktestRequest,
 )
 
@@ -41,6 +42,8 @@ def list_backtest_results(request: FastAPIRequest):
 def get_backtest_report(execution_key: str, request: FastAPIRequest):
     from trendradar.interfaces.api.presenters import backtest_result_payload
 
+    if "/" in execution_key or "\\" in execution_key or ".." in execution_key:
+        raise HTTPException(status_code=400, detail="Invalid execution_key")
     root = _artifacts_root(request)
     result_file = root / execution_key / "backtest" / "result.json"
     if not result_file.exists():
@@ -50,30 +53,28 @@ def get_backtest_report(execution_key: str, request: FastAPIRequest):
 
 @router.delete("/backtest-results/{execution_key}")
 def delete_backtest_result(execution_key: str, request: FastAPIRequest):
-    if "/" in execution_key or "\\" in execution_key or ".." in execution_key:
+    # "." must not resolve to the executions root itself, and only directories
+    # confirmed to hold a backtest may be deleted (see bulk_delete_backtests).
+    if "/" in execution_key or "\\" in execution_key or ".." in execution_key or "." in execution_key:
         raise HTTPException(status_code=400, detail="Invalid execution_key")
-    root = _artifacts_root(request)
-    target = (root / execution_key).resolve()
-    if not str(target).startswith(str(root.resolve())):
-        raise HTTPException(status_code=400, detail="Invalid execution_key")
-    if not target.exists():
+    from trendradar.interfaces.api.presenters import bulk_delete_backtests
+
+    result = bulk_delete_backtests([execution_key])
+    if result["deleted"] == 0:
         raise HTTPException(status_code=404, detail=f"Backtest result not found for '{execution_key}'")
-    import shutil
-    shutil.rmtree(target)
-    return {"data": {"execution_key": execution_key, "deleted": True}}
+    return result
 
 
 @router.delete("/backtest-results")
-def delete_all_backtest_results(request: FastAPIRequest):
-    root = _artifacts_root(request)
-    count = 0
-    if root.exists():
-        import shutil
-        for exec_dir in list(root.iterdir()):
-            if exec_dir.is_dir() and (exec_dir / "backtest" / "metrics.json").exists():
-                shutil.rmtree(exec_dir)
-                count += 1
-    return {"data": {"deleted": count}}
+def delete_backtest_results(
+    body: DeleteKeysRequest | None = None,
+    request: FastAPIRequest = None,
+):
+    """Delete only the requested backtests; a body-less request clears all."""
+    from trendradar.interfaces.api.presenters import bulk_delete_backtests
+
+    keys = body.execution_keys if body else None
+    return bulk_delete_backtests(keys)
 
 
 @router.post("/backtests")
@@ -94,9 +95,16 @@ def submit_backtest_route(body: BacktestSubmitRequest, request: FastAPIRequest):
     if signal_set is None:
         raise HTTPException(status_code=404, detail=f"信号集不存在: {execution_key}")
 
-    # Prerequisites: signal dates must leave enough trading days for T+1 buy + hold.
+    # Prerequisites: signal dates must leave enough trading days for buy + hold.
+    # 超短线（entry_on_signal_day）只需持有期天数，T+1 需要多 1 天。
     dates = [date.fromisoformat(d) for d in trading_dates_payload()["dates"]]
-    reasons = validate_backtest_prerequisites(signal_set, dates)
+    execution = req.get("execution") or {}
+    reasons = validate_backtest_prerequisites(
+        signal_set,
+        dates,
+        fixed_hold_n_days=execution.get("fixed_hold_n_days", 5),
+        entry_on_signal_day=execution.get("entry_on_signal_day", False),
+    )
     if reasons:
         raise HTTPException(status_code=400, detail="；".join(reasons))
 
@@ -121,7 +129,9 @@ def submit_backtest_route(body: BacktestSubmitRequest, request: FastAPIRequest):
             "created_at": _now_iso(),
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import logging
+        logging.getLogger("trendradar.api").error("submit_backtest failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="提交失败，请查看执行控制台日志")
 
 
 @router.post("/selection-backtest")
@@ -137,4 +147,6 @@ def submit_selection_backtest_route(body: SelectionBacktestRequest, request: Fas
         )
         return {"data": {"job_id": job_id, "status": "submitted"}}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import logging
+        logging.getLogger("trendradar.api").error("submit_selection_backtest failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="提交失败，请查看执行控制台日志")

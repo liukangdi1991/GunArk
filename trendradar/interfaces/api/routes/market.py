@@ -43,7 +43,9 @@ def submit_market_sync(body: MarketSyncRequest, request: FastAPIRequest):
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        import logging
+        logging.getLogger("trendradar.api").error("submit_market_sync failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=400, detail="同步提交失败，请查看执行控制台日志")
 
 
 @router.get("/market-data/trading-dates")
@@ -52,4 +54,7 @@ def get_trading_dates(
     end: str = Query(default=None),
 ):
     from trendradar.interfaces.api.presenters import trading_dates_payload
-    return trading_dates_payload(start, end)
+    try:
+        return trading_dates_payload(start, end)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

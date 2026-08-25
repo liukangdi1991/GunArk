@@ -41,7 +41,9 @@ def submit_execution(body: ExecutionRequest, request: FastAPIRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import logging
+        logging.getLogger("trendradar.api").error("submit_execution failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="提交失败，请查看执行控制台日志")
 
 
 @router.get("/executions/{execution_id}", response_model=JobStatusResponse)
@@ -74,6 +76,8 @@ def get_selection_result(execution_key: str, request: FastAPIRequest):
     from trendradar.infrastructure.runtime import runtime_root
     from trendradar.interfaces.api.presenters import selection_result_payload
 
+    if "/" in execution_key or "\\" in execution_key or ".." in execution_key:
+        raise HTTPException(status_code=400, detail="Invalid execution_key")
     signals_file = (
         Path(runtime_root())
         / "storage" / "objects" / "executions" / execution_key / "selection" / "signals.json"

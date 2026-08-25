@@ -109,7 +109,8 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_credentials=True,
+        # 无 cookie/会话鉴权；allow_credentials=True 与 * 组合无效且是 CSRF 风险面
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )

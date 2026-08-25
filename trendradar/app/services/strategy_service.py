@@ -264,15 +264,15 @@ def update_strategy_settings(store, strategy_id: str, updates: dict) -> dict:
             "SELECT * FROM strategy_settings WHERE strategy_id = ?", (strategy_id,)
         ).fetchone()
 
-        enabled = updates.get("enabled", True)
-        params = updates.get("params", {})
         if existing is None:
-            if not isinstance(enabled, bool):
-                enabled = True
-            params_json = json.dumps(params, ensure_ascii=False)
+            raw_enabled = updates.get("enabled", True)
+            if not isinstance(raw_enabled, bool):
+                raw_enabled = True
+            enabled_val = 1 if raw_enabled else 0
+            params_json = json.dumps(updates.get("params", {}), ensure_ascii=False)
             conn.execute(
                 "INSERT INTO strategy_settings (strategy_id, enabled, params_json, updated_at) VALUES (?, ?, ?, ?)",
-                (strategy_id, 1 if enabled else 0, params_json, now),
+                (strategy_id, enabled_val, params_json, now),
             )
         else:
             if "enabled" in updates:
@@ -280,7 +280,7 @@ def update_strategy_settings(store, strategy_id: str, updates: dict) -> dict:
             else:
                 enabled_val = existing["enabled"]
             if "params" in updates:
-                params_json = json.dumps(params, ensure_ascii=False)
+                params_json = json.dumps(updates["params"], ensure_ascii=False)
             else:
                 params_json = existing["params_json"]
             conn.execute(
@@ -293,8 +293,8 @@ def update_strategy_settings(store, strategy_id: str, updates: dict) -> dict:
     return {
         "strategy_id": strategy_id,
         "name": defn.name,
-        "enabled": enabled,
-        "params": params,
+        "enabled": bool(enabled_val),
+        "params": json.loads(params_json),
         "default_params": dict(defn.default_params),
         "updated_at": now,
     }

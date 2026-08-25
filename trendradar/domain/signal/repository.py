@@ -9,6 +9,8 @@ class SignalRepository:
         self._store = artifact_store
 
     def _path_for(self, execution_key: str) -> Path:
+        if "/" in execution_key or "\\" in execution_key or ".." in execution_key:
+            raise ValueError(f"Invalid execution_key: {execution_key!r}")
         return self._store.objects_root / "executions" / execution_key / "selection" / "signals.json"
 
     def save(self, signal_set: SignalSet, execution_key: str) -> str:

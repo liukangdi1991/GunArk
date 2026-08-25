@@ -318,11 +318,12 @@ def test_selection_backtest_pipeline_registers_metadata(tmp_path, monkeypatch):
     assert "backtest/result.json" in types
     assert "backtest/metrics.json" in types
 
+    # 组合管线共用 job_id：不应产生 source=target 的自引用血缘
     link = conn.execute(
         "SELECT * FROM execution_links WHERE source_execution_key = ? "
         "AND target_execution_key = ? AND link_type = 'backtest_uses_selection'",
         (job_id, job_id),
     ).fetchone()
-    assert link is not None
+    assert link is None
 
     executor.shutdown(wait=True)
