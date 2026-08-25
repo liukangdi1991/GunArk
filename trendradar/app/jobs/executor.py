@@ -34,12 +34,17 @@ class JobExecutor:
             raise RuntimeError("Executor has been shut down")
 
         if job_type == "market_sync":
+            # 检查 + 注册必须在同一把锁内，否则并发提交会双跑（TOCTOU）
             with self._lock:
                 if any(
                     j.job_type == "market_sync" and not j.future.done()
                     for j in self._jobs.values()
                 ):
                     raise RuntimeError("market_sync job already running")
+                job_id = self._store.create_job(job_type, request)
+                fut = self._pool.submit(self._run, job_id, job_type, run_fn)
+                self._jobs[job_id] = JobState(job_id, job_type, fut)
+                return job_id
 
         job_id = self._store.create_job(job_type, request)
         fut = self._pool.submit(self._run, job_id, job_type, run_fn)
@@ -53,6 +58,9 @@ class JobExecutor:
                 return False
             if job_id in self._cancelling:
                 return False
+            state = self._jobs[job_id]
+            if state.future.done():
+                return False  # 已完成任务不可取消
             self._cancelling.add(job_id)
         return True
 
@@ -117,3 +125,7 @@ class JobExecutor:
                 self._store.set_status(job_id, "cancelled")
             else:
                 ctx.fail(str(e))
+        finally:
+            with self._lock:
+                self._jobs.pop(job_id, None)
+                self._cancelling.discard(job_id)

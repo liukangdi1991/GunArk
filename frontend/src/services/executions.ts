@@ -1,9 +1,14 @@
+
 import { requestJson } from "./apiClient";
 import type {
   ExecutionConsoleResponse,
   ExecutionRequest,
   ExecutionSubmitResponse,
 } from "../types/execution";
+
+export interface CancelExecutionResponse {
+  data: { job_id: string; cancelled: boolean };
+}
 
 export function getExecutionConsole(
   executionId: string,
@@ -21,8 +26,8 @@ export function submitExecution(payload: ExecutionRequest): Promise<ExecutionSub
   });
 }
 
-export function cancelExecution(executionId: string): Promise<ExecutionSubmitResponse> {
-  return requestJson<ExecutionSubmitResponse>(
+export function cancelExecution(executionId: string): Promise<CancelExecutionResponse> {
+  return requestJson<CancelExecutionResponse>(
     `/api/executions/${encodeURIComponent(executionId)}/cancel`,
     { method: "POST" },
   );

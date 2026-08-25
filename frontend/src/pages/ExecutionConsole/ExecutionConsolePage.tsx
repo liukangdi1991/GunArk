@@ -49,7 +49,6 @@ export function ExecutionConsolePage() {
   const [errorMessage, setErrorMessage] = useState("");
   const [cancelErrorMessage, setCancelErrorMessage] = useState("");
   const [cancelSubmitting, setCancelSubmitting] = useState(false);
-  const [redirected, setRedirected] = useState(false);
   const redirectedRef = useRef(false);
   const consoleRef = useRef<HTMLDivElement | null>(null);
   const offsetRef = useRef(0);
@@ -69,7 +68,6 @@ export function ExecutionConsolePage() {
     setPendingText("");
     setErrorMessage("");
     setCancelErrorMessage("");
-    setRedirected(false);
 
     async function poll() {
       if (!executionId) {
@@ -131,7 +129,6 @@ export function ExecutionConsolePage() {
     }
 
     redirectedRef.current = true;
-    setRedirected(true);
     const timer = window.setTimeout(() => {
       window.location.href = execution.result_url || "/";
     }, 2000);
@@ -148,8 +145,9 @@ export function ExecutionConsolePage() {
     setCancelSubmitting(true);
     setCancelErrorMessage("");
     try {
-      const payload = await cancelExecution(executionId);
-      setExecution(payload);
+      // 后端返回 {data:{job_id,cancelled}} 确认——执行状态由轮询更新为
+      // cancelling/cancelled，不要用它覆盖 execution 对象。
+      await cancelExecution(executionId);
     } catch (error) {
       const message = error instanceof Error ? error.message : "停止任务失败。";
       setCancelErrorMessage(message);

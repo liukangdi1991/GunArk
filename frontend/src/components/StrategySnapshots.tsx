@@ -47,7 +47,7 @@ function describeTradeRule(
   capitalMode?: string,
   cashPerTrade?: number,
 ): string[] {
-  const holdDays = numberParam(params, "hold_n_days");
+  const holdDays = numberParam(params, "fixed_hold_n_days");
   const tradeStrategy = typeof params.trade_strategy === "string" ? params.trade_strategy : "";
   const tradeStrategyName = typeof params.trade_strategy_name === "string" && params.trade_strategy_name
     ? params.trade_strategy_name
@@ -161,7 +161,6 @@ function describeStrategy(strategy: Strategy): string[] {
     return lines;
   }
 
-  return fallbackLines.length ? fallbackLines : ["未配置策略说明，本次报告已保存运行时策略快照。"];
   if (strategy.class === "SingleNeedleDown20Selector") {
     lines.push(`${numberParam(params, "n1") ?? "-"} 日随机指标 ≤ ${numberParam(params, "short_max") ?? "-"}。`);
     lines.push(`${numberParam(params, "n2") ?? "-"} 日区间随机指标 > ${numberParam(params, "long_min") ?? "-"}。`);
@@ -189,6 +188,8 @@ function describeStrategy(strategy: Strategy): string[] {
     lines.push(`多头排列：收盘 ≥ ZXK > DKK（ZXK 为 EMA${numberParam(params, "ema1") ?? "-"} 双平滑）。`);
     return lines;
   }
+
+  return fallbackLines.length ? fallbackLines : ["未配置策略说明，本次报告已保存运行时策略快照。"];
 }
 
 export function StrategySnapshots({

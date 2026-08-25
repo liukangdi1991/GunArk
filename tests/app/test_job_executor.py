@@ -213,8 +213,8 @@ def test_two_jobs_run_concurrently(tmp_path):
         results.append("b")
         ctx.succeed({})
 
-    executor.submit("selection", work_a, {})
-    executor.submit("backtest", work_b, {})
+    job_a = executor.submit("selection", work_a, {})
+    job_b = executor.submit("backtest", work_b, {})
 
     deadline = time.time() + 2.0
     while time.time() < deadline:
@@ -225,8 +225,8 @@ def test_two_jobs_run_concurrently(tmp_path):
     assert "a" in results
     assert "b" in results
 
-    assert executor.get_state(executor._get_job_ids()[0])["status"] == "success"
-    assert executor.get_state(executor._get_job_ids()[1])["status"] == "success"
+    assert executor.get_state(job_a)["status"] == "success"
+    assert executor.get_state(job_b)["status"] == "success"
 
 
 def test_job_id_format(tmp_path):
@@ -294,8 +294,14 @@ def test_concurrent_job_writes_are_thread_safe(tmp_path):
     j1 = executor.submit("selection", work, {})
     j2 = executor.submit("backtest", work, {})
 
-    executor._jobs[j1].future.result(timeout=10)
-    executor._jobs[j2].future.result(timeout=10)
+    # 用 store 侧查询等待完成（executor 完成后会清理内部注册表）
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        s1 = executor.get_state(j1)["status"]
+        s2 = executor.get_state(j2)["status"]
+        if s1 == "success" and s2 == "success":
+            break
+        time.sleep(0.02)
 
     assert executor.get_state(j1)["status"] == "success"
     assert executor.get_state(j2)["status"] == "success"
