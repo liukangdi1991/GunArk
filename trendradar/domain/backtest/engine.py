@@ -51,13 +51,15 @@ class BacktestEngine:
         skips: list[SkipRecord] = []
         equity_curve: list[dict] = []
         cal_index = {d: i for i, d in enumerate(calendar)}
-        total = len(calendar)
+        # 从首个买入日开始（信号前无交易的平线段不进 equity，年化指标不被稀释）
+        start_idx = min(cal_index[d] for d in signals_by_date)
+        total = len(calendar) - start_idx
 
-        for idx, cur_date in enumerate(calendar):
+        for idx, cur_date in enumerate(calendar[start_idx:], start=start_idx):
             if cancel_check and cancel_check():
                 break
             if progress:
-                progress(idx + 1, total)
+                progress(idx - start_idx + 1, total)
 
             self._process_exits(cur_date, state, trades, skips, cal_index, market_store)
             self._process_entries(cur_date, signals_by_date.get(cur_date, []), state, skips, market_store)
@@ -440,4 +442,7 @@ class BacktestEngine:
                 "win_rate_pct": 0.0,
             }
         from trendradar.domain.backtest.metrics import compute_summary
-        return compute_summary(equity_curve, trades, self.config.risk)
+        return compute_summary(
+            equity_curve, trades, self.config.risk,
+            initial_cash=self.config.capital.initial_cash,
+        )

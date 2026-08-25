@@ -12,6 +12,7 @@ def compute_summary(
     equity_curve: list[dict],
     trades: list[TradeRecord],
     risk_cfg: RiskConfig,
+    initial_cash: float | None = None,
 ) -> dict[str, Any]:
     if not equity_curve:
         return {
@@ -21,6 +22,8 @@ def compute_summary(
             "sharpe": 0.0,
             "trade_count": 0,
             "win_rate_pct": 0.0,
+            "initial_cash": 0.0,
+            "final_cash": 0.0,
         }
 
     df = pl.DataFrame(equity_curve)
@@ -68,4 +71,6 @@ def compute_summary(
         "sharpe": sharpe,
         "trade_count": len(trades),
         "win_rate_pct": win_rate * 100.0,
+        "initial_cash": float(initial_cash) if initial_cash is not None else float(first_equity),
+        "final_cash": float(last_equity),
     }

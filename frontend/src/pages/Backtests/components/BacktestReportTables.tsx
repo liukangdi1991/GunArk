@@ -28,15 +28,15 @@ export const summaryColumns: ColumnsType<BacktestSummary> = [
     sorter: (a, b) => Number(a.total_return_pct || 0) - Number(b.total_return_pct || 0),
   },
   {
-    title: "最大回撤",
+    title: "最大回撤（组合）",
     dataIndex: "max_drawdown_pct",
     key: "max_drawdown_pct",
-    width: 110,
+    width: 130,
     render: (value) => <SignedValue value={value} type="percent" />,
     sorter: (a, b) => Number(a.max_drawdown_pct || 0) - Number(b.max_drawdown_pct || 0),
   },
-  { title: "Sharpe", dataIndex: "sharpe", key: "sharpe", width: 90, render: (value) => formatNumber(value, 2) },
-  { title: "最终现金", dataIndex: "final_cash", key: "final_cash", width: 130, render: formatMoney },
+  { title: "Sharpe（组合）", dataIndex: "sharpe", key: "sharpe", width: 110, render: (value) => formatNumber(value, 2) },
+  { title: "最终现金（组合）", dataIndex: "final_cash", key: "final_cash", width: 140, render: formatMoney },
 ];
 
 export const tradeColumns: ColumnsType<BacktestTrade> = [

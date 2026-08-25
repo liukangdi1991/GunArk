@@ -525,3 +525,20 @@ class TestUltraShort:
         assert len(result.trades) == 1
         assert result.trades[0].sell_date == date(2026, 7, 6)
         assert result.trades[0].sell_postpone_days == 1
+
+    def test_equity_curve_starts_at_first_buy_date(self):
+        """equity 曲线从首个买入日开始（不再含信号前的平线段），且现金字段正确。"""
+        dates = [date(2026, 7, 1) + timedelta(days=i) for i in range(10)]
+        rows = [
+            {"date": d, "open": 10.0, "close": 10.0, "high": 10.5, "low": 9.5, "volume": 1000000}
+            for d in dates
+        ]
+        store = FakeMarketStore({"000001": rows})
+        signal_set = _make_signal_set("t", "T", {dates[2]: ["000001"]})
+        config = _make_config(
+            capital={"initial_cash": 100000, "mode": "unlimited_cash", "fixed_cash_per_trade": 50000},
+        )
+        result = BacktestEngine(config).run(signal_set, store)
+        assert result.equity_curve[0]["date"] == dates[3]  # 常规模式 T+1 买入 → 首点 = 买入日
+        assert result.metrics["initial_cash"] == 100000.0
+        assert result.metrics["final_cash"] == result.equity_curve[-1]["equity"]
