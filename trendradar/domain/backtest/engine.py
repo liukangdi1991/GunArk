@@ -51,8 +51,10 @@ class BacktestEngine:
         skips: list[SkipRecord] = []
         equity_curve: list[dict] = []
         cal_index = {d: i for i, d in enumerate(calendar)}
-        # 从首个买入日开始（信号前无交易的平线段不进 equity，年化指标不被稀释）
+        # 从首个买入日开始、到最后一个买入日之后持仓了结为止
+        # （信号前后的平线段不进 equity，年化指标不被稀释）
         start_idx = min(cal_index[d] for d in signals_by_date)
+        last_buy_idx = max(cal_index[d] for d in signals_by_date)
         total = len(calendar) - start_idx
 
         for idx, cur_date in enumerate(calendar[start_idx:], start=start_idx):
@@ -76,6 +78,8 @@ class BacktestEngine:
                     "position_count": len(state.positions),
                 }
             )
+            if idx >= last_buy_idx and not state.positions:
+                break  # 无持仓且不再有买入 → 结束（含跌停顺延后的了结）
 
         metrics = self._compute_metrics(equity_curve, trades)
         return BacktestResult(trades=trades, skips=skips, equity_curve=equity_curve, metrics=metrics)
