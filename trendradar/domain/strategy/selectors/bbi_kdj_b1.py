@@ -5,8 +5,7 @@ from trendradar.domain.strategy.protocol import (
 )
 from trendradar.domain.strategy.formulas.bbi import compute_bbi, bbi_deriv_uptrend
 from trendradar.domain.strategy.formulas.kdj import compute_kdj_grouped
-from trendradar.domain.strategy.formulas.ma import compute_ma, compute_dif_grouped
-from trendradar.domain.strategy.formulas.zxdkx import compute_zx_lines
+from trendradar.domain.strategy.formulas.ma import compute_dif_grouped
 
 
 class BBIKDJSelector(SelectionStrategy):
@@ -17,12 +16,8 @@ class BBIKDJSelector(SelectionStrategy):
         j_series = compute_kdj_grouped(market_data)
         bbi_series = compute_bbi(market_data)
         dif_series = compute_dif_grouped(market_data)
-        ma60_series = compute_ma(market_data, 60)
-        short_line, long_line = compute_zx_lines(market_data)
         df = market_data.with_columns([
             j_series.alias("j"), bbi_series.alias("bbi"), dif_series.alias("dif"),
-            ma60_series.alias("ma_60"), short_line.alias("short_term_trend_line"),
-            long_line.alias("long_term_bull_bear_line"),
         ])
         grouped = {g["code"][0]: g for g in df.partition_by("code")}
         return WarmupResult(grouped=grouped)

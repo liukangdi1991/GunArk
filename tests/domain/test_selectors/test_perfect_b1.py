@@ -34,3 +34,17 @@ def test_non_empty_returns_list():
     assert isinstance(result.selected_codes, list)
     assert result.strategy_id == "perfect_b1_v2"
     assert result.elapsed_seconds >= 0
+
+
+def test_low_null_does_not_crash():
+    """最后一行 low 为 None 时不得崩溃，该股应被跳过而非抛 TypeError。"""
+    import polars as pl
+    defn = make_perfect_b1_defn()
+    # 下跌趋势保证 J 低位，使代码走到振幅守卫（否则 J 门先拦截，测不到 low 路径）
+    df = make_ohlcv_df("000001", 150, trend=-0.002)
+    df = df.with_columns(
+        pl.when(pl.col("date") == df["date"].max()).then(None).otherwise(pl.col("low")).alias("low")
+    )
+    result = _run(defn, df)
+    assert isinstance(result.selected_codes, list)
+    assert "000001" not in result.selected_codes

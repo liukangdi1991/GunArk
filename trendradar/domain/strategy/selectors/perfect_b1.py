@@ -31,7 +31,7 @@ class PerfectB1Selector(SelectionStrategy):
             latest = hist.row(-1, named=True)
             if latest["j"] is None or latest["j"] >= j_threshold:
                 continue
-            if latest["high"] is None or latest["close"] is None or latest["close"] <= 0:
+            if latest["high"] is None or latest["low"] is None or latest["close"] is None or latest["close"] <= 0:
                 continue
             amplitude = (latest["high"] - latest["low"]) / latest["close"]
             if amplitude > amplitude_limit:

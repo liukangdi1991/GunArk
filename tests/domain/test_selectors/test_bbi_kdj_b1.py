@@ -34,3 +34,13 @@ def test_non_empty_returns_list():
     assert isinstance(result.selected_codes, list)
     assert result.strategy_id == "bbi_kdj_b1"
     assert result.elapsed_seconds >= 0
+
+
+def test_warmup_has_no_unused_columns():
+    """warmup 不应携带 select_day 从未使用的列（ma_60 / zx 线），避免死计算。"""
+    defn = make_bbi_kdj_b1_defn()
+    df = make_ohlcv_df("000001", 150, trend=0.002)
+    sel = defn.selector_class(defn)
+    warmup = sel.warmup(df)
+    cols = set(warmup.grouped["000001"].columns)
+    assert not ({"ma_60", "short_term_trend_line", "long_term_bull_bear_line"} & cols)

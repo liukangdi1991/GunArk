@@ -21,7 +21,7 @@ def register_all():
         description="BBI 上行 + KDJ 低位 + 趋势过滤",
         selector_class=BBIKDJSelector,
         default_params={"j_threshold": 15, "bbi_min_window": 20, "max_window": 120,
-                        "bbi_q_threshold": 0.2, "j_q_threshold": 0.10},
+                        "bbi_q_threshold": 0.2},
     ))
 
     register(StrategyDefinition(
