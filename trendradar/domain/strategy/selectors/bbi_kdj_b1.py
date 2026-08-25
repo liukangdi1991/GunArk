@@ -1,49 +1,53 @@
 import time
+
 import polars as pl
+
+from trendradar.domain.strategy.formulas.b1 import compute_b1_columns
 from trendradar.domain.strategy.protocol import (
     SelectionStrategy, SelectionContext, SelectionResult, WarmupResult,
 )
-from trendradar.domain.strategy.formulas.bbi import compute_bbi, bbi_deriv_uptrend
-from trendradar.domain.strategy.formulas.kdj import compute_kdj_grouped
-from trendradar.domain.strategy.formulas.ma import compute_dif_grouped
 
 
 class BBIKDJSelector(SelectionStrategy):
+    """B1战法：通达信 B1 公式（J<13 + 振幅<7% + 涨跌幅<2% + 收>MA60 +
+    DIF>DEA + 20日内放量 + DUAN_QI>DUO_KONG + 流通市值≥50亿）。"""
+
+    # 触发 runner 按交易日拉取 daily_basic.circ_mv（万元）注入 context.market_cap
+    REQUIRES_MARKET_CAP = True
+
     def __init__(self, definition):
         self.definition = definition
 
     def warmup(self, market_data: pl.DataFrame) -> WarmupResult:
-        j_series = compute_kdj_grouped(market_data)
-        bbi_series = compute_bbi(market_data)
-        dif_series = compute_dif_grouped(market_data)
-        df = market_data.with_columns([
-            j_series.alias("j"), bbi_series.alias("bbi"), dif_series.alias("dif"),
-        ])
+        params = self.definition.default_params
+        m_windows = (
+            int(params.get("m1", 14)),
+            int(params.get("m2", 28)),
+            int(params.get("m3", 57)),
+            int(params.get("m4", 114)),
+        )
+        df = compute_b1_columns(market_data, m_windows=m_windows)
         grouped = {g["code"][0]: g for g in df.partition_by("code")}
         return WarmupResult(grouped=grouped)
 
     def select_day(self, context: SelectionContext, warmup: WarmupResult) -> SelectionResult:
         t0 = time.time()
         params = self.definition.default_params
-        j_threshold = params.get("j_threshold", 15)
-        bbi_min_window = params.get("bbi_min_window", 20)
-        max_window = params.get("max_window", 120)
-        bbi_q_threshold = params.get("bbi_q_threshold", 0.2)
+        # 公式：流通市值:=FINANCE(40)/100000000; 流通市值>=50（亿元）
+        mv_min_wan = float(params.get("mv_min_yi", 50)) * 10000.0
+        market_cap = context.market_cap or {}
 
         selected = []
         for code, hist in warmup.grouped.items():
-            if len(hist) < max_window:
-                continue
-            bbi_vals = hist["bbi"].drop_nulls()
-            if len(bbi_vals) < max_window:
+            if hist.is_empty():
                 continue
             latest = hist.row(-1, named=True)
-            if latest["j"] is None or latest["j"] >= j_threshold:
+            if not latest.get("_b1_signal"):
                 continue
-            if latest["dif"] is None or latest["dif"] <= 0:
+            mv = market_cap.get(code)
+            if mv is None or mv < mv_min_wan:
                 continue
-            if bbi_deriv_uptrend(bbi_vals, bbi_min_window, max_window, bbi_q_threshold):
-                selected.append(code)
+            selected.append(code)
 
         return SelectionResult(
             strategy_id=self.definition.strategy_id,

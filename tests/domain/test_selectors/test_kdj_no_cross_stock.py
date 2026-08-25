@@ -27,15 +27,17 @@ def test_super_b1_warmup_kdj_not_cross_stock_contaminated():
     )
 
 
-def test_bbi_kdj_b1_warmup_dif_not_cross_stock_contaminated():
+def test_bbi_kdj_b1_warmup_not_cross_stock_contaminated():
+    """B1 公式全量按 code 分组计算：短历史股票不受前一只股票污染。"""
     rising = make_ohlcv_df("000001", 60, trend=0.01)
     short = make_ohlcv_df("000002", 3, trend=-0.02)
     combined = pl.concat([rising, short])
 
     defn = make_bbi_kdj_b1_defn()
-    w = defn.selector_class(defn).warmup(combined)
+    sel = defn.selector_class(defn)
+    w_combined = sel.warmup(combined)
+    w_alone = sel.warmup(short)
 
-    dif_alone = compute_dif(short)
-    assert w.grouped["000002"]["dif"].to_list() == pytest.approx(
-        dif_alone.to_list(), rel=1e-9
+    assert w_combined.grouped["000002"]["_b1_signal"].to_list() == pytest.approx(
+        w_alone.grouped["000002"]["_b1_signal"].to_list(), rel=1e-9
     )

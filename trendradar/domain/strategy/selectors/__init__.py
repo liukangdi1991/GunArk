@@ -18,10 +18,9 @@ from trendradar.domain.strategy.selectors.ultimate_brick_chart import UltimateBr
 def register_all():
     register(StrategyDefinition(
         strategy_id="bbi_kdj_b1", name="B1战法",
-        description="BBI 上行 + KDJ 低位 + 趋势过滤",
+        description="B1 公式：J<13 + 振幅/涨跌幅限制 + 收>MA60 + DIF>DEA + 20日放量 + 短期线>多空线 + 流通市值≥50亿",
         selector_class=BBIKDJSelector,
-        default_params={"j_threshold": 15, "bbi_min_window": 20, "max_window": 120,
-                        "bbi_q_threshold": 0.2},
+        default_params={"m1": 14, "m2": 28, "m3": 57, "m4": 114, "mv_min_yi": 50},
     ))
 
     register(StrategyDefinition(
