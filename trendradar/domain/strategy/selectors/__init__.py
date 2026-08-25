@@ -65,10 +65,9 @@ def register_all():
 
     register(StrategyDefinition(
         strategy_id="perfect_b1_v2", name="B1战法（V2）",
-        description="完美 B1：KDJ 低位 + 振幅限制 + 涨跌幅限制",
+        description="B1 公式：放量阳线 + 阳量阴量比 + J 低位 + 双均线趋势 + 流通市值≥50亿",
         selector_class=PerfectB1Selector,
-        default_params={"j_threshold": 13, "amplitude_limit": 0.07,
-                        "pct_chg_upper": 0.02, "pct_chg_lower": -0.02},
+        default_params={"mv_min_yi": 50},
     ))
 
     register(StrategyDefinition(
