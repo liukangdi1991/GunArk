@@ -9,8 +9,8 @@ from trendradar.domain.strategy.protocol import (
 
 
 class PerfectB1Selector(SelectionStrategy):
-    """B1战法V2：通达信 B1 公式（放量阳线集群 + 阳量阴量比 + J 低位 +
-    无高位放量阴 + 双均线趋势过滤 + 流通市值≥50亿）。"""
+    """增强型B1：通达信 B1 公式（放量阳线集群 + 阳量阴量比 + J 低位 +
+    无高位放量阴 + 双均线趋势过滤 + 流通市值≥50亿，除权日按可比昨收处理）。"""
 
     # 触发 runner 按交易日拉取 daily_basic.circ_mv（万元）注入 context.market_cap
     REQUIRES_MARKET_CAP = True

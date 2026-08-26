@@ -288,7 +288,7 @@ def _response_to_df(resp, code: str) -> pl.DataFrame:
             pl.col("date").cast(pl.Utf8).str.strptime(pl.Date, "%Y%m%d")
         )
 
-    for col_name in ["open", "high", "low", "close", "volume", "amount"]:
+    for col_name in ["open", "high", "low", "close", "volume", "amount", "pre_close"]:
         if col_name in df.columns:
             df = df.with_columns(pl.col(col_name).cast(pl.Float64))
 
@@ -298,7 +298,7 @@ def _response_to_df(resp, code: str) -> pl.DataFrame:
         pl.lit(False).cast(pl.Boolean).alias("is_suspended"),
     )
 
-    cols = ["code", "date", "open", "high", "low", "close", "volume", "amount", "adj_factor", "is_suspended"]
+    cols = ["code", "date", "open", "high", "low", "close", "volume", "amount", "pre_close", "adj_factor", "is_suspended"]
     existing = [c for c in cols if c in df.columns]
     df = df.select(existing)
     return df.sort("date")
@@ -541,7 +541,7 @@ def _fetch_daily_by_date(pro, day: date):
     df = df.with_columns(
         pl.col("date").cast(pl.Utf8).str.strptime(pl.Date, "%Y%m%d")
     )
-    for col in ["open", "high", "low", "close", "volume", "amount"]:
+    for col in ["open", "high", "low", "close", "volume", "amount", "pre_close"]:
         if col in df.columns:
             df = df.with_columns(pl.col(col).cast(pl.Float64))
     df = df.with_columns(
@@ -550,7 +550,7 @@ def _fetch_daily_by_date(pro, day: date):
         pl.col("ts_code").str.slice(0, 6).alias("code"),
     )
     cols = ["code", "date", "open", "high", "low", "close", "volume",
-            "amount", "adj_factor", "is_suspended"]
+            "amount", "pre_close", "adj_factor", "is_suspended"]
     return df.select([c for c in cols if c in df.columns]).sort("date")
 
 

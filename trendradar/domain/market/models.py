@@ -16,6 +16,7 @@ class Bar:
     close: float
     volume: float
     amount: float = 0.0
+    pre_close: float = 0.0
     adj_factor: float = 1.0
     is_suspended: bool = False
 

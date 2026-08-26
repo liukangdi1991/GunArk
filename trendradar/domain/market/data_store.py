@@ -20,6 +20,7 @@ POLARS_KLINE_SCHEMA: dict[str, type] = {
     "close": pl.Float64,
     "volume": pl.Float64,
     "amount": pl.Float64,
+    "pre_close": pl.Float64,
     "adj_factor": pl.Float64,
     "is_suspended": pl.Boolean,
 }

@@ -57,13 +57,20 @@ def compute_b1_v2_columns(df: pl.DataFrame) -> pl.DataFrame:
     return pl.concat(parts)
 
 
+def _prev_close_expr(df: pl.DataFrame) -> pl.Expr:
+    """通达信除权处理：REF(C,1) 用可比昨收（pre_close）；旧数据缺失时回退原始昨收。"""
+    if "pre_close" in df.columns:
+        return pl.col("pre_close")
+    return pl.col("close").shift(1)
+
+
 def _compute_one(g: pl.DataFrame) -> pl.DataFrame:
     c = pl.col("close")
     o = pl.col("open")
     h = pl.col("high")
     lo = pl.col("low")
     v = pl.col("volume")
-    pc = c.shift(1)
+    pc = _prev_close_expr(g)
     pv = v.shift(1)
 
     real_yang = (c > o) & (~(c < pc)).fill_null(True)
@@ -127,4 +134,8 @@ def _compute_one(g: pl.DataFrame) -> pl.DataFrame:
     )
     b1 = (hmshortwl >= hmlongyl * TREND_RATIO) & (c >= hmlongyl * TREND_RATIO) & a1
 
-    return g.with_columns(b1.fill_null(False).alias("_b1_signal"))
+    return g.with_columns([
+        b1.fill_null(False).alias("_b1_signal"),
+        real_yang.alias("real_yang"),
+        real_yin.alias("real_yin"),
+    ])

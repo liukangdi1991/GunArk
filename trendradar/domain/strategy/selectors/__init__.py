@@ -63,7 +63,7 @@ def register_all():
     ))
 
     register(StrategyDefinition(
-        strategy_id="perfect_b1_v2", name="B1战法（V2）",
+        strategy_id="perfect_b1_v2", name="增强型B1",
         description="B1 公式：放量阳线 + 阳量阴量比 + J 低位 + 双均线趋势 + 流通市值≥50亿",
         selector_class=PerfectB1Selector,
         default_params={"mv_min_yi": 50},
