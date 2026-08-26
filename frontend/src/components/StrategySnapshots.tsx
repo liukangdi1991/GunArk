@@ -104,27 +104,16 @@ function describeStrategy(strategy: Strategy): string[] {
   }
 
   if (strategy.class === "PerfectB1Selector") {
-    lines.push(`KDJ 的 J 值小于 ${numberParam(params, "j_threshold") ?? "-"}。`);
-    lines.push(`当日振幅不超过 ${formatRatio(numberParam(params, "amplitude_limit"))}。`);
-    lines.push(`当日涨跌幅在 ${formatSignedRatio(numberParam(params, "pct_chg_lower"))} ~ ${formatSignedRatio(numberParam(params, "pct_chg_upper"))} 之间。`);
-    return lines;
+    // B1 公式版：直接使用注册表最新描述（旧 params 结构已被公式替换）
+    return splitDescription(strategy.description);
   }
 
   if (strategy.class === "BBIKDJSelector") {
-    lines.push(`KDJ 的 J 值小于 ${numberParam(params, "j_threshold") ?? "-"}。`);
-    lines.push("DIF（EMA12-EMA26）大于 0。");
-    lines.push(`BBI 上行：至少观察 ${numberParam(params, "bbi_min_window") ?? "-"} 个交易日，分位阈值 ${formatRatio(numberParam(params, "bbi_q_threshold"))}。`);
-    return lines;
+    return splitDescription(strategy.description);
   }
 
   if (strategy.class === "SuperB1Selector") {
-    lines.push(`KDJ 的 J 值小于 ${numberParam(params, "j_threshold") ?? "-"}。`);
-    lines.push(`当日涨跌幅不超过 ${formatRatio(numberParam(params, "price_drop_pct"))}（避免追高）。`);
-    const closeVolPct = numberParam(params, "close_vol_pct");
-    lines.push(
-      `成交量不低于最近 ${numberParam(params, "lookback_n") ?? "-"} 个交易日日均量的 ${closeVolPct === null ? "-" : formatRatio(1 - closeVolPct)}。`,
-    );
-    return lines;
+    return splitDescription(strategy.description);
   }
 
   if (strategy.class === "BBIShortLongSelector") {

@@ -191,7 +191,8 @@ def _run_selection(
     total_dates = len(trading_dates)
     strategies_snapshot = [
         {"strategy_id": d.strategy_id, "name": d.name,
-         "params": settings_map.get(d.strategy_id, {}).get("params", {})}
+         # 注册表默认 + DB 覆盖：旧 DB 参数残留不会污染新快照
+         "params": {**d.default_params, **settings_map.get(d.strategy_id, {}).get("params", {})}}
         for d in resolved
     ]
 
