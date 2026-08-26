@@ -25,10 +25,9 @@ def register_all():
 
     register(StrategyDefinition(
         strategy_id="super_b1", name="SuperB1战法",
-        description="缩量下跌 + KDJ 低位反弹",
+        description="短期线>多空线 + 振幅<7 + 涨幅<2 + 收>MA60 + DIF>DEA + 120日倍量 + 收盘贴多空线±1.6% + 流通市值>50亿",
         selector_class=SuperB1Selector,
-        default_params={"lookback_n": 10, "close_vol_pct": 0.02,
-                        "price_drop_pct": 0.02, "j_threshold": 10},
+        default_params={"m1": 14, "m2": 28, "m3": 57, "m4": 114, "mv_min_yi": 50},
     ))
 
     register(StrategyDefinition(
