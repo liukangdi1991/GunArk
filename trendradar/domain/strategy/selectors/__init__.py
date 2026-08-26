@@ -18,7 +18,7 @@ from trendradar.domain.strategy.selectors.ultimate_brick_chart import UltimateBr
 def register_all():
     register(StrategyDefinition(
         strategy_id="bbi_kdj_b1", name="B1战法",
-        description="B1 公式：J<13 + 振幅/涨跌幅限制 + 收>MA60 + DIF>DEA + 20日放量 + 短期线>多空线 + 流通市值≥50亿",
+        description="B1 公式：J<13 + 振幅<7 + 涨幅±2 + 收>MA60 + 20日放量 + 短期线>多空线 + 收盘≥多空线 + 流通市值≥50亿",
         selector_class=BBIKDJSelector,
         default_params={"m1": 14, "m2": 28, "m3": 57, "m4": 114, "mv_min_yi": 50},
     ))

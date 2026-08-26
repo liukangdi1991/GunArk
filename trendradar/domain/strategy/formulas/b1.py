@@ -9,11 +9,11 @@
   ZHEN_FU:=(HIGH-LOW)/REF(CLOSE,1)*100;
   ZHANG_FU:=(CLOSE-REF(CLOSE,1))/REF(CLOSE,1)*100;
   MA60:=MA(CLOSE,60);
-  DIF:=EMA(CLOSE,12)-EMA(CLOSE,26); DEA:=EMA(DIF,9);
   BLZ:=VOL>REF(VOL,1)*2; BLZ_EXIST:=COUNT(BLZ,20)>=1;
   流通市值:=FINANCE(40)/100000000;
-  XG:J<13 AND ZHEN_FU<7 AND ZHANG_FU<2 AND CLOSE>MA60 AND DIF>DEA
-     AND BLZ_EXIST AND REQUIRED AND 流通市值>=50;
+  XG:J<13 AND 振幅<7 AND 涨幅<2 AND 涨幅>-2 AND CLOSE>MA60
+     AND 存在倍量柱 AND 趋势存在 AND 流通市值>=50 AND 收盘限制;
+  其中 收盘限制:=CLOSE>=DUO_KONG；MA1/MA2（MA60/EMA13）为公式内定义，XG 未使用。
 
 通达信语义映射：
 - EMA(X,N)：ewm_mean(alpha=2/(N+1), adjust=False)（首值=X[0]）
@@ -31,6 +31,7 @@ import polars as pl
 J_THRESHOLD = 13.0
 ZHEN_FU_MAX = 7.0
 ZHANG_FU_MAX = 2.0
+ZHANG_FU_MIN = -2.0
 BLZ_VOL_RATIO = 2.0
 BLZ_WINDOW = 20
 DEFAULT_M_WINDOWS = (14, 28, 57, 114)
@@ -47,15 +48,22 @@ def compute_b1_columns(
     return pl.concat(parts)
 
 
+def _prev_close_expr(g: pl.DataFrame) -> pl.Expr:
+    """通达信除权处理：REF(C,1) 用可比昨收（pre_close）；旧数据缺失时回退原始昨收。"""
+    if "pre_close" in g.columns:
+        return pl.col("pre_close")
+    return pl.col("close").shift(1)
+
+
 def _compute_one(g: pl.DataFrame, m_windows: tuple[int, int, int, int]) -> pl.DataFrame:
     c = pl.col("close")
     h = pl.col("high")
     lo = pl.col("low")
     v = pl.col("volume")
-    pc = c.shift(1)
+    pc = _prev_close_expr(g)
     pv = v.shift(1)
 
-    # DUAN_QI := EMA(EMA(C,10),10)；DUO_KONG := (MA14+MA28+MA57+MA114)/4
+    # DUAN_QI := EMA(EMA(C,10),10)；DUO_KONG := (MA14+MA28+MA56+MA114)/4
     duan_qi = c.ewm_mean(alpha=2 / 11, adjust=False).ewm_mean(alpha=2 / 11, adjust=False)
     duo_kong = sum(c.rolling_mean(w, min_samples=1) for w in m_windows) / 4
     required = duan_qi > duo_kong
@@ -74,16 +82,16 @@ def _compute_one(g: pl.DataFrame, m_windows: tuple[int, int, int, int]) -> pl.Da
     zhang_fu = (c - pc) / pc * 100
     zhen_fu_ok = zhen_fu < ZHEN_FU_MAX
     zhang_fu_ok = zhang_fu < ZHANG_FU_MAX
+    zhang_fu_lower_ok = zhang_fu > ZHANG_FU_MIN
 
     c_gt_ma60 = c > c.rolling_mean(60, min_samples=1)
-
-    dif = c.ewm_mean(alpha=2 / 13, adjust=False) - c.ewm_mean(alpha=2 / 27, adjust=False)
-    dea = dif.ewm_mean(alpha=2 / 10, adjust=False)
-    dif_gt_dea = dif > dea
 
     blz = (v > BLZ_VOL_RATIO * pv).fill_null(False)
     blz_exist = blz.cast(pl.Int32).rolling_sum(BLZ_WINDOW, min_samples=1) >= 1
 
-    b1 = (j_ok & zhen_fu_ok & zhang_fu_ok & c_gt_ma60
-          & dif_gt_dea & blz_exist & required)
+    # 收盘限制：CLOSE >= 长期多空线
+    close_ge_duo_kong = c >= duo_kong
+
+    b1 = (j_ok & zhen_fu_ok & zhang_fu_ok & zhang_fu_lower_ok
+          & c_gt_ma60 & blz_exist & required & close_ge_duo_kong)
     return g.with_columns(b1.fill_null(False).alias("_b1_signal"))

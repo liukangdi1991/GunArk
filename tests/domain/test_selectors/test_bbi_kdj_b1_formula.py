@@ -117,14 +117,12 @@ def _reference_hit(df):
         j = [3 * kk - 2 * dd for kk, dd in zip(k, d)]
         zf = (hs[i] - ls[i]) / prev_c[i] * 100
         zg = (cs[i] - prev_c[i]) / prev_c[i] * 100
-        dif = [e12 - e26 for e12, e26 in zip(ema(cs, 12), ema(cs, 26))]
-        dea = ema(dif, 9)
         blz = [pv is not None and v > 2 * pv for v, pv in zip(vs, prev_v)]
         dq = ema(ema(cs, 10), 10)
         dk = [sum(m) / len(m) for m in zip(*[ma(cs, w) for w in (14, 28, 57, 114)])]
         out[code] = bool(
-            j[i] < 13 and zf < 7 and zg < 2 and cs[i] > ma(cs, 60)[i]
-            and dif[i] > dea[i] and count(blz, 20)[i] >= 1 and dq[i] > dk[i]
+            j[i] < 13 and zf < 7 and zg < 2 and zg > -2 and cs[i] > ma(cs, 60)[i]
+            and count(blz, 20)[i] >= 1 and dq[i] > dk[i] and cs[i] >= dk[i]
         )
     return out
 
