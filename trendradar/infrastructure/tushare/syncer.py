@@ -305,16 +305,18 @@ def _response_to_df(resp, code: str) -> pl.DataFrame:
 
 
 def _align_columns(local: pl.DataFrame, incoming: pl.DataFrame) -> pl.DataFrame:
-    """旧 parquet 缺新 schema 列时补 null 列，保证 concat 不因列不一致崩溃。
+    """合并前把 local 对齐到 incoming 的列集与列序。
 
-    升级兼容：新代码写入 pre_close 后，旧 bar 文件无该列——合并前补齐。
+    升级兼容：新代码写入 pre_close 后，旧 bar 文件无该列或列序不同
+    （回填把 pre_close 追加在末尾，而新 schema 在中间）——
+    vstack 按位置对齐，列序不一致会崩，故补齐缺失列后按 incoming 重排。
     """
     for col in incoming.columns:
         if col not in local.columns:
             local = local.with_columns(
                 pl.lit(None).cast(incoming.schema[col]).alias(col)
             )
-    return local
+    return local.select(incoming.columns)
 
 
 def _atomic_write_parquet(df: pl.DataFrame, target: Path) -> None:

@@ -370,3 +370,31 @@ def test_incremental_sync_catches_up_new_listings(tmp_path, monkeypatch):
     )
     assert captured["codes"] == ["920099"]  # 只补新股，不重拉已有代码
     assert result["new_codes"] == 1
+
+
+def test_merge_day_bars_aligns_column_order(tmp_path):
+    """列序不匹配：旧 parquet 的 pre_close 在末尾，新数据在中间——合并不得崩溃。"""
+    bars_dir = tmp_path / "bars"
+    bars_dir.mkdir(parents=True)
+    # 旧文件（回填后）：pre_close 追加在末尾
+    old = pl.DataFrame([
+        _bar_row("000001", date(2026, 8, 18), 10.0, pre_close=10.0),
+    ])
+    assert old.columns[-1] == "pre_close", "pre_close 应在末尾（模拟回填后列序）"
+    old.write_parquet(bars_dir / "000001.parquet")
+
+    # 新数据（规范列序：pre_close 在 amount 与 adj_factor 之间）
+    incoming = pl.DataFrame([{
+        "code": "000001", "date": date(2026, 8, 19),
+        "open": 10.5, "high": 10.5, "low": 10.5, "close": 10.5,
+        "volume": 1000.0, "amount": 10000.0,
+        "pre_close": 10.3, "adj_factor": 1.0, "is_suspended": False,
+    }])
+    assert incoming.columns.index("pre_close") < incoming.columns.index("adj_factor")
+
+    written = merge_day_bars(incoming, bars_dir)
+    assert written == ["000001"]
+    merged = pl.read_parquet(bars_dir / "000001.parquet")
+    assert merged.height == 2
+    assert merged["date"].to_list() == [date(2026, 8, 18), date(2026, 8, 19)]
+    assert merged["pre_close"].to_list() == [10.0, 10.3]
