@@ -4,7 +4,7 @@ import pandas as pd
 import polars as pl
 import pytest
 
-from trendradar.infrastructure.tushare.syncer import sync_market
+from trendradar.infrastructure.tushare.syncer import merge_day_bars, sync_market
 
 
 @pytest.fixture(autouse=True)
@@ -51,6 +51,35 @@ def _row(code, day, close=10.0):
         "open": close, "high": close, "low": close, "close": close,
         "vol": 1000.0, "amount": 10000.0,
     }
+
+
+def _bar_row(code, day, close, pre_close=None):
+    r = {
+        "code": code, "date": day, "open": close, "high": close, "low": close,
+        "close": close, "volume": 1000.0, "amount": 10000.0,
+        "adj_factor": 1.0, "is_suspended": False,
+    }
+    if pre_close is not None:
+        r["pre_close"] = pre_close
+    return r
+
+
+def test_merge_day_bars_aligns_new_schema_columns(tmp_path):
+    """升级兼容：旧 parquet 缺 pre_close 列，新数据带该列——合并不得崩溃。"""
+    bars_dir = tmp_path / "bars"
+    bars_dir.mkdir(parents=True)
+    old = pl.DataFrame([_bar_row("000001", date(2026, 8, 18), 10.0)])
+    old.write_parquet(bars_dir / "000001.parquet")
+
+    day_df = pl.DataFrame([
+        _bar_row("000001", date(2026, 8, 19), 10.5, pre_close=10.0),
+    ])
+    written = merge_day_bars(day_df, bars_dir)
+    assert written == ["000001"]
+
+    merged = pl.read_parquet(bars_dir / "000001.parquet")
+    assert merged.height == 2
+    assert merged["date"].to_list() == [date(2026, 8, 18), date(2026, 8, 19)]
 
 
 def test_sync_market_small_gap_uses_daily_path(tmp_path):

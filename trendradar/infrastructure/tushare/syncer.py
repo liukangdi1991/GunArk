@@ -304,6 +304,19 @@ def _response_to_df(resp, code: str) -> pl.DataFrame:
     return df.sort("date")
 
 
+def _align_columns(local: pl.DataFrame, incoming: pl.DataFrame) -> pl.DataFrame:
+    """旧 parquet 缺新 schema 列时补 null 列，保证 concat 不因列不一致崩溃。
+
+    升级兼容：新代码写入 pre_close 后，旧 bar 文件无该列——合并前补齐。
+    """
+    for col in incoming.columns:
+        if col not in local.columns:
+            local = local.with_columns(
+                pl.lit(None).cast(incoming.schema[col]).alias(col)
+            )
+    return local
+
+
 def _atomic_write_parquet(df: pl.DataFrame, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
@@ -429,7 +442,7 @@ def merge_day_bars(day_df, bars_dir: Path) -> list[str]:
         group = day_df.filter(pl.col("code") == code)
         target = bars_dir / f"{code}.parquet"
         if target.exists():
-            local = pl.read_parquet(target)
+            local = _align_columns(pl.read_parquet(target), group)
             merged = pl.concat(
                 [local.filter(~pl.col("date").is_in(group["date"].implode())), group]
             ).sort("date")
@@ -485,7 +498,7 @@ def sync_by_stock(
                 continue
             target = bars_dir / f"{code}.parquet"
             if target.exists():
-                local = pl.read_parquet(target)
+                local = _align_columns(pl.read_parquet(target), data)
                 merged = pl.concat(
                     [local.filter(~pl.col("date").is_in(data["date"])), data]
                 ).sort("date")
