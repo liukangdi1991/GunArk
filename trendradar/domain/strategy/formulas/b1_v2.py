@@ -64,6 +64,19 @@ def _prev_close_expr(df: pl.DataFrame) -> pl.Expr:
     return pl.col("close").shift(1)
 
 
+def _qfq_scale(g: pl.DataFrame) -> pl.Expr | None:
+    """通达信默认前复权：指标基于复权价，scale = adj_factor/最新因子。
+
+    无 adj_factor 列或因子无效（旧数据/测试 fixture）时返回 None，退化用原价。
+    """
+    if "adj_factor" not in g.columns:
+        return None
+    latest = g["adj_factor"][-1]
+    if latest is None or latest <= 0:
+        return None
+    return pl.col("adj_factor") / latest
+
+
 def _compute_one(g: pl.DataFrame) -> pl.DataFrame:
     c = pl.col("close")
     o = pl.col("open")
@@ -73,13 +86,24 @@ def _compute_one(g: pl.DataFrame) -> pl.DataFrame:
     pc = _prev_close_expr(g)
     pv = v.shift(1)
 
+    # 指标（KDJ/开盘区间/双均线趋势）用前复权价；K 线形态（真阳/假阳等）
+    # 同行同因子缩放，用实际价等价
+    scale = _qfq_scale(g)
+    if scale is not None:
+        cq = pl.col("close") * scale
+        oq = pl.col("open") * scale
+        hq = pl.col("high") * scale
+        lq = pl.col("low") * scale
+    else:
+        cq, oq, hq, lq = c, o, h, lo
+
     real_yang = (c > o) & (~(c < pc)).fill_null(True)
     real_yin = (c < o) & (~(c > pc)).fill_null(True)
 
     # KDJ（SMA(RSV,3,1) 递归 ≡ ewm alpha=1/3）
-    llv9 = lo.rolling_min(9, min_samples=1)
-    hhv9 = h.rolling_max(9, min_samples=1)
-    rsv = ((c - llv9) / (hhv9 - llv9 + 1e-10) * 100).fill_nan(50).fill_null(50)
+    llv9 = lq.rolling_min(9, min_samples=1)
+    hhv9 = hq.rolling_max(9, min_samples=1)
+    rsv = ((cq - llv9) / (hhv9 - llv9 + 1e-10) * 100).fill_nan(50).fill_null(50)
     k = rsv.ewm_mean(alpha=1 / 3, adjust=False)
     d = k.ewm_mean(alpha=1 / 3, adjust=False)
     j = 3 * k - 2 * d
@@ -92,10 +116,10 @@ def _compute_one(g: pl.DataFrame) -> pl.DataFrame:
     yangyin_ok1 = vol_yang1 > YANGYIN_RATIO_57 * vol_yin1
     yangyin_ok2 = vol_yang2 > YANGYIN_RATIO_14 * vol_yin2
 
-    o_llv21 = o.rolling_min(21, min_samples=1)
-    o_hhv21 = o.rolling_max(21, min_samples=1)
+    o_llv21 = oq.rolling_min(21, min_samples=1)
+    o_hhv21 = oq.rolling_max(21, min_samples=1)
     o85 = o_llv21 + 0.95 * (o_hhv21 - o_llv21)
-    top15o = o >= o85
+    top15o = oq >= o85
     fd15 = (c < pc).fill_null(False) & (c <= o) & (v >= FD15_VOL_RATIO * pv).fill_null(False)
     cnt28 = (top15o & fd15).cast(pl.Int32).rolling_sum(21, min_samples=1)
     good28 = cnt28 <= 0
@@ -121,18 +145,18 @@ def _compute_one(g: pl.DataFrame) -> pl.DataFrame:
     a1 = plry_cnt & j_ok & good28 & three_sum_ok & max28_ok & (yangyin_ok1 | yangyin_ok2)
 
     # 双均线趋势过滤
-    hmshortwl = c.ewm_mean(alpha=4 / 40, adjust=False).ewm_mean(alpha=50 / 100, adjust=False)
+    hmshortwl = cq.ewm_mean(alpha=4 / 40, adjust=False).ewm_mean(alpha=50 / 100, adjust=False)
     hmlongyl = (
-        0.5 * (0.2 * c.rolling_mean(12, min_samples=1)
-               + 0.3 * c.rolling_mean(24, min_samples=1)
-               + 0.3 * c.rolling_mean(52, min_samples=1)
-               + 0.2 * c.rolling_mean(108, min_samples=1))
-        + 0.5 * (0.4 * c.rolling_mean(20, min_samples=1)
-                 + 0.25 * c.rolling_mean(40, min_samples=1)
-                 + 0.25 * c.rolling_mean(80, min_samples=1)
-                 + 0.1 * c.rolling_mean(160, min_samples=1))
+        0.5 * (0.2 * cq.rolling_mean(12, min_samples=1)
+               + 0.3 * cq.rolling_mean(24, min_samples=1)
+               + 0.3 * cq.rolling_mean(52, min_samples=1)
+               + 0.2 * cq.rolling_mean(108, min_samples=1))
+        + 0.5 * (0.4 * cq.rolling_mean(20, min_samples=1)
+                 + 0.25 * cq.rolling_mean(40, min_samples=1)
+                 + 0.25 * cq.rolling_mean(80, min_samples=1)
+                 + 0.1 * cq.rolling_mean(160, min_samples=1))
     )
-    b1 = (hmshortwl >= hmlongyl * TREND_RATIO) & (c >= hmlongyl * TREND_RATIO) & a1
+    b1 = (hmshortwl >= hmlongyl * TREND_RATIO) & (cq >= hmlongyl * TREND_RATIO) & a1
 
     return g.with_columns([
         b1.fill_null(False).alias("_b1_signal"),

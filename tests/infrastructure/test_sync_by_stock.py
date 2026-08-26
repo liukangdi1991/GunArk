@@ -2,6 +2,7 @@ import datetime
 from datetime import date
 
 import pandas as pd
+import polars as pl
 
 from trendradar.infrastructure.tushare.syncer import sync_by_stock
 
@@ -24,6 +25,9 @@ class FakePro:
             rows.append({"cal_date": d.strftime("%Y%m%d"), "is_open": 1})
             d += datetime.timedelta(days=1)
         return pd.DataFrame(rows)
+
+    def adj_factor(self, **kwargs):
+        return pl.DataFrame()
 
     def daily(self, **kwargs):
         self.calls.append(kwargs)

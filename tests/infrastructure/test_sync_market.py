@@ -44,6 +44,14 @@ class FakePro:
             return self.daily_by_day.get(kwargs["trade_date"], pl.DataFrame())
         raise AssertionError("by-stock path not expected")
 
+    def adj_factor(self, **kwargs):
+        # 测试默认无复权因子：返回空 → 保留占位 1.0
+        if "trade_date" in kwargs:
+            return pl.DataFrame()
+        if "ts_code" in kwargs:
+            return pl.DataFrame()
+        raise AssertionError("unexpected adj_factor args")
+
 
 def _row(code, day, close=10.0):
     return {
@@ -398,3 +406,24 @@ def test_merge_day_bars_aligns_column_order(tmp_path):
     assert merged.height == 2
     assert merged["date"].to_list() == [date(2026, 8, 18), date(2026, 8, 19)]
     assert merged["pre_close"].to_list() == [10.0, 10.3]
+
+
+def test_attach_adj_factor_overrides_placeholder():
+    """真实复权因子按 (code,date) 合并，覆盖占位 1.0。"""
+    from trendradar.infrastructure.tushare.syncer import _attach_adj_factor
+
+    df = pl.DataFrame([_bar_row("000001", date(2026, 8, 19), 10.5)])
+    adj = pl.DataFrame([{
+        "ts_code": "000001.SZ", "trade_date": "20260819", "adj_factor": 2.5,
+    }])
+    out = _attach_adj_factor(df, adj)
+    assert out["adj_factor"].to_list() == [2.5]
+
+
+def test_attach_adj_factor_empty_keeps_placeholder():
+    """无复权因子响应（停牌/数据缺失）：保留占位 1.0，不崩溃。"""
+    from trendradar.infrastructure.tushare.syncer import _attach_adj_factor
+
+    df = pl.DataFrame([_bar_row("000001", date(2026, 8, 19), 10.5)])
+    out = _attach_adj_factor(df, pl.DataFrame())
+    assert out["adj_factor"].to_list() == [1.0]

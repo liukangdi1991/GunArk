@@ -146,6 +146,7 @@ class TestSyncKline:
         }])
         mock_pro = MagicMock()
         mock_pro.daily.return_value = mock_resp
+        mock_pro.adj_factor.return_value = pd.DataFrame()
 
         with patch("trendradar.infrastructure.tushare.syncer.get_pro", return_value=mock_pro):
             result = sync_kline(
@@ -170,6 +171,7 @@ class TestSyncKline:
 
         mock_pro = MagicMock()
         mock_pro.daily.return_value = pd.DataFrame()
+        mock_pro.adj_factor.return_value = pd.DataFrame()
 
         with patch("trendradar.infrastructure.tushare.syncer.get_pro", return_value=mock_pro):
             result = sync_kline(
@@ -216,6 +218,7 @@ class TestSyncKline:
         }])
         mock_pro = MagicMock()
         mock_pro.daily.return_value = mock_resp
+        mock_pro.adj_factor.return_value = pd.DataFrame()
 
         progress_calls = []
 
@@ -251,6 +254,7 @@ class TestSyncKline:
         }])
         mock_pro = MagicMock()
         mock_pro.daily.return_value = mock_resp
+        mock_pro.adj_factor.return_value = pd.DataFrame()
 
         call_count = [0]
 

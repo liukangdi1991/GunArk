@@ -24,6 +24,9 @@ class FakePro:
             d += timedelta(days=1)
         return pd.DataFrame(rows)
 
+    def adj_factor(self, **kwargs):
+        return pl.DataFrame()
+
     def daily(self, **kwargs):
         if "trade_date" in kwargs:
             self.daily_calls.append(kwargs["trade_date"])

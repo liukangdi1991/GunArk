@@ -55,6 +55,21 @@ def _prev_close_expr(g: pl.DataFrame) -> pl.Expr:
     return pl.col("close").shift(1)
 
 
+def _qfq_scale(g: pl.DataFrame) -> pl.Expr | None:
+    """通达信默认前复权：指标基于复权价，scale = adj_factor/最新因子。
+
+    除权窗口内的均线若用未复权价会把除权前高价混入（如 688553 的
+    MA114 虚高 28%），导致多空线/MA60/趋势线误判。无 adj_factor 列
+    或因子无效（旧数据/测试 fixture）时返回 None，退化用原价。
+    """
+    if "adj_factor" not in g.columns:
+        return None
+    latest = g["adj_factor"][-1]
+    if latest is None or latest <= 0:
+        return None
+    return pl.col("adj_factor") / latest
+
+
 def _compute_one(g: pl.DataFrame, m_windows: tuple[int, int, int, int]) -> pl.DataFrame:
     c = pl.col("close")
     h = pl.col("high")
@@ -63,15 +78,25 @@ def _compute_one(g: pl.DataFrame, m_windows: tuple[int, int, int, int]) -> pl.Da
     pc = _prev_close_expr(g)
     pv = v.shift(1)
 
+    # 指标（MA/EMA/RSV/趋势线）用前复权价；振幅/涨幅用实际价 + 可比昨收
+    # （(C-昨收可比)/昨收可比 与复权口径数学等价）
+    scale = _qfq_scale(g)
+    if scale is not None:
+        cq = pl.col("close") * scale
+        hq = pl.col("high") * scale
+        lq = pl.col("low") * scale
+    else:
+        cq, hq, lq = c, h, lo
+
     # DUAN_QI := EMA(EMA(C,10),10)；DUO_KONG := (MA14+MA28+MA56+MA114)/4
-    duan_qi = c.ewm_mean(alpha=2 / 11, adjust=False).ewm_mean(alpha=2 / 11, adjust=False)
-    duo_kong = sum(c.rolling_mean(w, min_samples=1) for w in m_windows) / 4
+    duan_qi = cq.ewm_mean(alpha=2 / 11, adjust=False).ewm_mean(alpha=2 / 11, adjust=False)
+    duo_kong = sum(cq.rolling_mean(w, min_samples=1) for w in m_windows) / 4
     required = duan_qi > duo_kong
 
     # KDJ（SMA(RSV,3,1) ≡ ewm alpha=1/3）
-    llv9 = lo.rolling_min(9, min_samples=1)
-    hhv9 = h.rolling_max(9, min_samples=1)
-    rsv = ((c - llv9) / (hhv9 - llv9 + 1e-10) * 100).fill_nan(50).fill_null(50)
+    llv9 = lq.rolling_min(9, min_samples=1)
+    hhv9 = hq.rolling_max(9, min_samples=1)
+    rsv = ((cq - llv9) / (hhv9 - llv9 + 1e-10) * 100).fill_nan(50).fill_null(50)
     k = rsv.ewm_mean(alpha=1 / 3, adjust=False)
     d = k.ewm_mean(alpha=1 / 3, adjust=False)
     j = 3 * k - 2 * d
@@ -84,13 +109,13 @@ def _compute_one(g: pl.DataFrame, m_windows: tuple[int, int, int, int]) -> pl.Da
     zhang_fu_ok = zhang_fu < ZHANG_FU_MAX
     zhang_fu_lower_ok = zhang_fu > ZHANG_FU_MIN
 
-    c_gt_ma60 = c > c.rolling_mean(60, min_samples=1)
+    c_gt_ma60 = cq > cq.rolling_mean(60, min_samples=1)
 
     blz = (v > BLZ_VOL_RATIO * pv).fill_null(False)
     blz_exist = blz.cast(pl.Int32).rolling_sum(BLZ_WINDOW, min_samples=1) >= 1
 
     # 收盘限制：CLOSE >= 长期多空线
-    close_ge_duo_kong = c >= duo_kong
+    close_ge_duo_kong = cq >= duo_kong
 
     b1 = (j_ok & zhen_fu_ok & zhang_fu_ok & zhang_fu_lower_ok
           & c_gt_ma60 & blz_exist & required & close_ge_duo_kong)

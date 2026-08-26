@@ -238,7 +238,9 @@ def _fetch_with_retry(
                 return None
         try:
             resp = pro.daily(**params)
-            return _response_to_df(resp, code)
+            data = _response_to_df(resp, code)
+            adj = pro.adj_factor(ts_code=_to_ts_code(code), start_date=start_s, end_date=end_s)
+            return _attach_adj_factor(data, adj)
         except Exception as e:
             msg = str(e)
             if RATE_LIMIT_MSG in msg:
@@ -263,6 +265,34 @@ def _fetch_with_retry(
 
     logger.error("All %d retries exhausted for %s", max_retries, code)
     return None
+
+
+def _attach_adj_factor(df: pl.DataFrame, adj_df) -> pl.DataFrame:
+    """按 (code, date) 合并真实复权因子，覆盖占位 1.0。
+
+    缺失行（停牌/无响应）保留占位 1.0，_qfq_scale 对无效因子退化用原价。
+    """
+    if df.is_empty() or adj_df is None:
+        return df
+    if isinstance(adj_df, pl.DataFrame):
+        adj = adj_df
+        if adj.is_empty() or "adj_factor" not in adj.columns:
+            return df
+    else:
+        if not adj_df.to_dict(orient="list"):
+            return df
+        adj = pl.DataFrame(adj_df.to_dict(orient="list"))
+    if "trade_date" in adj.columns:
+        adj = adj.with_columns(
+            pl.col("trade_date").cast(pl.Utf8).str.strptime(pl.Date, "%Y%m%d").alias("date")
+        )
+    if "ts_code" in adj.columns:
+        adj = adj.with_columns(pl.col("ts_code").str.slice(0, 6).alias("code"))
+    adj = adj.select(["code", "date", "adj_factor"]).rename({"adj_factor": "_adj"})
+    df = df.join(adj, on=["code", "date"], how="left")
+    return df.with_columns(
+        pl.coalesce([pl.col("_adj"), pl.col("adj_factor")]).alias("adj_factor")
+    ).drop("_adj")
 
 
 def _response_to_df(resp, code: str) -> pl.DataFrame:
@@ -566,7 +596,10 @@ def _fetch_daily_by_date(pro, day: date):
     )
     cols = ["code", "date", "open", "high", "low", "close", "volume",
             "amount", "pre_close", "adj_factor", "is_suspended"]
-    return df.select([c for c in cols if c in df.columns]).sort("date")
+    df = df.select([c for c in cols if c in df.columns]).sort("date")
+    # 真实复权因子（替代占位 1.0）：全市场按交易日拉取
+    adj = pro.adj_factor(trade_date=day.strftime("%Y%m%d"))
+    return _attach_adj_factor(df, adj)
 
 
 def sync_market(
