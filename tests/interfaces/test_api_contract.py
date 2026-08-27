@@ -291,6 +291,54 @@ def test_selection_result_not_found(client):
 
 
 # ---------------------------------------------------------------------------
+# list pagination (?limit=) — frontend sends limit=50; backend must honor it
+# ---------------------------------------------------------------------------
+
+
+def _seed_extra_selection(client) -> None:
+    from trendradar.infrastructure.runtime import runtime_root
+
+    _write_selection_artifacts(
+        runtime_root() / "storage", "20260820_100000_selection_b0c1", signal_date="2026-08-21"
+    )
+
+
+def _seed_extra_backtest(client) -> None:
+    from trendradar.infrastructure.runtime import runtime_root
+
+    _write_backtest_artifacts(
+        runtime_root() / "storage", "20260820_100100_backtest_e5f6"
+    )
+
+
+def test_selection_results_limit(client):
+    _seed_extra_selection(client)
+    full = client.get("/api/selection-results").json()["results"]
+    assert len(full) == 3  # sanity: fixture 2 + seeded 1
+    keys = [r["execution_key"] for r in full]
+    assert keys == sorted(keys, reverse=True)  # newest-first ordering
+
+    limited = client.get("/api/selection-results?limit=2").json()["results"]
+    assert [r["execution_key"] for r in limited] == keys[:2]
+
+
+def test_backtest_results_limit(client):
+    _seed_extra_backtest(client)
+    full = client.get("/api/backtest-results").json()["results"]
+    assert len(full) == 2
+    keys = [r["execution_key"] for r in full]
+
+    limited = client.get("/api/backtest-results?limit=1").json()["results"]
+    assert [r["execution_key"] for r in limited] == keys[:1]
+
+
+@pytest.mark.parametrize("bad", ["abc", "-1", "0"])
+def test_results_list_invalid_limit_returns_422(client, bad):
+    assert client.get(f"/api/selection-results?limit={bad}").status_code == 422
+    assert client.get(f"/api/backtest-results?limit={bad}").status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # backtest results
 # ---------------------------------------------------------------------------
 
