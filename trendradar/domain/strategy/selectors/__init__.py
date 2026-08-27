@@ -9,6 +9,7 @@ from trendradar.domain.strategy.selectors.zxdkx_balance import ZXDKXBalanceSelec
 from trendradar.domain.strategy.selectors.perfect_b1 import PerfectB1Selector
 from trendradar.domain.strategy.selectors.big_bullish_volume import BigBullishVolumeSelector
 from trendradar.domain.strategy.selectors.volume_spike_balance import VolumeSpikeBalanceSelector
+from trendradar.domain.strategy.selectors.macd_ma_convergence import MacdMaConvergenceSelector
 from trendradar.domain.strategy.selectors.single_needle_down_20 import SingleNeedleDown20Selector
 from trendradar.domain.strategy.selectors.brick_chart import BrickChartSelector
 from trendradar.domain.strategy.selectors.oversold_bottom_fishing import OversoldBottomFishingSelector
@@ -113,4 +114,11 @@ def register_all():
         default_params={"n": 4, "m": 6, "t": 4,
                         "m1": 14, "m2": 28, "m3": 57, "m4": 114,
                         "ema1": 10},
+    ))
+
+    register(StrategyDefinition(
+        strategy_id="macd_ma_convergence", name="MACD均线粘合",
+        description="MA34/55/144/233 粘合（短间距2-6% + 长线多头）+ 收盘在MA55-MA144间 + MACD DIF>0 + 流通市值>50亿",
+        selector_class=MacdMaConvergenceSelector,
+        default_params={"mv_min_yi": 50},
     ))

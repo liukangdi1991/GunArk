@@ -62,3 +62,4 @@ def make_ohlcv_df(code, days, trend=0.0, start_price=10.0):
         "close": close_prices,
         "volume": volumes,
     })
+make_macd_ma_convergence_defn = lambda: get_defn("macd_ma_convergence")
