@@ -14,7 +14,7 @@
 |---|---|---|
 | P1 | **请求参数劫持决策**：UI 表单默认 `start=2019-01-01`（`MarketDataPage.tsx:64-68`），每次点击都判定为大区间 → 触发全市场 ~5,200 只 × 6 年重拉 | `decide_mode` L22-32 |
 | P2 | **日历污染 → 假绿**：`plan_sync` 按**请求**的 `end` 拉日历并整文件覆写 parquet（L85-86），发生在 `uptodate` 判定（L124）**之前**；下次拉取失败时降级读旧账，`latest_tradeable_day` 被假日历截断 → 面板全绿而 08-24/25/26 永久静默缺失 | `plan_sync` L79-134、`calendar.save_trade_calendar` 为 replace 语义 |
-| P3 | **打勾资格跟代码路径走而非覆盖率走**：新上市批越权打勾（L610-612）、欠账队列顶替全市场清单（L455-456）、空响应吞日（L633-638）、取消半路 `break` 留悬空（L481） | `sync_by_stock` / `sync_market` |
+| P3 | **打勾资格跟代码路径走而非覆盖率走**：新上市批越权打勾（L610-612）、欠账队列顶替全市场清单（L455-456）、空响应吞日（L633-638）、取消半路 `break` 留悬空（L488） | `sync_by_stock` / `sync_market` |
 
 另有一项与本次重做同源的数据缺陷：**股票清单只拉在市股（`stock_basic list_status="L"`，实测 5,550 行），漏掉退市股（`"D"`，实测 339 行）**。退市股历史可正常拉取（实测 `000004.SZ` 返回 2,561 行，最晚 2026-07-13），缺失导致回测幸存者偏差，并使"全市场当日已捕获"这句话在历史上任一天都不成立。
 
@@ -57,7 +57,7 @@ trendradar/app/services/market_sync/
 trendradar/app/services/market_service.py   # 保留 submit_* 门面，改调新模块
 ```
 
-依赖方向仍为 `domain → infrastructure → app → interfaces` 单向。原 `syncer.py` 在三个阶段全部完成后删除；期间保留但不再新增逻辑。
+依赖方向仍为 `domain → infrastructure → app → interfaces` 单向。旧 `syncer.py` 在新模块接管全部调用方后删除；共存期间不向其新增任何逻辑（交付阶段划分与实施顺序由 `writing-plans` 阶段的实施计划给出，不在本设计文档范围内）。
 
 **保留不动**：`LocalParquetMarketStore`（实测日历）、`data_store.py`、`rate_limit.py`（270/分 + burst 270）、`TokenBucket.acquire(timeout=60, cancel_check)` 语义。
 
@@ -186,7 +186,7 @@ class SyncPlan:
   ② 剔除 exclude_boards 前缀（BSE/科创/北交，默认全不勾，行为不变）
   ③ 每股区间钳制：start = max(BASELINE_START, list_date)
                     end   = min(latest_tradeable, delist_date or end)
-     —— 钳掉退市后区间，消除"拉回空 DataFrame 算成功还是失败"的歧义（现状 L471 把空一律当成功）
+     —— 钳掉退市后区间，消除"拉回空 DataFrame 算成功还是失败"的歧义（现状 `sync_by_stock.fetch_one` 中 `if data.is_empty(): continue`，L470 一律当成功）
   ④ 剔除 staging 目录中已存在的文件（续传）
   ⑤ 剔除 sync_skipped 名单
   = 本轮待拉
@@ -320,16 +320,21 @@ CREATE TABLE IF NOT EXISTS sync_skipped (
 
 ## 5. 清理（无迁移）
 
+> 下表每一条均按 2026-08-27 对当前代码的**实测引用情况**标注状态（含行号）。实现时每项仍需先 `grep` 复核：上一轮清理提交只删了 `sync_kline` / `_is_up_to_date` / 路由与 schema 死字段，**未触及本表中标为“实测仍在”的条目**（该提交信息中提及 `market_sync_runs` 写入与前端幽灵字段属表述过宽，此处以代码为准）。
+
 | 动作 | 细节 |
 |---|---|
 | 不迁移、不兼容读 | 代码**完全不认识** `sync_done.json` / `sync_retry_codes.json` / `trade_calendar.parquet`；无搬迁、无 `.migrated` 留档 |
 | 重建方式 | 现成命令 `python -m trendradar.cli init-v2 --reset-runtime --confirm-reset`（实测已删除 `app.db` + `-wal/-shm`、`objects/`、`market/`、`cache/`），随后 UI 点"全量重建" |
 | `markers.py` | `load/save_sync_done`、`load/save_retry_codes` 全删；文件若无剩余调用方则整体删除 |
 | `calendar.py` | `save_trade_calendar` / `load_trade_calendar` 删除，仅留 `fetch_trade_calendar` |
-| `syncer.py` | 三阶段完成后删除；`decide_mode` / `plan_sync` / `is_up_to_date` / `missing_trade_days` / `latest_tradeable_day` 分别并入 `planner.py`（前四者）与 `spec.py`（后者，纯函数保留） |
-| `schema.py` | 删除 `market_sync_runs` DDL 与索引（老库残留表不 DROP，孤儿无害）；新增 §3.3/§3.7 四表 |
+| `syncer.py` | 新模块接管调用方后整体删除；`decide_mode` / `plan_sync` / `is_up_to_date` / `missing_trade_days` / `latest_tradeable_day` 分别并入 `planner.py`（前四者）与 `spec.py`（后者，纯函数保留） |
+| `market_service._register_market_sync_metadata` | **实测仍在写入**（`market_service.py:59` 调用、`:124` INSERT；`tests/app/test_execution_registration.py:231` 仍断言该表行）：函数与调用点一并删除，其中的 `register_execution` 保留并更名 `register_market_sync_execution` |
+| `market_service.get_market_status` | **实测仍在**（`market_service.py:141`）：已复核全仓零调用方，且是 `market_sync_runs` 的最后一个读取方（`:157`），随本项删除 |
+| `schema.py`（DDL 删除） | **顺序要求**：先删上述写入方/读取方及其测试断言，再删 `market_sync_runs` DDL 与索引（`schema.py:95/111` 实测仍在）—— 颠倒会使同步作业运行期直接崩；老库残留表不 DROP，孤儿无害 |
+| `schema.py`（新表） | 新增四表 DDL：`trade_calendar`（§3.3）、`sync_done_days` / `sync_meta`（§5 末）、`sync_skipped`（§3.7） |
 | `stocklist.py` | 清单 L → L ∪ D（2 次调用），新增 `delist_date` 字段 |
-| 前端类型 | `TradingDatesResponse` 删除后端从不返回的 `effective_to` / `latest_data_date`（已在本轮清理提交中完成） |
+| 前端类型 | `TradingDatesResponse` 删除后端从不返回的 `effective_to` / `latest_data_date`（**实测仍在** `frontend/src/types/marketData.ts:4-5`，属待办） |
 
 新增账本表全量 DDL（`sync_meta` 存 `ledger_suspect`、`last_full_success_at` 两个键）：
 
@@ -350,9 +355,9 @@ CREATE TABLE IF NOT EXISTS sync_meta (
 
 - 主按钮 **`补齐到最近可交易日`** —— 前端**不传任何日期**，由 `build_plan` 自行推算 `(trusted_through, latest_tradeable]`；
 - 高级区（`Collapse`）：`全量重建`，说明文案固定为"约 44 分钟 / 11,778 次调用 / 将覆盖现有数据"，二次确认弹窗；`exclude_boards` 移入此区（默认全不勾）；`accept_partial_baseline`（§3.7）仅当 `coverage.missing_codes > 0` 时作为二次确认弹窗内的一个必选勾项出现；
-- **删除** start/end 表单（连同 `dayjs("2019-01-01")` 默认值，即 P1 病根）；
+- **删除** start/end 表单（连同 `dayjs("2019-01-01")` 默认值的**两处**出现：`MarketDataPage.tsx:65` 与 `:121`，即 P1 病根）；
 - 日历不提供手动刷新按钮（每天 1 次调用，无需）；
-- **执行入口契约变更**：`submitExecution` 的 `type` 由 `market_data_sync` 改为 `market_bars_sync`，`params` 只剩 `force` / `exclude_boards` / `accept_partial_baseline`（**不再有 `start` / `end` / `codes`**）；`presenters.py:711-719` 的 `jtype` 分支、`frontend/src/services/marketData.ts`、`frontend/src/types/execution.ts` 联合类型、执行控制台的 job_type 标签四处同步修改。旧 `market_data_sync` 分支直接删除（全仓无其他调用方，且本系统无外部API 用户）；`codes` 仅由 CLI 高级回填命令传入，UI 不暴露。
+- **执行入口契约变更**（四个实测改动点）：`MarketDataPage.tsx:45-46` 的 `submitExecution({ type: "market_data_sync", ... })` 改为 `market_bars_sync`，`params` 只剩 `force` / `exclude_boards` / `accept_partial_baseline`（**不再有 `start` / `end` / `codes`**）；`types/execution.ts:34` 联合类型同步；`presenters.py:711-722` 的 `jtype` 分支及其 `job_type = "market_sync"` 改名；执行控制台的 job_type 标签映射。旧 `market_data_sync` 分支直接删除（全仓无其他调用方，本系统无外部 API 用户）；`codes` 仅由 CLI 高级回填命令传入，UI 不暴露。
 
 **面板**（沿用已选定的 C 布局：顶部 `Row`，左 `Col xs=24 lg=14` 放现有 4 指标卡 2×2，右 `Col xs=24 lg=10` 为"数据地基"卡），右卡行序 5 → 6：
 
