@@ -65,9 +65,12 @@ def get_execution_console(execution_id: str, request: FastAPIRequest, offset: in
 
 
 @router.get("/selection-results")
-def list_selection_results(request: FastAPIRequest):
+def list_selection_results(
+    request: FastAPIRequest,
+    limit: int | None = Query(default=None, ge=1),
+):
     from trendradar.interfaces.api.presenters import list_selection_results_payload
-    return list_selection_results_payload()
+    return list_selection_results_payload(limit=limit)
 
 
 @router.get("/selection-results/{execution_key}")

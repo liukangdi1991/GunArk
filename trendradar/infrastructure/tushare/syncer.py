@@ -7,12 +7,10 @@ import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 import polars as pl
-
-from trendradar.infrastructure.tushare.client import get_pro
 
 logger = logging.getLogger(__name__)
 
@@ -143,72 +141,11 @@ def plan_sync(pro, bars_dir: Path, cache_dir: Path, request: dict,
     )
 
 
-def sync_kline(
-    codes: list[str],
-    start: date,
-    end: date,
-    bars_dir: Path,
-    progress: Optional[Callable[[int, int, str], None]] = None,
-    cancel_check: Optional[Callable[[], bool]] = None,
-) -> dict:
-    """Sync daily kline for given codes to parquet files.
-
-    Returns:
-        dict with keys ``synced``, ``skipped``, ``failed``, ``empty``.
-    """
-    bars_dir = Path(bars_dir)
-    bars_dir.mkdir(parents=True, exist_ok=True)
-
-    pro = get_pro()
-    results = {"synced": 0, "skipped": 0, "failed": 0, "empty": 0}
-    total = len(codes)
-    max_retries = 3
-
-    for idx, code in enumerate(codes, start=1):
-        if cancel_check and cancel_check():
-            break
-
-        if progress:
-            progress(idx, total, code)
-
-        output_path = bars_dir / f"{code}.parquet"
-
-        if _is_up_to_date(output_path, end):
-            results["skipped"] += 1
-            continue
-
-        data = _fetch_with_retry(pro, code, start, end, max_retries)
-        if data is None:
-            results["failed"] += 1
-            continue
-
-        if data.is_empty():
-            results["empty"] += 1
-            continue
-
-        _atomic_write_parquet(data, output_path)
-        results["synced"] += 1
-
-    return results
-
-
-def _is_up_to_date(path: Path, target_end: date) -> bool:
-    if not path.exists():
-        return False
-    try:
-        df = pl.read_parquet(path, columns=["date"])
-        if df.is_empty():
-            return False
-        latest = df["date"].max()
-        if latest is None:
-            return False
-        return latest >= target_end
-    except Exception:
-        return False
-
-
 def _to_ts_code(code: str) -> str:
-    code = str(code).zfill(6)
+    # Strip exchange suffix first: API callers may pass Tushare-style codes
+    # ("600519.SH", per official docs); zfill(6) is a no-op on longer strings,
+    # which used to produce "600519.SH.SH" -> perpetual retry-queue pollution.
+    code = str(code).split(".")[0].zfill(6)
     if code.startswith(("60", "68", "900", "901")):
         return f"{code}.SH"          # 沪主板/科创板/沪B股
     elif code.startswith(("92", "4", "8")):

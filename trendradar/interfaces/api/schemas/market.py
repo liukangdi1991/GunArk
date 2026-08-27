@@ -12,11 +12,5 @@ class MarketSyncRequest(BaseModel):
     force: bool = False
 
 
-class MarketStatusResponse(BaseModel):
-    latest_date: str | None = None
-    stock_count: int = 0
-    latest_sync_run: dict | None = None
-
-
 class TradingDatesResponse(BaseModel):
     dates: list[str] = Field(default_factory=list)

@@ -195,11 +195,13 @@ def selection_result_payload(key: str, include_detail: bool = False) -> dict:
     }
 
 
-def list_selection_results_payload() -> dict:
+def list_selection_results_payload(limit: int | None = None) -> dict:
     root = _executions_root()
     results = []
     if root.is_dir():
         for exec_dir in sorted(root.iterdir(), key=lambda p: p.name, reverse=True):
+            if limit is not None and len(results) >= limit:
+                break
             if not (exec_dir / "selection" / "signals.json").exists():
                 continue
             try:
@@ -423,11 +425,13 @@ def backtest_result_payload(key: str, include_report: bool = False) -> dict:
     }
 
 
-def list_backtest_results_payload() -> dict:
+def list_backtest_results_payload(limit: int | None = None) -> dict:
     root = _executions_root()
     results = []
     if root.is_dir():
         for exec_dir in sorted(root.iterdir(), key=lambda p: p.name, reverse=True):
+            if limit is not None and len(results) >= limit:
+                break
             if not (exec_dir / "backtest" / "result.json").exists():
                 continue
             try:

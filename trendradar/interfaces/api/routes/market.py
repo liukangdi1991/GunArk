@@ -6,7 +6,6 @@ from fastapi import APIRouter, HTTPException, Query, Request as FastAPIRequest
 
 from trendradar.interfaces.api.schemas.market import (
     MarketSyncRequest,
-    MarketStatusResponse,
 )
 
 router = APIRouter(prefix="/api", tags=["market-data"])

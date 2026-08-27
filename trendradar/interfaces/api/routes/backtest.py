@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request as FastAPIRequest
+from fastapi import APIRouter, HTTPException, Query, Request as FastAPIRequest
 
 from trendradar.interfaces.api.schemas.execution import (
     BacktestRequest as BacktestSubmitRequest,
@@ -33,9 +33,12 @@ def _artifacts_root(request: FastAPIRequest) -> Path:
 
 
 @router.get("/backtest-results")
-def list_backtest_results(request: FastAPIRequest):
+def list_backtest_results(
+    request: FastAPIRequest,
+    limit: int | None = Query(default=None, ge=1),
+):
     from trendradar.interfaces.api.presenters import list_backtest_results_payload
-    return list_backtest_results_payload()
+    return list_backtest_results_payload(limit=limit)
 
 
 @router.get("/backtest-results/{execution_key}/report")
