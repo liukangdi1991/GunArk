@@ -35,6 +35,10 @@ class JobContext:
     def check_cancelled(self) -> bool:
         return self._cancel_check()
 
+    @property
+    def store(self) -> "JobStore":
+        return self._store
+
     def succeed(self, result: dict) -> None:
         self._store.set_status(self.job_id, "success", result=result)
 

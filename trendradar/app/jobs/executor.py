@@ -7,6 +7,8 @@ from threading import Lock
 from trendradar.app.jobs.context import JobContext
 from trendradar.app.jobs.persistence import JobStore
 
+EXCLUSIVE_JOB_TYPES = frozenset({"market_bars_sync", "market_backfill_codes"})
+
 
 class JobState:
     def __init__(self, job_id: str, job_type: str, future: Future) -> None:
@@ -33,14 +35,14 @@ class JobExecutor:
         if self._shutdown:
             raise RuntimeError("Executor has been shut down")
 
-        if job_type == "market_sync":
+        if job_type in EXCLUSIVE_JOB_TYPES:
             # 检查 + 注册必须在同一把锁内，否则并发提交会双跑（TOCTOU）
             with self._lock:
                 if any(
-                    j.job_type == "market_sync" and not j.future.done()
+                    j.job_type in EXCLUSIVE_JOB_TYPES and not j.future.done()
                     for j in self._jobs.values()
                 ):
-                    raise RuntimeError("market_sync job already running")
+                    raise RuntimeError(f"{job_type} job conflicts with an in-flight sync job")
                 job_id = self._store.create_job(job_type, request)
                 fut = self._pool.submit(self._run, job_id, job_type, run_fn)
                 self._jobs[job_id] = JobState(job_id, job_type, fut)
@@ -114,13 +116,17 @@ class JobExecutor:
             pass
         try:
             run_fn(ctx)
+            job = self._store.get_job(job_id)
+            if job is not None and job["status"] in ("success", "failed", "cancelled"):
+                return  # worker 已写终态（含 failed("Cancelled by user")），不覆写
             if self._is_cancelled(job_id):
                 self._store.set_status(job_id, "cancelled")
             else:
-                job = self._store.get_job(job_id)
-                if job is not None and job["status"] == "running":
-                    ctx.succeed({})
+                ctx.succeed({})
         except Exception as e:
+            job = self._store.get_job(job_id)
+            if job is not None and job["status"] in ("success", "failed", "cancelled"):
+                return
             if self._is_cancelled(job_id):
                 self._store.set_status(job_id, "cancelled")
             else:
