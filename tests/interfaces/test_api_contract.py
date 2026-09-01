@@ -394,14 +394,25 @@ def test_trading_dates_shape(client):
     assert payload["dates"][-1] == "2026-08-30"
 
 
-def test_market_status_shape(client):
+def test_status_payload_has_six_groups(client):
     resp = client.get("/api/market-data/status")
     assert resp.status_code == 200
     payload = resp.json()
-    assert set(payload) >= {"data_dir", "stocklist", "stock_count", "local_file_count", "latest_date"}
-    assert payload["stock_count"] == 1
-    assert payload["local_file_count"] == 1
-    assert payload["latest_date"] == "2026-08-30"
+    assert set(payload) >= {"calendar", "freshness", "bars_sync", "coverage",
+                            "consistency", "storage"}
+    assert set(payload["calendar"]) == {"status", "max_trade_date", "covers_today", "job_id"}
+    assert set(payload["freshness"]) == {"trusted_through", "latest_tradeable",
+                                         "stale_days", "total_missing_days"}
+    assert set(payload["bars_sync"]) == {"status", "finished_at", "error_message", "job_id"}
+    assert set(payload["coverage"]) == {"missing_codes", "skipped"}
+    assert set(payload["consistency"]) == {"ledger_suspect", "marker_mismatch",
+                                           "doubtful_days"}
+    # 旧平铺字段全部收进 storage 组（原 test_market_status_shape 的断言落点）
+    assert payload["storage"]["stock_count"] == 1
+    assert payload["storage"]["local_file_count"] == 1
+    assert payload["storage"]["latest_date"] == "2026-08-30"
+    # 新鲜度基于读回实测：fixture 只种了 000001 一只到 2026-08-30
+    assert payload["freshness"]["trusted_through"] == "2026-08-30"
 
 
 # ---------------------------------------------------------------------------
@@ -588,15 +599,73 @@ def test_bulk_delete_backtest_results_no_body_deletes_all(client, tmp_path):
     assert (tmp_path / "storage" / "objects" / "executions" / "20260820_100000_selection_a1b2").is_dir()
 
 
-def test_market_sync_force_passthrough(client):
+def test_market_bars_sync_submit_accepts_new_schema(client):
     resp = client.post(
         "/api/market-data/sync",
-        json={"start_date": "2026-08-18", "end_date": "2026-08-19", "force": True, "codes": ["000001"]},
+        json={"force": True, "exclude_boards": ["gem"], "accept_partial_baseline": True},
     )
-    # force is accepted by the schema (200 even though sync job will fail on
-    # missing token in tests; a job id is still produced)
+    # token 缺失会让 worker 失败，但提交本身必须成功并给出 job_id
     assert resp.status_code == 200
     assert resp.json()["data"]["job_id"]
+
+
+def test_market_backfill_submit(client):
+    resp = client.post("/api/market-data/backfill", json={})
+    assert resp.status_code == 200
+    assert resp.json()["data"]["job_id"]
+
+
+def test_confirm_doubtful_noop_when_empty(client):
+    resp = client.post("/api/market-data/confirm-doubtful")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "noop", "confirmed": []}
+
+
+def test_confirm_doubtful_rejects_days_not_on_disk(client):
+    from trendradar.infrastructure.runtime import runtime_root
+    from trendradar.infrastructure.storage.sync_store import SyncStore
+    from datetime import date
+
+    # 2015-07-08 不在 fixture 种下的 08-18..08-30 范围内 → 不在盘上
+    store = SyncStore(runtime_root() / "storage")
+    store.set_doubtful_days([date(2015, 7, 8)])
+    resp = client.post("/api/market-data/confirm-doubtful")
+    assert resp.status_code == 400
+    store2 = SyncStore(runtime_root() / "storage")
+    assert store2.doubtful_days() == [date(2015, 7, 8)]         # 拒绝且不写账本
+
+
+def test_confirm_doubtful_books_when_on_disk(client):
+    import polars as pl
+    from trendradar.infrastructure.runtime import runtime_root
+    from trendradar.infrastructure.storage.sync_store import SyncStore
+    from datetime import date
+
+    d = date(2026, 8, 26)
+    bars = runtime_root() / "storage" / "market" / "bars"
+    bars.mkdir(parents=True, exist_ok=True)
+    # 独立文件，避免覆盖 fixture 的 000001
+    pl.DataFrame({"date": [d], "code": ["000002"], "open": [1.0], "high": [1.0],
+                  "low": [1.0], "close": [1.0]}).write_parquet(bars / "000002.parquet")
+    store = SyncStore(runtime_root() / "storage")
+    store.set_doubtful_days([d])
+    resp = client.post("/api/market-data/confirm-doubtful")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok", "confirmed": ["2026-08-26"]}
+    store2 = SyncStore(runtime_root() / "storage")
+    assert store2.done_days() == {d}
+    assert store2.doubtful_days() == []
+
+
+def test_submit_execution_dispatch_market_bars_sync(client):
+    resp = client.post(
+        "/api/executions",
+        json={"type": "market_bars_sync", "params": {"force": False}},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["execution_type"] == "market_bars_sync"
+    assert payload["console_url"].startswith("/console/")
 
 
 def test_ultra_short_trade_strategy_maps_to_execution():

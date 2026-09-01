@@ -478,36 +478,116 @@ def _stock_meta_by_code() -> dict[str, tuple[str, str]]:
 
 
 def _compute_market_status() -> dict:
-    bars_dir = _storage_root() / "market" / "bars"
-    meta_file = _storage_root() / "market" / "stock_meta.parquet"
+    from datetime import datetime
 
-    if bars_dir.is_dir():
-        files = sorted(bars_dir.glob("*.parquet"))
-        count = len(files)
-        latest_date = None
-        if files:
-            try:
-                import polars as pl
+    from trendradar.domain.market.sync.planner import stale_days
+    from trendradar.domain.market.sync.spec import (
+        BASELINE_START,
+        SHANGHAI,
+        latest_tradeable_day,
+    )
+    from trendradar.infrastructure.runtime import storage_root
+    from trendradar.infrastructure.storage.sync_store import SyncStore
+    from trendradar.infrastructure.tushare.writer import readback_calendar
 
-                max_date = (
-                    pl.scan_parquet([str(p) for p in files])
-                    .select(pl.col("date").max())
-                    .collect()[0, 0]
-                )
-                latest_date = str(max_date) if max_date is not None else None
-            except Exception:
-                latest_date = None
-    else:
-        count = 0
-        latest_date = None
+    store_root = storage_root()
+    bars_dir = store_root / "market" / "bars"
+    meta_file = store_root / "market" / "stock_meta.parquet"
+    sync = SyncStore(store_root)
 
-    return {
+    now_cn = datetime.now(SHANGHAI)
+    today = now_cn.date()
+
+    # ① 日历
+    calendar_days = sync.calendar_days()
+    max_cal = max(calendar_days) if calendar_days else None
+    cal_job = _latest_job("market_calendar_sync")
+    calendar = {
+        "status": cal_job["status"] if cal_job else None,
+        "max_trade_date": str(max_cal) if max_cal else None,
+        "covers_today": bool(max_cal and max_cal >= today),
+        "job_id": cal_job["job_id"] if cal_job else None,
+    }
+
+    # ② 新鲜度（基于读回实测日历，不信任 done_days）
+    latest = latest_tradeable_day(calendar_days, now_cn) if calendar_days else None
+    readback = readback_calendar(bars_dir) if bars_dir.is_dir() else set()
+    trusted = max((d for d in readback if latest is None or d <= latest), default=None)
+    freshness = {
+        "trusted_through": str(trusted) if trusted else None,
+        "latest_tradeable": str(latest) if latest else None,
+        "stale_days": stale_days(calendar_days, readback, latest) if calendar_days else None,
+        "total_missing_days": (
+            len([d for d in calendar_days
+                 if latest is not None and BASELINE_START <= d <= latest and d not in readback])
+            if latest is not None else None
+        ),
+    }
+
+    # ③ 最近一次行情同步
+    bars_job = _latest_job("market_bars_sync")
+    bars_sync = {
+        "status": bars_job["status"] if bars_job else None,
+        "finished_at": bars_job["finished_at"] if bars_job else None,
+        "error_message": bars_job["error_message"] if bars_job else None,
+        "job_id": bars_job["job_id"] if bars_job else None,
+    }
+
+    # ④ 个股覆盖（明细取前 10 条）
+    skipped = sync.skipped_rows()
+    coverage = {
+        "missing_codes": len(skipped),
+        "skipped": [
+            {"code": r["code"], "attempts": r["attempts"], "last_error": r["last_error"]}
+            for r in skipped[:10]
+        ],
+    }
+
+    # ⑤ 一致性（marker_mismatch = 账本有勾但读回无此日）
+    done_days = sync.done_days()
+    consistency = {
+        "ledger_suspect": sync.ledger_suspect(),
+        "marker_mismatch": bool(done_days and done_days - readback),
+        "doubtful_days": [d.isoformat() for d in sync.doubtful_days()],
+    }
+
+    # ⑥ 本地存储（沿用现状数字，供面板基线行）
+    file_count = len(list(bars_dir.glob("*.parquet"))) if bars_dir.is_dir() else 0
+    storage = {
         "data_dir": str(bars_dir),
         "stocklist": str(meta_file) if meta_file.exists() else "",
-        "stock_count": count,
-        "local_file_count": count,
-        "latest_date": latest_date,
+        "stock_count": file_count,
+        "local_file_count": file_count,
+        "latest_date": str(max(readback)) if readback else None,
     }
+
+    return {
+        "calendar": calendar,
+        "freshness": freshness,
+        "bars_sync": bars_sync,
+        "coverage": coverage,
+        "consistency": consistency,
+        "storage": storage,
+    }
+
+
+def _latest_job(job_type: str) -> dict | None:
+    import sqlite3
+
+    db = _storage_root() / "app.db"
+    if not db.exists():
+        return None
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT job_id, status, finished_at, error_message FROM jobs "
+            "WHERE job_type = ? ORDER BY id DESC LIMIT 1",
+            (job_type,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else None
 
 
 def market_status_payload() -> dict:
@@ -616,7 +696,6 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
         submit_backtest,
         submit_selection_backtest,
     )
-    from trendradar.app.services.market_service import submit_market_sync
     from trendradar.app.services.selection_service import (
         submit_batch_selection,
         submit_selection,
@@ -716,18 +795,17 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
             },
         )
         job_type = "selection_backtest"
-    elif jtype == "market_data_sync":
-        job_id = submit_market_sync(
+    elif jtype == "market_bars_sync":
+        from trendradar.app.services.market_service import submit_market_bars_sync
+        job_id = submit_market_bars_sync(
             executor,
             {
-                "start_date": params.get("start") or params.get("start_date"),
-                "end_date": params.get("end") or params.get("end_date"),
-                "codes": params.get("codes"),
                 "force": params.get("force", False),
-                "exclude_boards": params.get("exclude_boards"),
+                "exclude_boards": params.get("exclude_boards") or [],
+                "accept_partial_baseline": params.get("accept_partial_baseline", False),
             },
         )
-        job_type = "market_sync"
+        job_type = "market_bars_sync"
     else:
         raise ValueError(f"Unknown execution type: {jtype!r}")
 

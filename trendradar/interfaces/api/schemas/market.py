@@ -6,10 +6,10 @@ from pydantic import BaseModel, Field
 
 
 class MarketSyncRequest(BaseModel):
-    codes: list[str] | None = None
-    start_date: str | None = None
-    end_date: str | None = None
     force: bool = False
+    exclude_boards: list[str] = Field(default_factory=list)
+    accept_partial_baseline: bool = False
+    codes: list[str] | None = None
 
 
 class TradingDatesResponse(BaseModel):

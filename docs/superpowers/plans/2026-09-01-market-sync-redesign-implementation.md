@@ -2474,9 +2474,18 @@ def test_commit_incremental_adds_claimed_and_persists_doubtful(store):
 
 
 def test_commit_incremental_atomic_on_failure(store):
+    from contextlib import contextmanager
+
     class BoomStore(SyncStore):
-        def set_doubtful_days(self, days):
-            raise RuntimeError("boom")
+        @contextmanager
+        def transaction(self):
+            with self._sc.connection() as conn:
+                try:
+                    yield conn
+                    raise RuntimeError("boom")  # 提交前爆炸 → 整体回滚
+                except Exception:
+                    conn.rollback()
+                    raise
 
     boom = BoomStore(store._sc.storage_root)
     with pytest.raises(RuntimeError):
@@ -3734,7 +3743,7 @@ def confirm_doubtful_days() -> dict:
 - [ ] **Step 6: 运行确认通过**
 
 Run: `.venv/bin/pytest tests/app/test_market_sync_service.py -v`
-Expected: PASS（16 个）
+Expected: PASS（18 个）
 
 注意：此时 `tests/interfaces/test_api_contract.py::test_market_sync_force_passthrough` 等旧接口测试会因门面改名而红——预期内，Task 14 一并修复；本任务只要求新测试全绿且旧 `tests/infrastructure` / `tests/domain` 不新增红。
 
@@ -3789,12 +3798,13 @@ def test_confirm_doubtful_rejects_days_not_on_disk(client):
     from trendradar.infrastructure.storage.sync_store import SyncStore
     from datetime import date
 
+    # 2015-07-08 不在 fixture 种下的 08-18..08-30 范围内 → 不在盘上
     store = SyncStore(runtime_root() / "storage")
-    store.set_doubtful_days([date(2026, 8, 26)])
+    store.set_doubtful_days([date(2015, 7, 8)])
     resp = client.post("/api/market-data/confirm-doubtful")
     assert resp.status_code == 400
     store2 = SyncStore(runtime_root() / "storage")
-    assert store2.doubtful_days() == [date(2026, 8, 26)]        # 拒绝且不写账本
+    assert store2.doubtful_days() == [date(2015, 7, 8)]         # 拒绝且不写账本
 
 
 def test_confirm_doubtful_books_when_on_disk(client):
@@ -3806,8 +3816,9 @@ def test_confirm_doubtful_books_when_on_disk(client):
     d = date(2026, 8, 26)
     bars = runtime_root() / "storage" / "market" / "bars"
     bars.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame({"date": [d], "code": ["000001"], "open": [1.0], "high": [1.0],
-                  "low": [1.0], "close": [1.0]}).write_parquet(bars / "000001.parquet")
+    # 独立文件，避免覆盖 fixture 的 000001
+    pl.DataFrame({"date": [d], "code": ["000002"], "open": [1.0], "high": [1.0],
+                  "low": [1.0], "close": [1.0]}).write_parquet(bars / "000002.parquet")
     store = SyncStore(runtime_root() / "storage")
     store.set_doubtful_days([d])
     resp = client.post("/api/market-data/confirm-doubtful")
