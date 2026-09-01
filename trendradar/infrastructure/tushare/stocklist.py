@@ -1,55 +1,65 @@
-"""Tushare stock list sync."""
+"""Tushare 股票清单：L ∪ D 两次调用 + delist_date + 有效清单。见 spec §5/§3.6。"""
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
+from typing import Mapping
 
 import polars as pl
 
+from trendradar.domain.market.sync.spec import BASELINE_START
 from trendradar.infrastructure.tushare.client import get_pro
+from trendradar.infrastructure.tushare.fetch import EXCLUDE_BOARD_PREFIXES
 
 logger = logging.getLogger(__name__)
 
+_FIELDS = "ts_code,symbol,name,area,industry,market,list_date,delist_date"
+
+
+def normalize_stock_meta(frames: list) -> pl.DataFrame:
+    """合并 L/D 两次响应为统一 schema（code/ts_code/list_date/delist_date…）。"""
+    dfs = []
+    for data in frames:
+        if data is None or not data.to_dict(orient="list"):
+            continue
+        f = pl.DataFrame(data.to_dict(orient="list"))
+        # L 帧的 delist_date 全空会推断成 Null 类型，与 D 帧的 Utf8 无法直接
+        # concat —— 统一先转字符串，日期解析放到合并之后
+        for col in ("list_date", "delist_date"):
+            if col in f.columns:
+                f = f.with_columns(pl.col(col).cast(pl.Utf8, strict=False))
+        dfs.append(f)
+    if not dfs:
+        return pl.DataFrame()
+    df = pl.concat(dfs)
+    if "symbol" in df.columns:
+        df = df.rename({"symbol": "code"})
+    for col in ("list_date", "delist_date"):
+        if col in df.columns:
+            df = df.with_columns(
+                pl.col(col).str.strptime(pl.Date, "%Y%m%d", strict=False)
+                .alias(col)
+            )
+    return df.unique(subset=["code"], keep="first")
+
 
 def sync_stock_list(bars_dir: Path) -> pl.DataFrame:
-    """Fetch full stock list from Tushare, save to stock_meta.parquet."""
+    """stock_basic(L) + stock_basic(D) 两次调用，写 stock_meta.parquet（原子）。"""
     pro = get_pro()
-
-    data = pro.stock_basic(
-        exchange="",
-        list_status="L",
-        fields="ts_code,symbol,name,area,industry,market,list_date",
-    )
-
-    if data is None or not data.to_dict(orient="list"):
-        logger.warning("stock_basic returned empty")
-        return pl.DataFrame()
-
-    df = pl.DataFrame(data.to_dict(orient="list"))
-
-    column_map = {
-        "symbol": "code",
-        "name": "name",
-        "area": "area",
-        "industry": "industry",
-        "market": "market",
-        "list_date": "list_date",
-    }
-    existing = {k: v for k, v in column_map.items() if k in df.columns}
-    df = df.rename(existing)
-
-    if "list_date" in df.columns:
-        df = df.with_columns(
-            pl.col("list_date")
-            .cast(pl.Utf8)
-            .str.strptime(pl.Date, "%Y%m%d")
-            .alias("list_date")
-        )
+    frames = [
+        pro.stock_basic(exchange="", list_status=s, fields=_FIELDS)
+        for s in ("L", "D")
+    ]
+    df = normalize_stock_meta(frames)
+    if df.is_empty():
+        logger.warning("stock_basic returned empty for both L and D")
+        return df
 
     output = Path(bars_dir).parent / "stock_meta.parquet"
     output.parent.mkdir(parents=True, exist_ok=True)
-    # Atomic write: readers never observe a partially-written stock_meta.
     fd, tmp = __import__("tempfile").mkstemp(dir=output.parent, suffix=".tmp")
     try:
         __import__("os").close(fd)
@@ -61,5 +71,67 @@ def sync_stock_list(bars_dir: Path) -> pl.DataFrame:
         except OSError:
             pass
         raise
-
     return df
+
+
+@dataclass(frozen=True)
+class EffectiveList:
+    """有效清单 = L∪D − 北交所 − exclude_boards（与拉取侧同一过滤，§3.8 断言①分母）。"""
+
+    codes: tuple[str, ...]
+    list_dates: Mapping[str, date]
+    delist_dates: Mapping[str, date | None]
+    rows: tuple[tuple[date, date | None], ...]  # (list_date, delist_date)
+    _clamped: Mapping[str, tuple[date, date]]
+
+    def expected_on(self, day: date) -> int:
+        return sum(
+            1 for list_d, delist_d in self.rows
+            if list_d <= day and (delist_d is None or delist_d >= day)
+        )
+
+    def clamped_range(self, code: str) -> tuple[date, date] | None:
+        return self._clamped.get(code)
+
+
+def build_effective_list(
+    meta: pl.DataFrame,
+    exclude_boards,
+    latest_tradeable: date,
+    baseline_start: date = BASELINE_START,
+) -> EffectiveList:
+    """spec §3.6 待拉清单 ①-④：剔未来上市 / 剔北交所 / 剔排除板块 / 区间钳制。"""
+    if meta.is_empty() or latest_tradeable is None:
+        return EffectiveList((), {}, {}, (), {})
+
+    prefixes = tuple(
+        p for b in (exclude_boards or []) for p in EXCLUDE_BOARD_PREFIXES.get(b, ())
+    )
+    codes: list[str] = []
+    list_dates: dict[str, date] = {}
+    delist_dates: dict[str, date | None] = {}
+    rows: list[tuple[date, date | None]] = []
+    clamped: dict[str, tuple[date, date]] = {}
+
+    for row in meta.iter_rows(named=True):
+        ts_code = str(row.get("ts_code") or "")
+        if ts_code.endswith(".BJ"):
+            continue  # Tushare daily 物理不提供北交所行情
+        code = str(row["code"])
+        if prefixes and code.startswith(prefixes):
+            continue
+        list_d = row.get("list_date")
+        if list_d is None or list_d > latest_tradeable:
+            continue
+        delist_d = row.get("delist_date")
+        start = max(baseline_start, list_d)
+        end = min(latest_tradeable, delist_d) if delist_d is not None else latest_tradeable
+        if start > end:
+            continue
+        codes.append(code)
+        list_dates[code] = list_d
+        delist_dates[code] = delist_d
+        rows.append((list_d, delist_d))
+        clamped[code] = (start, end)
+
+    return EffectiveList(tuple(codes), list_dates, delist_dates, tuple(rows), clamped)

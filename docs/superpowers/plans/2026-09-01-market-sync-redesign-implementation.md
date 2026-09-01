@@ -1608,7 +1608,13 @@ def normalize_stock_meta(frames: list) -> pl.DataFrame:
     for data in frames:
         if data is None or not data.to_dict(orient="list"):
             continue
-        dfs.append(pl.DataFrame(data.to_dict(orient="list")))
+        f = pl.DataFrame(data.to_dict(orient="list"))
+        # L 帧的 delist_date 全空会推断成 Null 类型，与 D 帧的 Utf8 无法直接
+        # concat —— 统一先转字符串，日期解析放到合并之后
+        for col in ("list_date", "delist_date"):
+            if col in f.columns:
+                f = f.with_columns(pl.col(col).cast(pl.Utf8, strict=False))
+        dfs.append(f)
     if not dfs:
         return pl.DataFrame()
     df = pl.concat(dfs)
@@ -1617,8 +1623,7 @@ def normalize_stock_meta(frames: list) -> pl.DataFrame:
     for col in ("list_date", "delist_date"):
         if col in df.columns:
             df = df.with_columns(
-                pl.col(col).cast(pl.Utf8)
-                .str.strptime(pl.Date, "%Y%m%d", strict=False)
+                pl.col(col).str.strptime(pl.Date, "%Y%m%d", strict=False)
                 .alias(col)
             )
     return df.unique(subset=["code"], keep="first")
