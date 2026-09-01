@@ -572,6 +572,14 @@ def trading_dates_payload(start: str | None = None, end: str | None = None) -> d
     return payload
 
 
+def invalidate_market_status_cache() -> None:
+    """任何同步终态/确认入账后调用（30 s TTL 对面板太慢）。"""
+    _market_status_cache["at"] = 0.0
+    _market_status_cache["payload"] = None
+    _trading_dates_cache["at"] = 0.0
+    _trading_dates_cache["payload"] = None
+
+
 # ---------------------------------------------------------------------------
 # execution / console
 # ---------------------------------------------------------------------------

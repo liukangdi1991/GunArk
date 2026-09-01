@@ -1,0 +1,460 @@
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
+
+import polars as pl
+import pytest
+
+from trendradar.app.jobs.persistence import JobStore
+from trendradar.app.services.market_sync import service
+from trendradar.infrastructure.storage.connection import StorageConnection
+from trendradar.infrastructure.storage.schema import init_schema
+from trendradar.infrastructure.storage.sync_store import SyncStore
+
+CN = ZoneInfo("Asia/Shanghai")
+NOW = datetime(2026, 8, 27, 18, 0, tzinfo=CN)   # 16:00 后 → 今日可得
+CODES = ["000001", "000002", "600000"]
+# 官方日历：08-24/25/26/27（周一至周四）+ 年底远日（保证 MAX ≥ today）
+CAL = [date(2026, 8, 24), date(2026, 8, 25), date(2026, 8, 26),
+       date(2026, 8, 27), date(2026, 12, 31)]
+DONE = [date(2026, 8, 24), date(2026, 8, 25)]   # 缺口 = 26/27
+
+
+class FakeResp:
+    def __init__(self, data: dict):
+        self._data = data
+
+    def to_dict(self, orient="records"):
+        return self._data
+
+
+def _resp_cal(days):
+    return FakeResp({"cal_date": [d.strftime("%Y%m%d") for d in days],
+                     "is_open": [1] * len(days)})
+
+
+def _resp_day(day, codes):
+    n = len(codes)
+    return FakeResp({
+        "ts_code": [f"{c}.SZ" for c in codes],
+        "trade_date": [day.strftime("%Y%m%d")] * n,
+        "open": [10.0] * n, "high": [11.0] * n, "low": [9.0] * n,
+        "close": [10.5] * n, "vol": [1000.0] * n,
+    })
+
+
+def _resp_meta(codes):
+    n = len(codes)
+    return FakeResp({
+        "ts_code": [f"{c}.SZ" for c in codes], "symbol": list(codes),
+        "name": [f"S{c}" for c in codes], "area": [""] * n,
+        "industry": [""] * n, "market": [""] * n,
+        "list_date": ["20100101"] * n, "delist_date": [None] * n,
+    })
+
+
+class FakePro:
+    """可注水的 Tushare pro。daily(trade_date=) → 按日；daily(ts_code=) → 按股。"""
+
+    def __init__(self):
+        self.calendar_days = list(CAL)
+        self.day_codes = {}        # date -> 该日返回的代码列表
+        self.code_days = {}        # code -> 该股的日期列表（范围模式）
+        self.raise_cal = None      # trade_cal 抛错
+        self.raise_daily = None    # daily(trade_date=) 抛错
+        self.raise_daily_codes = set()                        # 按股注水（范围模式）
+        self.raise_daily_exc = RuntimeError("频率超限")
+        self.daily_calls = 0
+
+    def trade_cal(self, exchange=None, start_date=None, end_date=None):
+        if self.raise_cal:
+            raise self.raise_cal
+        return _resp_cal(self.calendar_days)
+
+    def stock_basic(self, exchange="", list_status=None, fields=None):
+        if list_status == "D":
+            return FakeResp({})
+        return _resp_meta(CODES)
+
+    def daily(self, ts_code=None, trade_date=None, start_date=None, end_date=None, freq=None):
+        self.daily_calls += 1
+        if trade_date:
+            if self.raise_daily:
+                raise self.raise_daily
+            day = datetime.strptime(trade_date, "%Y%m%d").date()
+            codes = self.day_codes.get(day, [])
+            return _resp_day(day, codes) if codes else FakeResp({})
+        code = ts_code.split(".")[0]
+        if code in self.raise_daily_codes:
+            raise self.raise_daily_exc
+        lo = datetime.strptime(start_date, "%Y%m%d").date()
+        hi = datetime.strptime(end_date, "%Y%m%d").date()
+        days = [d for d in self.code_days.get(code, []) if lo <= d <= hi]
+        if not days:
+            return FakeResp({})
+        n = len(days)
+        return FakeResp({
+            "ts_code": [ts_code] * n,
+            "trade_date": [d.strftime("%Y%m%d") for d in days],
+            "open": [10.0] * n, "high": [11.0] * n, "low": [9.0] * n,
+            "close": [10.5] * n, "vol": [1000.0] * n,
+        })
+
+    def adj_factor(self, ts_code=None, trade_date=None, start_date=None, end_date=None):
+        return FakeResp({})
+
+
+class FakeCtx:
+    def __init__(self, job_id, store, cancel_after=None):
+        self.job_id = job_id
+        self.store = store
+        self.logs = []
+        self.status = "running"
+        self.result = None
+        self.error = None
+        self._cancel_after = cancel_after
+        self._progress_count = 0
+
+    def log(self, message, level="INFO"):
+        self.logs.append(message)
+
+    def update_progress(self, current, total, message=""):
+        self._progress_count += 1
+        self.logs.append(f"[PROGRESS] {current}/{total} {message}")
+
+    def check_cancelled(self):
+        return self._cancel_after is not None and self._progress_count >= self._cancel_after
+
+    def succeed(self, result):
+        self.status, self.result = "success", result
+
+    def fail(self, error):
+        self.status, self.error = "failed", error
+
+
+@pytest.fixture
+def runtime(tmp_path, monkeypatch):
+    monkeypatch.setenv("TREND_RADAR_RUNTIME_ROOT", str(tmp_path))
+    storage = tmp_path / "storage"
+    storage.mkdir(parents=True, exist_ok=True)
+    init_schema(StorageConnection(storage).connect())
+    return tmp_path
+
+
+@pytest.fixture
+def job_store(runtime):
+    # stage-1 会经 ctx.store 写 sibling job 行 → 独立 db 也要有 jobs 表
+    import sqlite3
+
+    db_path = runtime / "storage" / "jobs.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL UNIQUE,
+            job_type TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            started_at TEXT,
+            finished_at TEXT,
+            request_json TEXT,
+            result_json TEXT,
+            error_message TEXT
+        );
+        CREATE TABLE IF NOT EXISTS job_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+            level TEXT NOT NULL DEFAULT 'INFO',
+            message TEXT NOT NULL,
+            UNIQUE(job_id, sequence)
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+    return JobStore(db_path)
+
+
+@pytest.fixture
+def sync_store(runtime):
+    return SyncStore(runtime / "storage")
+
+
+@pytest.fixture
+def fake_pro(monkeypatch):
+    pro = FakePro()
+    monkeypatch.setattr(service, "get_pro", lambda: pro)
+    import trendradar.infrastructure.tushare.stocklist as sl
+    monkeypatch.setattr(sl, "get_pro", lambda: pro)
+    return pro
+
+
+def run_worker(fake_pro, request, job_store, cancel_after=None):
+    ctx = FakeCtx("20260827_180000_market_bars_sync_t1", job_store, cancel_after)
+    service.bars_sync_worker(ctx, request, now_cn=NOW)
+    return ctx
+
+
+# ---- R1 / R2 / R3：stage-1 日历 ----
+
+def test_r1_calendar_only_grows(runtime, job_store, sync_store, fake_pro):
+    sync_store.insert_calendar_days([date(2015, 1, 5), date(2026, 12, 31)])
+    # 窄请求（新 schema 下已无日期字段，等价于"任何请求"）
+    run_worker(fake_pro, {}, job_store)
+    days = sync_store.calendar_days()
+    assert days >= {date(2015, 1, 5), date(2026, 12, 31)}      # 只增不减
+    assert sync_store.max_calendar_day() >= date(2026, 12, 31)  # MAX 不回退
+    run_worker(fake_pro, {}, job_store)                         # 连刷幂等
+    assert sync_store.calendar_days() == days | set(CAL)
+
+
+def test_r2_stale_calendar_blocks(runtime, job_store, sync_store, fake_pro):
+    sync_store.insert_calendar_days([date(2026, 8, 20)])        # MAX < today
+    fake_pro.raise_cal = RuntimeError("Connection aborted")
+    ctx = run_worker(fake_pro, {}, job_store)
+    assert ctx.status == "failed"
+    assert "日历" in ctx.error
+    assert not (runtime / "storage" / "market" / "stock_meta.parquet").exists()
+
+
+def test_r3_empty_calendar_fails_not_skip(runtime, job_store, sync_store, fake_pro):
+    fake_pro.raise_cal = RuntimeError("Connection aborted")
+    ctx = run_worker(fake_pro, {}, job_store)
+    assert ctx.status == "failed"
+    assert "日历未就绪" in ctx.error
+
+
+# ---- R6 / R14：增量 doubtful 与自愈 ----
+
+def test_r6_incremental_doubtful_day_written_not_booked(runtime, job_store,
+                                                        sync_store, fake_pro):
+    sync_store.insert_calendar_days(CAL)
+    sync_store.add_done_days(DONE)
+    d26, d27 = date(2026, 8, 26), date(2026, 8, 27)
+    fake_pro.day_codes = {d26: CODES, d27: CODES[:2]}  # 27 日只有 2/3 → 0.667 < 0.75
+    ctx = run_worker(fake_pro, {}, job_store)
+    assert ctx.status == "failed"
+    assert "doubtful" in ctx.error
+    done = sync_store.done_days()
+    assert d26 in done and d27 not in done
+    assert sync_store.doubtful_days() == [d27]
+    assert not sync_store.ledger_suspect()
+    bars = runtime / "storage" / "market" / "bars"
+    df = pl.read_parquet(bars / "000001.parquet")
+    assert set(df["date"].to_list()) == {d26, d27}              # doubtful 日数据照常写盘
+
+
+def test_r14_doubtful_self_heals_next_round(runtime, job_store, sync_store, fake_pro):
+    test_r6_incremental_doubtful_day_written_not_booked(runtime, job_store, sync_store, fake_pro)
+    d27 = date(2026, 8, 27)
+    fake_pro.day_codes = {d27: CODES}                           # 重拉回升
+    ctx = run_worker(fake_pro, {}, job_store)
+    assert ctx.status == "success"
+    assert d27 in sync_store.done_days()
+    assert sync_store.doubtful_days() == []
+
+
+# ---- R5：增量中止与漂移 ----
+
+def test_r5_incremental_abort_writes_nothing(runtime, job_store, sync_store, fake_pro):
+    sync_store.insert_calendar_days(CAL)
+    sync_store.add_done_days(DONE)
+    fake_pro.day_codes = {date(2026, 8, 26): CODES}
+    fake_pro.raise_daily = RuntimeError("频率超限")               # env，立即返回不热重试
+    ctx = run_worker(fake_pro, {}, job_store)
+    assert ctx.status == "failed"
+    assert "增量中止" in ctx.error
+    assert sync_store.done_days() == set(DONE)
+    bars = runtime / "storage" / "market" / "bars"
+    assert not bars.exists() or not list(bars.glob("*.parquet"))
+
+
+# ---- R9：BACKFILL_CODES 不碰日账本 ----
+
+def test_r9_backfill_codes_never_touches_ledger(runtime, job_store, sync_store, fake_pro):
+    sync_store.insert_calendar_days(CAL)
+    sync_store.add_done_days(DONE)
+    sync_store.record_skip_failure("000002", "boom", "code")
+    fake_pro.code_days = {"000002": [date(2026, 8, 26), date(2026, 8, 27)]}
+    ctx = run_worker(fake_pro, {"codes": ["000002"]}, job_store)
+    assert ctx.status == "success"
+    assert sync_store.done_days() == set(DONE)                  # INV-3
+    assert sync_store.skipped_rows() == []                      # 成功销账
+    assert (runtime / "storage" / "market" / "bars" / "000002.parquet").exists()
+
+
+# ---- R10 / R20：全量换名 ----
+
+def test_r10_full_success_swaps_and_keeps_prev(runtime, job_store, sync_store, fake_pro):
+    sync_store.insert_calendar_days(CAL)
+    bars = runtime / "storage" / "market" / "bars"
+    bars.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"date": [date(2020, 1, 2)], "close": [1.0]}).write_parquet(bars / "OLD.parquet")
+    for c in CODES:
+        fake_pro.code_days[c] = CAL[:4]
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+    assert ctx.status == "success"
+    assert (bars / "000001.parquet").exists()
+    assert not (bars / "OLD.parquet").exists()
+    assert (runtime / "storage" / "market" / "bars_prev" / "OLD.parquet").exists()
+    assert not list((runtime / "storage" / "market" / "staging").glob("*.parquet"))
+    assert sync_store.done_days() == set(CAL[:4])
+
+
+def test_r10_full_cancel_keeps_staging_bars_untouched(runtime, job_store, sync_store, fake_pro):
+    sync_store.insert_calendar_days(CAL)
+    bars = runtime / "storage" / "market" / "bars"
+    bars.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"date": [date(2020, 1, 2)], "close": [1.0]}).write_parquet(bars / "OLD.parquet")
+    for c in CODES:
+        fake_pro.code_days[c] = CAL[:4]
+    ctx = run_worker(fake_pro, {"force": True}, job_store, cancel_after=1)
+    assert ctx.status == "failed"
+    assert "Cancelled" in ctx.error
+    assert (bars / "OLD.parquet").exists()                      # 换名前一字未改
+    assert not (runtime / "storage" / "market" / "bars_prev").exists()
+
+
+def test_r20_second_force_full_pulls_everything_again(runtime, job_store, sync_store, fake_pro):
+    test_r10_full_success_swaps_and_keeps_prev(runtime, job_store, sync_store, fake_pro)
+    before = fake_pro.daily_calls
+    for c in CODES:
+        fake_pro.code_days[c] = CAL[:4]
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+    assert ctx.status == "success"
+    assert fake_pro.daily_calls - before >= len(CODES)          # 未被"续传"空转
+    prev = runtime / "storage" / "market" / "bars_prev" / "000001.parquet"
+    assert prev.exists()                                        # 上一版在 bars_prev
+
+
+# ---- R7 / R8：熔断与带缺口提交 ----
+
+def test_r7_full_env_breaker_records_nothing(runtime, job_store, sync_store, fake_pro):
+    sync_store.insert_calendar_days(CAL)
+    fake_pro.code_days = {"000001": CAL[:4]}                    # 1/3 成功 → 66% > 5%
+    fake_pro.raise_daily_codes = {"000002", "600000"}           # 其余股限流（立即返回）
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+    assert ctx.status == "failed"
+    assert "熔断" in ctx.error
+    assert sync_store.skipped_rows() == []                      # env 一律不计次
+    assert list((runtime / "storage" / "market" / "staging").glob("*.parquet"))  # staging 保留
+
+
+def test_r8_env_residue_rejects_partial_baseline(runtime, job_store, sync_store, fake_pro):
+    sync_store.insert_calendar_days(CAL)
+    sync_store.record_skip_failure("000002", "每分钟最多访问该接口", "env")
+    for c in CODES:
+        fake_pro.code_days[c] = CAL[:4]
+    ctx = run_worker(fake_pro, {"force": True, "accept_partial_baseline": True}, job_store)
+    assert ctx.status == "failed"
+    assert "env" in ctx.error
+    assert sync_store.done_days() == set()
+    assert not (runtime / "storage" / "market" / "bars" / "000001.parquet").exists()
+
+
+def test_r8_no_confirm_keeps_staging(runtime, job_store, sync_store, fake_pro):
+    sync_store.insert_calendar_days(CAL)
+    sync_store.record_skip_failure("000002", "无此股票", "code")
+    for c in CODES:
+        fake_pro.code_days[c] = CAL[:4]
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+    assert ctx.status == "failed"
+    assert "accept_partial_baseline" in ctx.error
+    assert list((runtime / "storage" / "market" / "staging").glob("*.parquet"))
+
+
+# ---- R13：全量批单日语义 ----
+
+def test_r13_full_doubtful_day_swapped_but_not_booked(runtime, job_store, sync_store, fake_pro):
+    sync_store.insert_calendar_days(CAL)
+    # 26 日只有 2/3 只 → 0.667 < 0.75 → doubtful；其余日齐全
+    for c in CODES:
+        fake_pro.code_days[c] = CAL[:4]
+    fake_pro.code_days["600000"] = [d for d in CAL[:4] if d != date(2026, 8, 26)]
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+    assert ctx.status == "failed"
+    assert "doubtful" in ctx.error
+    done = sync_store.done_days()
+    assert date(2026, 8, 26) not in done
+    assert done == set(CAL[:4]) - {date(2026, 8, 26)}
+    assert sync_store.doubtful_days() == [date(2026, 8, 26)]
+    assert not sync_store.ledger_suspect()
+    bars = runtime / "storage" / "market" / "bars"
+    assert (bars / "600000.parquet").exists()                   # 换名照常入库
+
+
+# ---- R17：换名成功但账本事务失败 ----
+
+def test_r17_commit_failure_after_swap(runtime, job_store, sync_store, fake_pro, monkeypatch):
+    sync_store.insert_calendar_days(CAL)
+    for c in CODES:
+        fake_pro.code_days[c] = CAL[:4]
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("txn boom")
+
+    monkeypatch.setattr(service, "commit_full", boom)
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+    assert ctx.status == "failed"
+    assert "事务" in ctx.error
+    bars = runtime / "storage" / "market" / "bars"
+    assert (bars / "000001.parquet").exists()                   # 文件已新
+    assert sync_store.done_days() == set()                      # 账本仍旧
+    assert not sync_store.ledger_suspect()                      # 不置 suspect
+
+
+# ---- R18：UPTODATE 尾部补齐失败不翻转终态 ----
+
+def test_r18_uptodate_tail_backfill_env_failure_keeps_success(runtime, job_store,
+                                                              sync_store, fake_pro):
+    sync_store.insert_calendar_days(CAL)
+    sync_store.add_done_days(CAL[:4])                           # 无缺口 → UPTODATE
+    sync_store.record_skip_failure("000002", "old", "code")
+    sync_store.record_skip_failure("000002", "old", "code")
+    sync_store.record_skip_failure("000002", "old", "code")     # attempts=3
+    fake_pro.raise_daily_codes = {"000002"}                     # 补齐必挂（限流，立即返回）
+    ctx = run_worker(fake_pro, {}, job_store)
+    assert ctx.status == "success"                              # 主作业终态不翻转
+    rows = sync_store.skipped_rows()
+    assert len(rows) == 1 and rows[0]["code"] == "000002"       # 缺口与失败记录保留
+
+
+# ---- R21：全量自检失败的 staging 处置 ----
+
+def test_r21_full_staging_corruption_discards(runtime, job_store, sync_store, fake_pro):
+    sync_store.insert_calendar_days(CAL)
+    staging = runtime / "storage" / "market" / "staging"
+    staging.mkdir(parents=True, exist_ok=True)
+    # 预置一个"续传残留"的坏文件（重复日期 → 断言③失败）
+    pl.DataFrame({
+        "date": [date(2026, 8, 24), date(2026, 8, 24)],
+        "open": [1.0] * 2, "high": [1.0] * 2, "low": [1.0] * 2, "close": [1.0] * 2,
+    }).write_parquet(staging / "600000.parquet")
+    for c in CODES[:2]:
+        fake_pro.code_days[c] = CAL[:4]
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+    assert ctx.status == "failed"
+    assert "③" in ctx.error
+    assert sync_store.ledger_suspect()
+    assert not list(staging.glob("*.parquet"))                  # 丢弃，不续传坏文件
+    # 下一轮从头重拉（含 600000）且成功
+    fake_pro.code_days = {c: CAL[:4] for c in CODES}
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+    assert ctx.status == "success"
+
+
+def test_r21_full_readback_missing_day_discards(runtime, job_store, sync_store,
+                                                fake_pro, monkeypatch):
+    sync_store.insert_calendar_days(CAL)
+    for c in CODES:
+        fake_pro.code_days[c] = CAL[:4]
+    real_readback = service.readback_calendar
+    monkeypatch.setattr(service, "readback_calendar",
+                        lambda d: real_readback(d) - {date(2026, 8, 25)})
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+    assert ctx.status == "failed"
+    assert "②" in ctx.error
+    assert sync_store.ledger_suspect()
+    assert not list((runtime / "storage" / "market" / "staging").glob("*.parquet"))
