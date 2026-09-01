@@ -3194,6 +3194,45 @@ def test_r18_uptodate_tail_backfill_env_failure_keeps_success(runtime, job_store
     assert ctx.status == "success"                              # 主作业终态不翻转
     rows = sync_store.skipped_rows()
     assert len(rows) == 1 and rows[0]["code"] == "000002"       # 缺口与失败记录保留
+
+
+# ---- R21：全量自检失败的 staging 处置 ----
+
+def test_r21_full_staging_corruption_discards(runtime, job_store, sync_store, fake_pro):
+    sync_store.insert_calendar_days(CAL)
+    staging = runtime / "storage" / "market" / "staging"
+    staging.mkdir(parents=True, exist_ok=True)
+    # 预置一个"续传残留"的坏文件（重复日期 → 断言③失败）
+    pl.DataFrame({
+        "date": [date(2026, 8, 24), date(2026, 8, 24)],
+        "open": [1.0] * 2, "high": [1.0] * 2, "low": [1.0] * 2, "close": [1.0] * 2,
+    }).write_parquet(staging / "600000.parquet")
+    for c in CODES[:2]:
+        fake_pro.code_days[c] = CAL[:4]
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+    assert ctx.status == "failed"
+    assert "③" in ctx.error
+    assert sync_store.ledger_suspect()
+    assert not list(staging.glob("*.parquet"))                  # 丢弃，不续传坏文件
+    # 下一轮从头重拉（含 600000）且成功
+    fake_pro.code_days = {c: CAL[:4] for c in CODES}
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+    assert ctx.status == "success"
+
+
+def test_r21_full_readback_missing_day_discards(runtime, job_store, sync_store,
+                                                fake_pro, monkeypatch):
+    sync_store.insert_calendar_days(CAL)
+    for c in CODES:
+        fake_pro.code_days[c] = CAL[:4]
+    real_readback = service.readback_calendar
+    monkeypatch.setattr(service, "readback_calendar",
+                        lambda d: real_readback(d) - {date(2026, 8, 25)})
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+    assert ctx.status == "failed"
+    assert "②" in ctx.error
+    assert sync_store.ledger_suspect()
+    assert not list((runtime / "storage" / "market" / "staging").glob("*.parquet"))
 ```
 
 - [ ] **Step 3: 运行确认失败**
@@ -3695,7 +3734,7 @@ def confirm_doubtful_days() -> dict:
 - [ ] **Step 6: 运行确认通过**
 
 Run: `.venv/bin/pytest tests/app/test_market_sync_service.py -v`
-Expected: PASS（14 个）
+Expected: PASS（16 个）
 
 注意：此时 `tests/interfaces/test_api_contract.py::test_market_sync_force_passthrough` 等旧接口测试会因门面改名而红——预期内，Task 14 一并修复；本任务只要求新测试全绿且旧 `tests/infrastructure` / `tests/domain` 不新增红。
 
@@ -4728,4 +4767,4 @@ git commit -m "docs: 实施计划收尾（R1-R21 核对表）"
 | R18 | test_r18_uptodate_tail_backfill_env_failure_keeps_success | 待填 |
 | R19 | Task 8 writer upsert 幂等用例（test_writer.py） | 待填 |
 | R20 | test_r20_second_force_full_pulls_everything_again | 待填 |
-| R21 | Task 10 runner ③失败丢弃用例 + test_r8_no_confirm_keeps_staging（保留分支） | 待填 |
+| R21 | test_r21_full_staging_corruption_discards / test_r21_full_readback_missing_day_discards + test_r8_no_confirm_keeps_staging（保留分支） | 待填 |

@@ -1,10 +1,16 @@
 from datetime import date
+from unittest import mock
 
 import pandas as pd
 import polars as pl
 
 from trendradar.domain.market.sync.spec import FailureKind
-from trendradar.infrastructure.tushare.runner import run_incremental
+from trendradar.infrastructure.tushare.runner import (
+    StockOutcome,
+    run_backfill,
+    run_full,
+    run_incremental,
+)
 from trendradar.infrastructure.tushare.stocklist import EffectiveList
 
 
@@ -105,3 +111,92 @@ def test_run_incremental_empty_response_is_doubtful():
     assert not result.aborted
     assert result.claimed_days == [D1]
     assert result.doubtful_days == [D2]
+
+
+class CodeRangePro:
+    """按 (code) 返回预设响应；可指定失败类别。"""
+
+    def __init__(self, codes_ok: list[str], fail: dict[str, str] | None = None):
+        self.codes_ok = set(codes_ok)
+        self.fail = fail or {}
+        self.calls = []
+
+    def daily(self, **kwargs):
+        code = kwargs["ts_code"].split(".")[0]
+        self.calls.append(code)
+        if code in self.fail:
+            raise RuntimeError(self.fail[code])
+        return pd.DataFrame([{
+            "ts_code": kwargs["ts_code"], "trade_date": "20260825",
+            "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
+            "vol": 100, "amount": 1000,
+        }])
+
+    def adj_factor(self, **kwargs):
+        return FakeAdj()
+
+
+def _patch_sleep():
+    import trendradar.infrastructure.tushare.fetch as fetch
+    return mock.patch.object(fetch.time, "sleep", lambda s: None)
+
+
+def test_run_full_writes_staging_files(tmp_path):
+    staging = tmp_path / "staging"
+    pro = CodeRangePro(["000001", "000002"])
+    with _patch_sleep():
+        outcomes, cancelled = run_full(
+            pro,
+            [("000001", date(2026, 8, 25), date(2026, 8, 25)),
+             ("000002", date(2026, 8, 25), date(2026, 8, 25))],
+            staging, max_workers=2,
+        )
+    assert not cancelled
+    assert all(o.ok for o in outcomes)
+    assert (staging / "000001.parquet").exists()
+    assert (staging / "000002.parquet").exists()
+
+
+def test_run_full_failure_classification(tmp_path):
+    staging = tmp_path / "staging"
+    pro = CodeRangePro(["000001"], fail={"000002": "参数错误", "000003": "Connection aborted"})
+    with _patch_sleep():
+        outcomes, cancelled = run_full(
+            pro,
+            [("000001", D1, D1), ("000002", D1, D1), ("000003", D1, D1)],
+            staging, max_workers=3,
+        )
+    by_code = {o.code: o for o in outcomes}
+    assert by_code["000001"].ok
+    assert by_code["000002"].kind is FailureKind.CODE
+    assert by_code["000003"].kind is FailureKind.ENV
+    assert not (staging / "000002.parquet").exists()
+
+
+def test_run_full_cancel_preserves_written(tmp_path):
+    staging = tmp_path / "staging"
+    pro = CodeRangePro(["000001", "000002"])
+    flag = {"cancel": False}
+
+    def progress(cur, total, msg):
+        flag["cancel"] = True  # 第一条完成后即取消
+
+    with _patch_sleep():
+        outcomes, cancelled = run_full(
+            pro, [("000001", D1, D1), ("000002", D1, D1)], staging,
+            max_workers=1, progress=progress, cancel_check=lambda: flag["cancel"],
+        )
+    assert cancelled
+    # R10：已写入的 staging 文件原地保留（续传）
+    assert (staging / "000001.parquet").exists()
+
+
+def test_run_backfill_merges_into_bars_and_never_touches_ledger(tmp_path):
+    # R9 执行侧：补齐只写文件
+    bars = tmp_path / "bars"
+    pro = CodeRangePro(["000001"])
+    with _patch_sleep():
+        outcomes = run_backfill(pro, [("000001", D1, D1)], bars)
+    assert outcomes[0].ok
+    out = pl.read_parquet(bars / "000001.parquet")
+    assert out.height == 1
