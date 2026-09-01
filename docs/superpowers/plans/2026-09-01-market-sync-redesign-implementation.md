@@ -2001,9 +2001,8 @@ from trendradar.infrastructure.tushare.stocklist import EffectiveList
 
 
 def _eff(expected_counts: dict[date, int]) -> EffectiveList:
-    rows = []
-    for d, n in expected_counts.items():
-        rows.extend([(date(2010, 1, 1), None)] * n)
+    # 各日 expected 相同（测试场景均如此）：行数取其一，而非逐日累加
+    rows = [(date(2010, 1, 1), None)] * max(expected_counts.values())
     return EffectiveList((), {}, {}, tuple(rows), {})
 
 
@@ -2173,7 +2172,9 @@ def run_incremental(
             return result
         df = filter_excluded_boards(fr.df if fr.df is not None else pl.DataFrame(),
                                     exclude_boards)
-        frames.append(df)  # 含 doubtful 日：真实交易数据照常累积（INV-4 幂等）
+        # 含 doubtful 日：真实交易数据照常累积（INV-4 幂等）；空帧无列，不入 concat
+        if df.width > 0:
+            frames.append(df)
         doubtful = doubtful_by_row_count({day: df.height}, list(effective.rows))
         if doubtful:
             result.doubtful_days.extend(doubtful)
