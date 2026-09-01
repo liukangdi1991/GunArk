@@ -1953,6 +1953,7 @@ def swap_in_bars(market_dir: Path) -> None:
     staging = market_dir / "staging"
     prev = market_dir / "bars_prev"
 
+    bars.mkdir(parents=True, exist_ok=True)   # 首次建库时 bars 可能尚不存在
     if prev.exists():
         shutil.rmtree(prev)
     if _try_exchange(bars, staging):
