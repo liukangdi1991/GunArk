@@ -104,6 +104,29 @@ CREATE TABLE IF NOT EXISTS market_sync_runs (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS trade_calendar (
+    trade_date TEXT PRIMARY KEY
+);
+
+CREATE TABLE IF NOT EXISTS sync_done_days (
+    trade_date TEXT PRIMARY KEY,
+    synced_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sync_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sync_skipped (
+    code         TEXT PRIMARY KEY,
+    attempts     INTEGER NOT NULL DEFAULT 1,
+    last_error   TEXT,
+    first_seen   TEXT NOT NULL,
+    last_attempt TEXT NOT NULL,
+    kind         TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_executions_created_at ON executions(created_at);
 CREATE INDEX IF NOT EXISTS idx_execution_items_execution_key ON execution_items(execution_key);
 CREATE INDEX IF NOT EXISTS idx_artifacts_execution_key ON artifacts(execution_key);

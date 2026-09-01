@@ -24,6 +24,10 @@ def test_schema_creates_all_tables(tmp_path):
         "strategy_group_members",
         "strategy_groups",
         "strategy_settings",
+        "sync_done_days",
+        "sync_meta",
+        "sync_skipped",
+        "trade_calendar",
     }
     assert tables == expected
 
@@ -61,3 +65,34 @@ def test_unique_execution_key(tmp_path):
         conn.execute(
             "INSERT INTO executions (execution_key, execution_type) VALUES ('k1', 'backtest')"
         )
+
+
+def test_calendar_insert_or_ignore(tmp_path):
+    sc = StorageConnection(tmp_path)
+    conn = sc.connect()
+    init_schema(conn)
+    conn.execute("INSERT OR IGNORE INTO trade_calendar (trade_date) VALUES ('2026-08-27')")
+    conn.execute("INSERT OR IGNORE INTO trade_calendar (trade_date) VALUES ('2026-08-27')")
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) AS c FROM trade_calendar").fetchone()["c"] == 1
+
+
+def test_sync_skipped_upsert_conflict(tmp_path):
+    sc = StorageConnection(tmp_path)
+    conn = sc.connect()
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO sync_skipped (code, attempts, last_error, first_seen, last_attempt, kind) "
+        "VALUES ('000001', 1, 'e1', '2026-08-27', '2026-08-27', 'code')"
+    )
+    conn.execute(
+        "INSERT INTO sync_skipped (code, attempts, last_error, first_seen, last_attempt, kind) "
+        "VALUES ('000001', 1, 'e2', '2026-08-28', '2026-08-28', 'code') "
+        "ON CONFLICT(code) DO UPDATE SET attempts = attempts + 1, "
+        "last_error = excluded.last_error, last_attempt = excluded.last_attempt"
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM sync_skipped WHERE code = '000001'").fetchone()
+    assert row["attempts"] == 2
+    assert row["last_error"] == "e2"
+    assert row["first_seen"] == "2026-08-27"
