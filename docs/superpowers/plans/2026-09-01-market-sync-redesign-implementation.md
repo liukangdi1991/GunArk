@@ -4767,28 +4767,30 @@ git commit -m "docs: 实施计划收尾（R1-R21 核对表）"
 
 ---
 
-## R1–R21 落点核对表（Task 17 Step 4 填写）
+## R1–R21 落点核对表（2026-09-01 实施完成时核对，全量 424 passed）
 
 | 编号 | 落点 | 状态 |
 |---|---|---|
-| R1 | tests/app/test_market_sync_service.py::test_r1_calendar_only_grows | 待填 |
-| R2 | test_r2_stale_calendar_blocks | 待填 |
-| R3 | test_r3_empty_calendar_fails_not_skip | 待填 |
-| R4 | tests/domain/test_sync_planner.py（Task 2，11 用例） | 待填 |
-| R5 | test_r5_incremental_abort_writes_nothing + Task 9 runner 测试 | 待填 |
-| R6 | test_r6_incremental_doubtful_day_written_not_booked | 待填 |
-| R7 | test_r7_full_env_breaker_records_nothing + Task 10 计数测试 | 待填 |
-| R8 | test_r8_env_residue_rejects_partial_baseline / test_r8_no_confirm_keeps_staging | 待填 |
-| R9 | test_r9_backfill_codes_never_touches_ledger | 待填 |
-| R10 | test_r10_full_success_swaps_and_keeps_prev / test_r10_full_cancel_keeps_staging_bars_untouched | 待填 |
-| R11 | tests/app/test_executor_mutex.py（Task 12）+ Task 14 契约测试 | 待填 |
-| R12 | tests/infrastructure/test_schema.py + test_stocklist.py + test_execution_registration.py（Task 15） | 待填 |
-| R13 | test_r13_full_doubtful_day_swapped_but_not_booked | 待填 |
-| R14 | test_r14_doubtful_self_heals_next_round | 待填 |
-| R15 | Task 14 confirm-doubtful 三契约用例 | 待填 |
-| R16 | tests/infrastructure/test_stocklist.py + test_sync_selfcheck 分母用例（Task 3/7） | 待填 |
-| R17 | test_r17_commit_failure_after_swap | 待填 |
-| R18 | test_r18_uptodate_tail_backfill_env_failure_keeps_success | 待填 |
-| R19 | Task 8 writer upsert 幂等用例（test_writer.py） | 待填 |
-| R20 | test_r20_second_force_full_pulls_everything_again | 待填 |
-| R21 | test_r21_full_staging_corruption_discards / test_r21_full_readback_missing_day_discards + test_r8_no_confirm_keeps_staging（保留分支） | 待填 |
+| R1 | tests/app/test_market_sync_service.py::test_r1_calendar_only_grows | ✅ |
+| R2 | test_r2_stale_calendar_blocks | ✅ |
+| R3 | test_r3_empty_calendar_fails_not_skip | ✅ |
+| R4 | tests/domain/test_sync_planner.py（Task 2，11 用例） | ✅ |
+| R5 | test_r5_incremental_abort_writes_nothing + tests/infrastructure/test_runner.py::test_run_incremental_env_failure_aborts_batch | ✅ |
+| R6 | test_r6_incremental_doubtful_day_written_not_booked + test_runner.py::test_run_incremental_doubtful_day_still_written_not_claimed | ✅ |
+| R7 | test_r7_full_env_breaker_records_nothing + test_runner.py::test_run_full_failure_classification | ✅ |
+| R8 | test_r8_env_residue_rejects_partial_baseline / test_r8_no_confirm_keeps_staging | ✅ |
+| R9 | test_r9_backfill_codes_never_touches_ledger + test_runner.py::test_run_backfill_merges_into_bars_and_never_touches_ledger | ✅ |
+| R10 | test_r10_full_success_swaps_and_keeps_prev / test_r10_full_cancel_keeps_staging_bars_untouched + test_runner.py::test_run_full_cancel_preserves_written | ✅ |
+| R11 | tests/app/test_executor_mutex.py（5 用例）+ tests/interfaces/test_api_contract.py 契约 | ✅ |
+| R12 | tests/infrastructure/test_schema.py + test_stocklist.py + test_execution_registration.py::test_market_sync_execution_registration | ✅ |
+| R13 | test_r13_full_doubtful_day_swapped_but_not_booked | ✅ |
+| R14 | test_r14_doubtful_self_heals_next_round | ✅ |
+| R15 | test_api_contract.py confirm-doubtful 三契约用例 | ✅ |
+| R16 | tests/infrastructure/test_stocklist.py（.BJ/exclude_boards）+ tests/domain/test_sync_selfcheck.py（分母） | ✅ |
+| R17 | test_r17_commit_failure_after_swap | ✅ |
+| R18 | test_r18_uptodate_tail_backfill_env_failure_keeps_success | ✅ |
+| R19 | tests/infrastructure/test_writer.py::test_flush_by_code_creates_and_upserts | ✅ |
+| R20 | test_r20_second_force_full_pulls_everything_again + test_writer.py::test_swap_second_round_overwrites_bars_prev | ✅ |
+| R21 | test_r21_full_staging_corruption_discards / test_r21_full_readback_missing_day_discards + test_r8_no_confirm_keeps_staging（保留分支） | ✅ |
+
+**冒烟记录（2026-09-01）**：空库启动 → `/api/market-data/status` 6 组灰态字段；提交 `/api/market-data/sync` 得 `market_bars_sync` job_id；无 token 时 stage-1 失败 → 作业如实 `failed（日历未就绪，行情同步已阻断）`，面板 ①③ 行同步变红（缓存即时失效）；`/api/market-data/trading-dates` 正常。前端 `tsc -b && vite build` 通过。
