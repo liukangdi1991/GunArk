@@ -31,7 +31,7 @@ export type ExecutionRequestType =
   | "backtest"
   | "backtest_from_selection"
   | "selection_backtest"
-  | "market_data_sync";
+  | "market_bars_sync";
 
 export interface ExecutionRequest {
   type: ExecutionRequestType;

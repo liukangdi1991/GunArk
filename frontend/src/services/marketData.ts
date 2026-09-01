@@ -29,3 +29,21 @@ export function clearTradingDatesCache() {
 export function getMarketDataStatus(): Promise<MarketDataStatus> {
   return requestJson<MarketDataStatus>("/api/market-data/status");
 }
+
+export interface JobSubmitResponse {
+  data: { job_id: string };
+}
+
+export function submitMarketBackfill(): Promise<JobSubmitResponse> {
+  return requestJson<JobSubmitResponse>("/api/market-data/backfill", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function confirmDoubtfulDays(): Promise<{ status: string; confirmed: string[] }> {
+  return requestJson<{ status: string; confirmed: string[] }>(
+    "/api/market-data/confirm-doubtful",
+    { method: "POST" },
+  );
+}
