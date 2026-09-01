@@ -44,3 +44,7 @@ class JobContext:
 
     def fail(self, error: str) -> None:
         self._store.set_status(self.job_id, "failed", error=error)
+
+    def cancel(self, reason: str = "Cancelled by user") -> None:
+        """用户取消的终态：与失败区分，面板/控制台按 cancelled 展示。"""
+        self._store.set_status(self.job_id, "cancelled", error=reason)

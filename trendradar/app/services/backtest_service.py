@@ -152,7 +152,7 @@ def _run_backtest_worker(
     )
 
     if ctx.check_cancelled():
-        ctx.fail("Cancelled by user")
+        ctx.cancel()
         return
 
     trades_data = [

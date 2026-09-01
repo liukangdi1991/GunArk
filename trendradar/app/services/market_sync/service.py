@@ -145,14 +145,16 @@ def _bars_sync_body(ctx, request, store, market_dir, now_cn=None):
 
     # ---- UPTODATE / INCREMENTAL ----
     if plan.kind is PlanKind.INCREMENTAL:
-        ok, fail_msg = _run_incremental(
+        ok, fail_msg, cancelled = _run_incremental(
             ctx, pro, store, effective, exclude_boards, plan,
             bars_dir, bucket, progress, cancel_check,
         )
     else:
-        ok, fail_msg = True, None
+        ok, fail_msg, cancelled = True, None, False
         ctx.log(plan.reason)
-    if ok:
+    if cancelled:
+        ctx.cancel()
+    elif ok:
         _tail_backfill(ctx, pro, store, effective, bars_dir, bucket, progress, cancel_check)
         ctx.succeed({"kind": plan.kind.value, "reason": plan.reason})
     else:
@@ -186,23 +188,23 @@ def _refresh_calendar(store, pro, now_cn) -> list[date]:
 
 def _run_incremental(ctx, pro, store, effective, exclude_boards, plan,
                      bars_dir, bucket, progress, cancel_check):
-    """增量批。返回 (ok, fail_msg)；终态由调用方统一写（单次终态）。"""
+    """增量批。返回 (ok, fail_msg, cancelled)；终态由调用方统一写（单次终态）。"""
     res = run_incremental(
         pro, plan.missing_days, effective, exclude_boards,
         bucket=bucket, progress=progress, cancel_check=cancel_check,
     )
     if res.cancelled:
-        return False, "Cancelled by user"
+        return False, None, True
     if res.aborted:
         kind = res.failure_kind.value if res.failure_kind else "?"
-        return False, f"增量中止（{kind}）: {res.abort_reason}"
+        return False, f"增量中止（{kind}）: {res.abort_reason}", False
 
     all_days = res.all_days if res.all_days is not None else pl.DataFrame()
 
     # ③ 结构自检（内存副本，按未来文件分组）
     if not _memory_structure_ok(all_days):
         store.set_ledger_suspect(True)
-        return False, "自检③失败：内存副本结构异常，整批不落账（已置 ledger_suspect）"
+        return False, "自检③失败：内存副本结构异常，整批不落账（已置 ledger_suspect）", False
 
     # 写盘（含 doubtful 日，INV-4 幂等）
     flush_by_code(all_days, bars_dir)
@@ -212,7 +214,7 @@ def _run_incremental(ctx, pro, store, effective, exclude_boards, plan,
     claimed = set(res.claimed_days)
     if not coverage_ok(readback, claimed) or not ledger_subset_ok(claimed, readback):
         store.set_ledger_suspect(True)
-        return False, "自检②④失败：读回日历与声称集合漂移（已置 ledger_suspect）"
+        return False, "自检②④失败：读回日历与声称集合漂移（已置 ledger_suspect）", False
 
     # ⑥ 单事务落账（仅声称日；doubtful 合并 = 旧 − 已入账 ∪ 新）
     merged_doubtful = sorted({*store.doubtful_days(), *res.doubtful_days} - claimed)
@@ -220,8 +222,8 @@ def _run_incremental(ctx, pro, store, effective, exclude_boards, plan,
 
     if res.doubtful_days:
         return False, (f"{len(res.doubtful_days)} 个交易日行数异常（doubtful）"
-                       f"，未入账，可自愈或人工确认入账")
-    return True, None
+                       f"，未入账，可自愈或人工确认入账"), False
+    return True, None, False
 
 
 def _memory_structure_ok(all_days: pl.DataFrame) -> bool:
@@ -252,7 +254,7 @@ def _run_full(ctx, pro, store, effective, request, plan,
         bucket=bucket, progress=progress, cancel_check=cancel_check,
     )
     if cancelled:
-        ctx.fail("Cancelled by user")
+        ctx.cancel()
         return
 
     failed = [o for o in outcomes if not o.ok]
@@ -413,7 +415,7 @@ def backfill_codes_worker(ctx: JobContext, request: dict, now_cn: datetime | Non
             lambda: ctx.check_cancelled(),
         )
         if ctx.check_cancelled():
-            ctx.fail("Cancelled by user")
+            ctx.cancel()
         elif ok:
             ctx.succeed({"kind": "market_backfill_codes", "codes": len(codes)})
         else:

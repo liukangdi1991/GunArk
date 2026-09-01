@@ -20,7 +20,6 @@ def test_schema_creates_all_tables(tmp_path):
         "executions",
         "job_logs",
         "jobs",
-        "market_sync_runs",
         "strategy_group_members",
         "strategy_groups",
         "strategy_settings",

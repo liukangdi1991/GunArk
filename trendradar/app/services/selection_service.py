@@ -174,7 +174,7 @@ def _run_selection(
     selectors: dict[str, SelectionStrategy] = {}
     for defn in resolved:
         if ctx.check_cancelled():
-            ctx.fail("Cancelled by user")
+            ctx.cancel()
             return SignalSet(execution_key=ctx.job_id)
         ctx.log(f"Warmup {defn.strategy_id}")
         selector = defn.selector_class(defn)
@@ -198,7 +198,7 @@ def _run_selection(
 
     for date_idx, trade_date in enumerate(trading_dates):
         if ctx.check_cancelled():
-            ctx.fail("Cancelled by user")
+            ctx.cancel()
             return SignalSet(execution_key=ctx.job_id)
         ctx.update_progress(date_idx + 1, total_dates, str(trade_date))
 
@@ -218,7 +218,7 @@ def _run_selection(
 
         for defn in resolved:
             if ctx.check_cancelled():
-                ctx.fail("Cancelled by user")
+                ctx.cancel()
                 return SignalSet(execution_key=ctx.job_id)
             warmup = warmups.get(defn.strategy_id)
             if warmup is None:

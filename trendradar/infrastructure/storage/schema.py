@@ -92,18 +92,6 @@ CREATE TABLE IF NOT EXISTS strategy_settings (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS market_sync_runs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    execution_key TEXT NOT NULL REFERENCES executions(execution_key),
-    start_date TEXT NOT NULL,
-    end_date TEXT NOT NULL,
-    stock_count INTEGER,
-    skipped_latest INTEGER DEFAULT 0,
-    empty_count INTEGER DEFAULT 0,
-    failed_count INTEGER DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
 CREATE TABLE IF NOT EXISTS trade_calendar (
     trade_date TEXT PRIMARY KEY
 );
@@ -131,7 +119,6 @@ CREATE INDEX IF NOT EXISTS idx_executions_created_at ON executions(created_at);
 CREATE INDEX IF NOT EXISTS idx_execution_items_execution_key ON execution_items(execution_key);
 CREATE INDEX IF NOT EXISTS idx_artifacts_execution_key ON artifacts(execution_key);
 CREATE INDEX IF NOT EXISTS idx_job_logs_job_id ON job_logs(job_id);
-CREATE INDEX IF NOT EXISTS idx_market_sync_runs_execution_key ON market_sync_runs(execution_key);
 """
 
 

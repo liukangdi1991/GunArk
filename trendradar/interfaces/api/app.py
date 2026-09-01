@@ -68,7 +68,8 @@ async def _lifespan(app: FastAPI):
     init_schema(store.connect())
 
     # Restart recovery: mark orphaned running jobs as failed so mutual
-    # exclusion for market_sync is not permanently locked.
+    # exclusion for market_bars_sync / market_backfill_codes is not
+    # permanently locked.
     conn = store.connect()
     conn.execute(
         "UPDATE jobs SET status = 'failed', error_message = 'interrupted by restart', "

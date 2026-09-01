@@ -3,7 +3,7 @@
 These cover the end-to-end metadata chain required by the V2 spec:
 - selection registers an executions row + artifact rows
 - backtest-from-selection registers a backtest execution + execution_links row (FK-safe)
-- market sync registers an executions row + market_sync_runs row
+- market sync registers an executions row (type=market_bars_sync, R12)
 """
 
 from __future__ import annotations
@@ -166,76 +166,32 @@ def test_backtest_job_links_to_existing_selection(tmp_path, monkeypatch):
     executor.shutdown(wait=True)
 
 
-def test_market_sync_job_registers_execution_and_sync_run(tmp_path, monkeypatch):
+def test_market_sync_execution_registration(tmp_path, monkeypatch):
+    """R12：新引擎只登记 executions 行（type=market_bars_sync），
+    不再有 market_sync_runs 表。"""
     monkeypatch.setenv("TREND_RADAR_RUNTIME_ROOT", str(tmp_path))
-    from trendradar.domain.strategy.selectors import register_all
-
-    register_all()
-
     sc = _init_storage(tmp_path)
-    executor = JobExecutor(JobStore(sc.db_path))
 
-    from trendradar.app.services import market_service
-
-    from datetime import date
-
-    from trendradar.infrastructure.tushare.syncer import SyncPlan
-
-    def fake_sync_stock_list(bars_dir):
-        return pl.DataFrame({"code": ["000001"], "name": ["平安银行"]})
-
-    def fake_plan_sync(pro, bars_dir, cache_dir, request, now_utc=None):
-        return SyncPlan(
-            mode="incremental", missing_days=0, missing_dates=[],
-            start=date(2026, 8, 1), end=date(2026, 8, 20), latest=date(2026, 8, 20),
-            all_trade=set(), done=set(), uptodate=False, force=False, retry_codes=[],
-        )
-
-    def fake_sync_market(pro, bars_dir, cache_dir, request, now_utc=None, progress=None,
-                         cancel_check=None, plan=None):
-        bars_dir.mkdir(parents=True, exist_ok=True)
-        (bars_dir / "000001.parquet").write_bytes(b"fake")
-        if progress:
-            progress(1, 1, "000001")
-        return {"mode": "incremental", "missing_days": 0, "synced_days": 1,
-                "synced_codes": 1, "new_codes": 0, "failed_days": 0,
-                "failed_codes": 0, "retry_rounds": 0, "skipped_uptodate": False}
-
-    # The worker now calls stocklist.sync_stock_list (call-time import) and
-    # syncer.sync_market / plan_sync (module attribute references).
-    monkeypatch.setattr(market_service.syncer_module, "plan_sync", fake_plan_sync)
-    monkeypatch.setattr(market_service.syncer_module, "sync_market", fake_sync_market)
-    monkeypatch.setattr(
-        "trendradar.infrastructure.tushare.stocklist.sync_stock_list",
-        fake_sync_stock_list,
+    from trendradar.app.services.market_sync.service import (
+        register_market_sync_execution,
     )
-    monkeypatch.setattr(market_service, "get_pro", lambda: object())
 
-    job_id = market_service.submit_market_sync(
-        executor,
-        {"codes": ["000001"], "start_date": "2026-08-01", "end_date": "2026-08-20"},
-        bars_dir=sc.storage_root / "market" / "bars",
-    )
-    _run_job(executor, job_id)
-
-    assert executor.get_state(job_id)["status"] == "success"
+    register_market_sync_execution("20260827_180000_market_bars_sync_abcd")
 
     conn = sc.connect()
     row = conn.execute(
-        "SELECT * FROM executions WHERE execution_key = ?", (job_id,)
+        "SELECT * FROM executions WHERE execution_key = ?",
+        ("20260827_180000_market_bars_sync_abcd",),
     ).fetchone()
     assert row is not None
-    assert row["execution_type"] == "market_sync"
+    assert row["execution_type"] == "market_bars_sync"
 
-    run = conn.execute(
-        "SELECT * FROM market_sync_runs WHERE execution_key = ?", (job_id,)
-    ).fetchone()
-    assert run is not None
-    assert run["stock_count"] == 1
-    assert run["start_date"] == "2026-08-01"
-    assert run["end_date"] == "2026-08-20"
-
-    executor.shutdown(wait=True)
+    tables = {
+        r["name"] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    assert "market_sync_runs" not in tables
 
 
 def test_selection_with_seeded_settings_and_default_group(tmp_path, monkeypatch):

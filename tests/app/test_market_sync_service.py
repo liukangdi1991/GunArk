@@ -130,6 +130,9 @@ class FakeCtx:
     def fail(self, error):
         self.status, self.error = "failed", error
 
+    def cancel(self, reason="Cancelled by user"):
+        self.status, self.error = "cancelled", reason
+
 
 @pytest.fixture
 def runtime(tmp_path, monkeypatch):
@@ -311,7 +314,7 @@ def test_r10_full_cancel_keeps_staging_bars_untouched(runtime, job_store, sync_s
     for c in CODES:
         fake_pro.code_days[c] = CAL[:4]
     ctx = run_worker(fake_pro, {"force": True}, job_store, cancel_after=1)
-    assert ctx.status == "failed"
+    assert ctx.status == "cancelled"
     assert "Cancelled" in ctx.error
     assert (bars / "OLD.parquet").exists()                      # 换名前一字未改
     assert not (runtime / "storage" / "market" / "bars_prev").exists()
