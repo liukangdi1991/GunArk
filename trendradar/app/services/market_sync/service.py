@@ -337,17 +337,28 @@ def _run_full(ctx, pro, store, effective, request, plan,
     booked = sorted(set(covered) - set(doubtful))
     if not ledger_subset_ok(set(booked), readback_calendar(bars_dir)):
         # 全量批 ④ 失败：不置 suspect（置则逼迫重建已换名成功的数据）
-        ctx.fail("全量自检④失败：换名后未落账，下轮增量幂等自愈")
+        ctx.fail(f"全量自检④失败：换名后未落账，{_unbooked_recovery(store)}")
         return
     try:
         commit_full(store, booked, doubtful)
     except Exception as e:
-        ctx.fail(f"账本事务失败（文件已换名，下轮增量自愈）: {e}")
+        ctx.fail(f"账本事务失败（文件已换名，{_unbooked_recovery(store)}）: {e}")
         return
     if doubtful:
         ctx.fail(f"{len(doubtful)} 个交易日行数异常（doubtful），未入账，可确认入账")
         return
     ctx.succeed({"kind": "full", "fetched": len(tasks), "failed": len(failed)})
+
+
+def _unbooked_recovery(store) -> str:
+    """换名成功但账本未落时，如实说明下轮代价。
+
+    done_days 为空（首次建库即失败）时下轮仍会命中「首次建库」分支重跑全量，
+    且 staging 已随换名重建为空、无法续传 —— 不能谎称「增量自愈」。
+    """
+    if store.done_days():
+        return "下轮增量幂等自愈"
+    return "账本仍为空 → 下轮重判「首次建库」，需再跑一次全量（约 41 分钟，无法续传）"
 
 
 def _discard_staging(staging_dir: Path) -> None:

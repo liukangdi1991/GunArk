@@ -9,6 +9,7 @@ from trendradar.infrastructure.tushare.fetch import (
     fetch_code_range,
     fetch_day_by_date,
     shard_ranges,
+    _attach_adj_factor,
     _response_to_df,
     _to_ts_code,
     filter_excluded_boards,
@@ -62,6 +63,37 @@ def test_classify_error():
 class FakeAdj:
     def to_dict(self, orient):
         return {}
+
+
+_BAR = {"ts_code": "000001.SZ", "open": 10.0, "high": 11.0, "low": 9.5,
+        "close": 10.5, "vol": 100000, "amount": 1000000}
+_FETCH_LOGGER = "trendradar.infrastructure.tushare.fetch"
+
+
+def _bars(*days: str) -> pl.DataFrame:
+    return pl.concat([
+        _response_to_df(pd.DataFrame([{**_BAR, "trade_date": d}]), "000001") for d in days
+    ])
+
+
+def test_attach_adj_factor_empty_response_warns(caplog):
+    """占位 1.0 会击穿下游 _qfq_scale 守卫，降级必须可观测（语义仍沿用旧实现）。"""
+    with caplog.at_level("WARNING", logger=_FETCH_LOGGER):
+        out = _attach_adj_factor(_bars("20240105"), FakeAdj())
+    assert out["adj_factor"].to_list() == [1.0]
+    assert "adj_factor 不可用" in caplog.text
+
+
+def test_attach_adj_factor_partial_coverage_warns(caplog):
+    with caplog.at_level("WARNING", logger=_FETCH_LOGGER):
+        out = _attach_adj_factor(
+            _bars("20240105", "20240108"),
+            pd.DataFrame([{"ts_code": "000001.SZ", "trade_date": "20240105",
+                           "adj_factor": 118.3}]),
+        )
+    assert out["adj_factor"].to_list() == [118.3, 1.0]   # 未匹配行保留占位
+    assert "覆盖不全" in caplog.text
+    assert "1/2" in caplog.text
 
 
 class RateLimitPro:

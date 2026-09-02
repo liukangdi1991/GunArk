@@ -510,6 +510,8 @@ def test_r17_commit_failure_after_swap(runtime, job_store, sync_store, fake_pro,
     assert (bars / "000001.parquet").exists()                   # 文件已新
     assert sync_store.done_days() == set()                      # 账本仍旧
     assert not sync_store.ledger_suspect()                      # 不置 suspect
+    # 账本为空 → 下轮重判「首次建库」重跑全量，文案不得谎称增量自愈
+    assert "首次建库" in ctx.error
 
 
 # ---- R18：UPTODATE 尾部补齐失败不翻转终态 ----

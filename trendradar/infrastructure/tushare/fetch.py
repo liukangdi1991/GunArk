@@ -90,16 +90,29 @@ def _response_to_df(resp, code: str) -> pl.DataFrame:
     return df.sort("date")
 
 
+def _warn_placeholder_factor(df: pl.DataFrame, why: str) -> None:
+    """占位 1.0 会击穿下游 _qfq_scale 的守卫（1.0 > 0，不退化原价），指标将
+    静默算在原价上；四条自检也都不查 adj_factor —— 至少让降级可观测。"""
+    logger.warning(
+        "adj_factor 不可用（%s）：%d 行行情保留占位 1.0，复权退化为原价", why, df.height
+    )
+
+
 def _attach_adj_factor(df: pl.DataFrame, adj_df) -> pl.DataFrame:
     """按 (code, date) 合并真实复权因子，覆盖占位 1.0（语义与旧实现一致）。"""
-    if df.is_empty() or adj_df is None:
+    if df.is_empty():
+        return df
+    if adj_df is None:
+        _warn_placeholder_factor(df, "未取到响应")
         return df
     if isinstance(adj_df, pl.DataFrame):
         adj = adj_df
         if adj.is_empty() or "adj_factor" not in adj.columns:
+            _warn_placeholder_factor(df, "响应为空")
             return df
     else:
         if not adj_df.to_dict(orient="list"):
+            _warn_placeholder_factor(df, "响应为空")
             return df
         adj = pl.DataFrame(adj_df.to_dict(orient="list"))
     if "trade_date" in adj.columns:
@@ -110,6 +123,12 @@ def _attach_adj_factor(df: pl.DataFrame, adj_df) -> pl.DataFrame:
         adj = adj.with_columns(pl.col("ts_code").str.slice(0, 6).alias("code"))
     adj = adj.select(["code", "date", "adj_factor"]).rename({"adj_factor": "_adj"})
     df = df.join(adj, on=["code", "date"], how="left")
+    unmatched = df["_adj"].null_count()
+    if unmatched:
+        logger.warning(
+            "adj_factor 覆盖不全：%d/%d 行未匹配到真实因子，保留占位 1.0",
+            unmatched, df.height,
+        )
     return df.with_columns(
         pl.coalesce([pl.col("_adj"), pl.col("adj_factor")]).alias("adj_factor")
     ).drop("_adj")
