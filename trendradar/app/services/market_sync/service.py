@@ -414,6 +414,8 @@ def backfill_codes_worker(ctx: JobContext, request: dict, now_cn: datetime | Non
             meta = sync_stock_list(bars_dir)
         effective = build_effective_list(meta, request.get("exclude_boards") or [], latest)
         codes = request.get("codes") or store.excluded_codes()
+        # 清零必须在取名单之后：否则 attempts>=3 的出列条件被抹掉，通道二无单可补
+        store.reset_skip_attempts()
         bucket = TokenBucket()
         ok = _run_backfill_batch(
             ctx, get_pro(), store, effective, codes, bars_dir, bucket,

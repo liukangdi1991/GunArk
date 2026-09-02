@@ -407,6 +407,45 @@ def test_r8_no_confirm_keeps_staging(runtime, job_store, sync_store, fake_pro):
     assert list((runtime / "storage" / "market" / "staging").glob("*.parquet"))
 
 
+def test_backfill_submit_rejected_leaves_attempts_alone(runtime, sync_store, fake_pro):
+    """被互斥拒绝的请求不得留下副作用（清零只属于真正起跑的 worker）。"""
+    import time
+
+    from trendradar.app.jobs.executor import JobExecutor
+    from trendradar.app.jobs.persistence import JobStore
+    from trendradar.app.services.market_service import submit_market_backfill_codes
+
+    for _ in range(3):
+        sync_store.record_skip_failure("000002", "无此股票", "code")
+
+    ex = JobExecutor(JobStore(runtime / "storage" / "app.db"))
+    blocking = ex.submit("market_bars_sync", lambda ctx: time.sleep(1), {})
+    fut = ex._jobs[blocking].future   # 先抓住 future：worker 完成后 _run 会弹出条目
+    try:
+        with pytest.raises(RuntimeError, match="conflicts"):
+            submit_market_backfill_codes(ex, {})
+        assert [r["attempts"] for r in sync_store.skipped_rows()] == [3]
+    finally:
+        fut.result(timeout=5)
+        ex.shutdown(wait=True)
+
+
+def test_backfill_worker_backfills_excluded_list(runtime, job_store, sync_store, fake_pro):
+    """通道二不传 codes → 按 attempts>=3 名单补齐；清零必须在取名单之后。"""
+    sync_store.insert_calendar_days(CAL)
+    for _ in range(3):
+        sync_store.record_skip_failure("000002", "无此股票", "code")
+    for c in CODES:
+        fake_pro.code_days[c] = CAL[:4]
+
+    ctx = FakeCtx("20260827_180000_market_backfill_codes_t1", job_store)
+    service.backfill_codes_worker(ctx, {}, now_cn=NOW)
+
+    assert ctx.status == "success"
+    assert (runtime / "storage" / "market" / "bars" / "000002.parquet").exists()
+    assert sync_store.skipped_rows() == []          # 成功即销账
+
+
 # ---- R13：全量批单日语义 ----
 
 def test_r13_full_doubtful_day_swapped_but_not_booked(runtime, job_store, sync_store, fake_pro):

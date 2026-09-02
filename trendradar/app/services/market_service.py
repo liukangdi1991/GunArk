@@ -16,12 +16,10 @@ def submit_market_bars_sync(executor: JobExecutor, request: dict) -> str:
 
 
 def submit_market_backfill_codes(executor: JobExecutor, request: dict) -> str:
-    """通道二"立即补齐"：先清 attempts（误判后重新给 3 次机会，spec §3.7）。"""
+    """通道二"立即补齐"。attempts 清零由 worker 负责（spec §3.7）：
+    被互斥拒绝的请求不该留下副作用。"""
     from trendradar.app.services.market_sync.service import backfill_codes_worker
-    from trendradar.infrastructure.runtime import storage_root
-    from trendradar.infrastructure.storage.sync_store import SyncStore
 
-    SyncStore(storage_root()).reset_skip_attempts()
     return executor.submit(
         "market_backfill_codes",
         lambda ctx: backfill_codes_worker(ctx, request),
