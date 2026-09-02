@@ -10,6 +10,10 @@ from trendradar.app.jobs.persistence import JobStore
 EXCLUSIVE_JOB_TYPES = frozenset({"market_bars_sync", "market_backfill_codes"})
 
 
+class JobConflictError(RuntimeError):
+    """互斥拒绝：良性冲突，路由据此回 409 而非 500。"""
+
+
 class JobState:
     def __init__(self, job_id: str, job_type: str, future: Future) -> None:
         self.job_id = job_id
@@ -42,7 +46,7 @@ class JobExecutor:
                     j.job_type in EXCLUSIVE_JOB_TYPES and not j.future.done()
                     for j in self._jobs.values()
                 ):
-                    raise RuntimeError(f"{job_type} job conflicts with an in-flight sync job")
+                    raise JobConflictError(f"{job_type} job conflicts with an in-flight sync job")
                 job_id = self._store.create_job(job_type, request)
                 fut = self._pool.submit(self._run, job_id, job_type, run_fn)
                 self._jobs[job_id] = JobState(job_id, job_type, fut)

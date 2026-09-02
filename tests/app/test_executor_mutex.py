@@ -25,6 +25,22 @@ def test_second_bars_sync_rejected_while_running(tmp_path):
         ex.shutdown(wait=True)
 
 
+def test_conflict_raises_dedicated_error(tmp_path):
+    """互斥拒绝需可被路由识别成 409；同时仍是 RuntimeError 子类以兼容既有捕获。"""
+    from trendradar.app.jobs.executor import JobConflictError
+
+    ex = _executor(tmp_path)
+    first = ex.submit("market_bars_sync", lambda ctx: time.sleep(1), {})
+    fut = ex._jobs[first].future
+    try:
+        with pytest.raises(JobConflictError):
+            ex.submit("market_bars_sync", lambda ctx: None, {})
+        assert issubclass(JobConflictError, RuntimeError)
+    finally:
+        fut.result(timeout=5)
+        ex.shutdown(wait=True)
+
+
 def test_bars_sync_and_backfill_mutually_exclusive(tmp_path):
     ex = _executor(tmp_path)
     first = ex.submit("market_bars_sync", lambda ctx: time.sleep(1), {})

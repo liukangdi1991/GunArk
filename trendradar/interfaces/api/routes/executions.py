@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, Request as FastAPIRequest
 
+from trendradar.app.jobs.executor import JobConflictError
 from trendradar.interfaces.api.schemas.execution import (
     ExecutionRequest,
     SelectionBacktestRequest,
@@ -40,6 +41,8 @@ def submit_execution(body: ExecutionRequest, request: FastAPIRequest):
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except JobConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         import logging
         logging.getLogger("trendradar.api").error("submit_execution failed: %s", e, exc_info=True)

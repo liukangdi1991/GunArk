@@ -64,9 +64,16 @@ export function MarketDataPage() {
       });
       window.location.href = execution.console_url;
     } catch (error) {
-      const text = error instanceof Error ? error.message : "提交行情同步任务失败。";
-      setErrorMessage(text);
-      messageApi.error(text);
+      const text = error instanceof Error ? error.message : "";
+      // 后端 409 = 互斥拒绝（已有同步在跑），属良性冲突，不当错误染红
+      const conflict = text.includes("already running") || text.includes("conflicts");
+      if (conflict) {
+        messageApi.warning("同步进行中，稍后再试");
+      } else {
+        const message = text || "提交行情同步任务失败。";
+        setErrorMessage(message);
+        messageApi.error(message);
+      }
     } finally {
       setSubmitting(false);
     }

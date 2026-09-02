@@ -615,6 +615,19 @@ def test_market_backfill_submit(client):
     assert resp.json()["data"]["job_id"]
 
 
+def test_submit_execution_conflict_returns_409(client, monkeypatch):
+    """主同步按钮走通用路由：互斥拒绝必须是 409，不能被吞成 500。"""
+    from trendradar.app.jobs.executor import JobConflictError
+
+    def _conflict(*args, **kwargs):
+        raise JobConflictError("market_bars_sync job conflicts with an in-flight sync job")
+
+    monkeypatch.setattr(client.app.state.executor, "submit", _conflict)
+    resp = client.post("/api/executions", json={"type": "market_bars_sync", "params": {}})
+    assert resp.status_code == 409
+    assert "conflicts" in resp.json()["detail"]
+
+
 def test_confirm_doubtful_noop_when_empty(client):
     resp = client.post("/api/market-data/confirm-doubtful")
     assert resp.status_code == 200
