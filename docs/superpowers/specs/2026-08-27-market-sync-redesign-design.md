@@ -326,7 +326,7 @@ CREATE TABLE IF NOT EXISTS sync_skipped (
 | stage-1 日历 | `market_calendar_sync` | `queued → running → success/failed`（<1 秒） |
 | stage-2 行情 | `market_bars_sync` | `queued → running → success/failed/cancelled`（增量 0.5 秒~3 分钟；全量约 41 分钟，可跨天） |
 
-`running` 必须保留（面板需区分"排队中"与"正在跑"）；`queued` 沿用现名，不引入 `pending`。一次 UI 点击 = stage-1 一行 + stage-2 一行；**stage-1 是 stage-2 worker 内的同步步骤**（不经 executor 二次提交、非嵌套异步作业）：stage-2 起跑前先执行 stage-1 并等待其完成，再读日历表做硬检（§3.3），确保决策不基于旧日历。两行 job 共用同一 `execution_key` 关联（现成 `executions` 表），面板 ① 行"查看控制台"跳 stage-1 job、③ 行跳 stage-2 job。
+`running` 必须保留（面板需区分"排队中"与"正在跑"）；`queued` 沿用现名，不引入 `pending`。一次 UI 点击 = stage-1 一行 + stage-2 一行；**stage-1 是 stage-2 worker 内的同步步骤**（不经 executor 二次提交、非嵌套异步作业）：stage-2 起跑前先执行 stage-1 并等待其完成，再读日历表做硬检（§3.3），确保决策不基于旧日历。两行 job 各自登记一行 `executions`，再用现成的 `execution_links` 表关联（`link_type='bars_sync_uses_calendar'`，source=stage-2、target=stage-1，与 `backtest_uses_selection` 同一套路）；**stage-1 失败也要留链**，否则审计看不到"这次点击卡在哪一阶段"。（原稿写"两行 job 共用同一 `execution_key`"，但 `executions.execution_key` 带 `UNIQUE`、`jobs` 表也没有该列，字面不可实现，故改用 links 表表达从属。）面板 ① 行"查看控制台"跳 stage-1 job、③ 行跳 stage-2 job。
 
 需一并修掉的现状坑：
 

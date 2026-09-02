@@ -230,6 +230,32 @@ def test_r3_empty_calendar_fails_not_skip(runtime, job_store, sync_store, fake_p
     assert "日历未就绪" in ctx.error
 
 
+def test_r3_stage1_linked_to_stage2(runtime, job_store, sync_store, fake_pro):
+    """spec §3.9：stage-1/stage-2 两行 job 必须留下审计关联。"""
+    from trendradar.infrastructure.storage.connection import StorageConnection
+
+    sync_store.insert_calendar_days(CAL)
+    run_worker(fake_pro, {}, job_store)
+
+    with StorageConnection(runtime / "storage").connection() as conn:
+        types = {
+            r["execution_key"]: r["execution_type"]
+            for r in conn.execute(
+                "SELECT execution_key, execution_type FROM executions"
+            ).fetchall()
+        }
+        links = conn.execute(
+            "SELECT source_execution_key, target_execution_key FROM execution_links "
+            "WHERE link_type = 'bars_sync_uses_calendar'"
+        ).fetchall()
+
+    assert len(links) == 1
+    src = links[0]["source_execution_key"]
+    tgt = links[0]["target_execution_key"]
+    assert types[src] == "market_bars_sync"
+    assert types[tgt] == "market_calendar_sync"
+
+
 # ---- R6 / R14：增量 doubtful 与自愈 ----
 
 def test_r6_incremental_doubtful_day_written_not_booked(runtime, job_store,

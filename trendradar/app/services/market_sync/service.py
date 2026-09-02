@@ -161,18 +161,44 @@ def _bars_sync_body(ctx, request, store, market_dir, now_cn=None):
         ctx.fail(fail_msg)
 
 
+def _link_calendar_stage(cal_job_id: str, bars_job_id: str) -> None:
+    """stage-1/stage-2 审计关联（spec §3.9）。
+
+    spec 原文写「共用同一 execution_key」，但 executions.execution_key 是
+    UNIQUE 且 jobs 表无该列，字面不可实现 —— 改用 execution_links 表达从属
+    （与 backtest_uses_selection 同一套路）。
+    """
+    from trendradar.infrastructure.runtime import storage_root
+    from trendradar.infrastructure.storage.connection import StorageConnection
+    from trendradar.infrastructure.storage.registration import register_execution
+
+    with StorageConnection(storage_root()).connection() as conn:
+        register_execution(conn, cal_job_id, "market_calendar_sync")
+        register_execution(conn, bars_job_id, "market_bars_sync")
+        conn.execute(
+            "INSERT OR IGNORE INTO execution_links "
+            "(source_execution_key, target_execution_key, link_type) "
+            "VALUES (?, ?, 'bars_sync_uses_calendar')",
+            (bars_job_id, cal_job_id),
+        )
+        conn.commit()
+
+
 def _stage1_calendar(ctx, store, pro, now_cn) -> bool:
     cal_job_id = ctx.store.create_job("market_calendar_sync", {})
     ctx.store.update_started_at(cal_job_id)
+    ok = False
     try:
         fetched = _refresh_calendar(store, pro, now_cn)
+        ctx.store.set_status(cal_job_id, "success", result={"fetched": len(fetched)})
+        ctx.log(f"stage-1 日历刷新完成：拉取 {len(fetched)} 日")
+        ok = True
     except Exception as e:
         ctx.store.set_status(cal_job_id, "failed", error=str(e))
         ctx.log(f"stage-1 日历刷新失败: {e}", level="ERROR")
-        return False
-    ctx.store.set_status(cal_job_id, "success", result={"fetched": len(fetched)})
-    ctx.log(f"stage-1 日历刷新完成：拉取 {len(fetched)} 日")
-    return True
+    finally:
+        _link_calendar_stage(cal_job_id, ctx.job_id)  # 失败也要留审计链
+    return ok
 
 
 def _refresh_calendar(store, pro, now_cn) -> list[date]:
