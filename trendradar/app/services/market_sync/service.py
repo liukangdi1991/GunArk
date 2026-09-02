@@ -245,6 +245,10 @@ def _run_incremental(ctx, pro, store, effective, exclude_boards, plan,
 
     # ⑥ 单事务落账（仅声称日；doubtful 合并 = 旧 − 已入账 ∪ 新）
     merged_doubtful = sorted({*store.doubtful_days(), *res.doubtful_days} - claimed)
+    if merged_doubtful:
+        # 数据已落盘并过⑤，doubtful 先独立持久化：commit_incremental 把它与
+        # done_days 写在同一事务里，回滚会一起吞掉（同全量路径）
+        store.set_doubtful_days(merged_doubtful)
     commit_incremental(store, sorted(claimed), merged_doubtful)
 
     if res.doubtful_days:
@@ -334,6 +338,10 @@ def _run_full(ctx, pro, store, effective, request, plan,
 
     # ---- 单向换名（§3.6）→ ④ → 单事务落账 ----
     swap_in_bars(market_dir)
+    if doubtful:
+        # commit_full 把 doubtful 与 done_days 写在同一事务里，回滚会一起吞掉；
+        # 换名后这些日已在盘上，先独立持久化，「确认入账」入口当轮即可用
+        store.set_doubtful_days(doubtful)
     booked = sorted(set(covered) - set(doubtful))
     if not ledger_subset_ok(set(booked), readback_calendar(bars_dir)):
         # 全量批 ④ 失败：不置 suspect（置则逼迫重建已换名成功的数据）

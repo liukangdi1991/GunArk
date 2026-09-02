@@ -514,6 +514,46 @@ def test_r17_commit_failure_after_swap(runtime, job_store, sync_store, fake_pro,
     assert "首次建库" in ctx.error
 
 
+def test_r17_full_doubtful_survives_commit_failure(runtime, job_store, sync_store,
+                                                   fake_pro, monkeypatch):
+    """doubtful 与 done_days 同在 commit_full 一个事务里，回滚不该把它一起吞掉：
+    换名后它已在盘上，「确认入账」入口应当轮就可用，而不是等下一轮重算。"""
+    sync_store.insert_calendar_days(CAL)
+    for c in CODES:
+        fake_pro.code_days[c] = CAL[:4]
+    # 26 日只有 2/3 只 → 0.667 < 0.75 → doubtful
+    fake_pro.code_days["600000"] = [d for d in CAL[:4] if d != date(2026, 8, 26)]
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("txn boom")
+
+    monkeypatch.setattr(service, "commit_full", boom)
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+
+    assert ctx.status == "failed"
+    assert sync_store.doubtful_days() == [date(2026, 8, 26)]   # 未被事务回滚吞掉
+    assert sync_store.done_days() == set()                      # 账本仍未推进
+
+
+def test_r17_incremental_doubtful_survives_commit_failure(runtime, job_store, sync_store,
+                                                          fake_pro, monkeypatch):
+    """增量批同一机制：commit_incremental 也把 doubtful 与 done_days 写在一个事务里。"""
+    sync_store.insert_calendar_days(CAL)
+    sync_store.add_done_days(DONE)
+    d26, d27 = date(2026, 8, 26), date(2026, 8, 27)
+    fake_pro.day_codes = {d26: CODES, d27: CODES[:2]}           # 27 日 0.667 < 0.75
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("txn boom")
+
+    monkeypatch.setattr(service, "commit_incremental", boom)
+    ctx = run_worker(fake_pro, {}, job_store)                   # 外层兜底 → failed
+
+    assert ctx.status == "failed" and "txn boom" in ctx.error
+    assert sync_store.doubtful_days() == [d27]                  # 未被事务回滚吞掉
+    assert sync_store.done_days() == set(DONE)                  # 账本仍未推进
+
+
 # ---- R18：UPTODATE 尾部补齐失败不翻转终态 ----
 
 def test_r18_uptodate_tail_backfill_env_failure_keeps_success(runtime, job_store,
