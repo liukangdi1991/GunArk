@@ -32,14 +32,6 @@ def test_effective_list_exclude_boards_gem_star():
     assert set(eff.codes) == {"000001", "000004"}
 
 
-def test_effective_expected_on_handles_delisting():
-    eff = build_effective_list(META, exclude_boards=[], latest_tradeable=LATEST)
-    # 2026-07-13 之前：4 只应市；退市日当天仍计；之后 3 只
-    assert eff.expected_on(date(2026, 7, 10)) == 4
-    assert eff.expected_on(date(2026, 7, 13)) == 4
-    assert eff.expected_on(date(2026, 7, 14)) == 3
-
-
 def test_effective_clamped_range():
     eff = build_effective_list(META, exclude_boards=[], latest_tradeable=LATEST)
     assert eff.clamped_range("000001") == (date(2015, 1, 1), LATEST)      # BASELINE 钳制

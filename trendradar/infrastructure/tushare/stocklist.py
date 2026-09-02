@@ -13,6 +13,7 @@ import polars as pl
 from trendradar.domain.market.sync.spec import BASELINE_START
 from trendradar.infrastructure.tushare.client import get_pro
 from trendradar.infrastructure.tushare.fetch import EXCLUDE_BOARD_PREFIXES
+from trendradar.infrastructure.tushare.writer import atomic_write_parquet
 
 logger = logging.getLogger(__name__)
 
@@ -59,18 +60,7 @@ def sync_stock_list(bars_dir: Path) -> pl.DataFrame:
         return df
 
     output = Path(bars_dir).parent / "stock_meta.parquet"
-    output.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = __import__("tempfile").mkstemp(dir=output.parent, suffix=".tmp")
-    try:
-        __import__("os").close(fd)
-        df.write_parquet(tmp)
-        __import__("os").replace(tmp, output)
-    except BaseException:
-        try:
-            __import__("os").unlink(tmp)
-        except OSError:
-            pass
-        raise
+    atomic_write_parquet(df, output)
     return df
 
 
@@ -79,16 +69,8 @@ class EffectiveList:
     """有效清单 = L∪D − 北交所 − exclude_boards（与拉取侧同一过滤，§3.8 断言①分母）。"""
 
     codes: tuple[str, ...]
-    list_dates: Mapping[str, date]
-    delist_dates: Mapping[str, date | None]
     rows: tuple[tuple[date, date | None], ...]  # (list_date, delist_date)
     _clamped: Mapping[str, tuple[date, date]]
-
-    def expected_on(self, day: date) -> int:
-        return sum(
-            1 for list_d, delist_d in self.rows
-            if list_d <= day and (delist_d is None or delist_d >= day)
-        )
 
     def clamped_range(self, code: str) -> tuple[date, date] | None:
         return self._clamped.get(code)
@@ -102,14 +84,12 @@ def build_effective_list(
 ) -> EffectiveList:
     """spec §3.6 待拉清单 ①-④：剔未来上市 / 剔北交所 / 剔排除板块 / 区间钳制。"""
     if meta.is_empty() or latest_tradeable is None:
-        return EffectiveList((), {}, {}, (), {})
+        return EffectiveList((), (), {})
 
     prefixes = tuple(
         p for b in (exclude_boards or []) for p in EXCLUDE_BOARD_PREFIXES.get(b, ())
     )
     codes: list[str] = []
-    list_dates: dict[str, date] = {}
-    delist_dates: dict[str, date | None] = {}
     rows: list[tuple[date, date | None]] = []
     clamped: dict[str, tuple[date, date]] = {}
 
@@ -129,9 +109,7 @@ def build_effective_list(
         if start > end:
             continue
         codes.append(code)
-        list_dates[code] = list_d
-        delist_dates[code] = delist_d
         rows.append((list_d, delist_d))
         clamped[code] = (start, end)
 
-    return EffectiveList(tuple(codes), list_dates, delist_dates, tuple(rows), clamped)
+    return EffectiveList(tuple(codes), tuple(rows), clamped)

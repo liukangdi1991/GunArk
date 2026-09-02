@@ -235,10 +235,11 @@ def _run_incremental(ctx, pro, store, effective, exclude_boards, plan,
     # 写盘（含 doubtful 日，INV-4 幂等）
     flush_by_code(all_days, bars_dir)
 
-    # ⑤ 读回校验 ②④
+    # ⑤ 读回校验：增量路径 new_done == claimed，断言②④同为 claimed ⊆ readback
+    # （全量路径两者分母不同，仍分开查）
     readback = readback_calendar(bars_dir)
     claimed = set(res.claimed_days)
-    if not coverage_ok(readback, claimed) or not ledger_subset_ok(claimed, readback):
+    if not ledger_subset_ok(claimed, readback):
         store.set_ledger_suspect(True)
         return False, "自检②④失败：读回日历与声称集合漂移（已置 ledger_suspect）", False
 

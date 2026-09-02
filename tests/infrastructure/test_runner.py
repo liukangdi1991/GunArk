@@ -17,7 +17,7 @@ from trendradar.infrastructure.tushare.stocklist import EffectiveList
 def _eff(expected_counts: dict[date, int]) -> EffectiveList:
     # 各日 expected 相同（测试场景均如此）：行数取其一，而非逐日累加
     rows = [(date(2010, 1, 1), None)] * max(expected_counts.values())
-    return EffectiveList((), {}, {}, tuple(rows), {})
+    return EffectiveList((), tuple(rows), {})
 
 
 def _day_resp(day: date, n_stocks: int) -> pd.DataFrame:
