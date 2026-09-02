@@ -19,6 +19,25 @@
 
 ---
 
+## 执行状态（读这里，别看下面的方框）
+
+**Task 1–16 已全部实施并提交**，但下方 92 个 step 方框一个都没回勾——实施时没有按
+checkbox 跟踪，所以"全空"是记账缺失，不代表没做。判断完成情况请看 `git log master..feature`
+与 spec，不要依赖这些方框。
+
+产物落点：`domain/market/sync/{spec,planner,selfcheck}.py`、`infrastructure/tushare/
+{fetch,stocklist,writer,runner,calendar}.py`、`infrastructure/storage/sync_store.py`、
+`app/services/market_sync/{service,commit}.py`、`interfaces/api/routes/market.py`、
+`frontend/src/pages/MarketData`；旧 `syncer.py` 与 `market_sync_runs` 表已删（Task 15）。
+
+**仍未完成的只有上线**，且卡在同一个前置上——本环境没有 `TUSHARE_TOKEN`：
+
+1. 先跑退市股因子实测（spec §3.7「边界未实测」）：`TUSHARE_TOKEN=xxx
+   .venv/bin/python scripts/check_delisted_adj_factor.py`，退出码 0 才继续；
+2. `python -m trendradar.cli init-v2 --reset-runtime --confirm-reset` → UI 点"全量重建"
+   （约 41 分钟）→ 跑 Task 17 冒烟。
+
+
 ## 文件结构
 
 ```
