@@ -266,6 +266,12 @@ def _run_full(ctx, pro, store, effective, request, plan,
     for o in failed:  # 健康轮才记失败；env 不计（INV-5）
         if o.kind in (FailureKind.CODE, FailureKind.UNKNOWN):
             store.record_skip_failure(o.code, o.error, o.kind.value)
+    # 中间任一次成功即计数归零（§3.7）：不销账会让名单残留，
+    # 既卡住本轮带缺口提交门槛，又让 attempts 停留过时值
+    skipped_codes = {r["code"] for r in store.skipped_rows()}
+    for o in outcomes:
+        if o.ok and o.code in skipped_codes:
+            store.clear_skip(o.code)
 
     covered = sorted(
         d for d in store.calendar_days()

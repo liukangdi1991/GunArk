@@ -57,6 +57,7 @@ class FakePro:
 
     def __init__(self):
         self.calendar_days = list(CAL)
+        self.meta_codes = list(CODES)  # 可注水：健康轮需要足够多的股票摊薄失败率
         self.day_codes = {}        # date -> 该日返回的代码列表
         self.code_days = {}        # code -> 该股的日期列表（范围模式）
         self.raise_cal = None      # trade_cal 抛错
@@ -73,7 +74,7 @@ class FakePro:
     def stock_basic(self, exchange="", list_status=None, fields=None):
         if list_status == "D":
             return FakeResp({})
-        return _resp_meta(CODES)
+        return _resp_meta(self.meta_codes)
 
     def daily(self, ts_code=None, trade_date=None, start_date=None, end_date=None, freq=None):
         self.daily_calls += 1
@@ -345,9 +346,47 @@ def test_r7_full_env_breaker_records_nothing(runtime, job_store, sync_store, fak
     assert list((runtime / "storage" / "market" / "staging").glob("*.parquet"))  # staging 保留
 
 
+HEALTHY_CODES = [f"{i:06d}" for i in range(1, 22)]   # 21 只：1 只失败 = 4.8% ≤ 5% 健康轮
+
+
+def _seed_healthy_full(fake_pro, sync_store, bad_code):
+    """构造健康轮全量：除 bad_code 外全部成功，bad_code 抛 code 类错误（才计次）。"""
+    fake_pro.meta_codes = list(HEALTHY_CODES)
+    sync_store.insert_calendar_days(CAL)
+    for c in HEALTHY_CODES:
+        fake_pro.code_days[c] = CAL[:4]
+    fake_pro.raise_daily_codes = {bad_code}
+    fake_pro.raise_daily_exc = RuntimeError("参数错误")
+
+
+def test_r7_three_healthy_rounds_then_excluded(runtime, job_store, sync_store, fake_pro):
+    _seed_healthy_full(fake_pro, sync_store, "000002")
+    for _ in range(2):   # 前 2 轮：未达 3 次门槛，不得出列
+        run_worker(fake_pro, {"force": True, "accept_partial_baseline": True}, job_store)
+        assert sync_store.excluded_codes() == []
+    run_worker(fake_pro, {"force": True, "accept_partial_baseline": True}, job_store)
+    assert sync_store.excluded_codes() == ["000002"]   # 第 3 个健康轮失败 → 出列
+
+
+def test_r7_success_clears_skip_and_unblocks_commit(runtime, job_store, sync_store, fake_pro):
+    """中间任一次成功即计数归零（spec §3.7）：销账后本轮全成功不需 accept_partial_baseline。"""
+    fake_pro.meta_codes = list(HEALTHY_CODES)
+    sync_store.insert_calendar_days(CAL)
+    for c in HEALTHY_CODES:
+        fake_pro.code_days[c] = CAL[:4]
+    sync_store.record_skip_failure("000002", "old", "code")   # attempts=1
+    sync_store.record_skip_failure("000002", "old", "code")   # attempts=2
+
+    ctx = run_worker(fake_pro, {"force": True}, job_store)    # 本轮 21/21 成功
+
+    assert sync_store.skipped_rows() == []                    # 成功即销账，attempts 不残留
+    assert ctx.status == "success"                            # 名单已空 → 不卡带缺口提交
+
+
 def test_r8_env_residue_rejects_partial_baseline(runtime, job_store, sync_store, fake_pro):
     sync_store.insert_calendar_days(CAL)
-    sync_store.record_skip_failure("000002", "每分钟最多访问该接口", "env")
+    # 残留 code 不在有效清单内 → 本轮不拉取、不销账，门槛才可被独立验证
+    sync_store.record_skip_failure("999999", "每分钟最多访问该接口", "env")
     for c in CODES:
         fake_pro.code_days[c] = CAL[:4]
     ctx = run_worker(fake_pro, {"force": True, "accept_partial_baseline": True}, job_store)
@@ -359,7 +398,7 @@ def test_r8_env_residue_rejects_partial_baseline(runtime, job_store, sync_store,
 
 def test_r8_no_confirm_keeps_staging(runtime, job_store, sync_store, fake_pro):
     sync_store.insert_calendar_days(CAL)
-    sync_store.record_skip_failure("000002", "无此股票", "code")
+    sync_store.record_skip_failure("999999", "无此股票", "code")
     for c in CODES:
         fake_pro.code_days[c] = CAL[:4]
     ctx = run_worker(fake_pro, {"force": True}, job_store)
