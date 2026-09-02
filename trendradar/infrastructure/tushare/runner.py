@@ -18,7 +18,10 @@ from trendradar.infrastructure.tushare.fetch import (
     shard_ranges,
 )
 from trendradar.infrastructure.tushare.stocklist import EffectiveList
-from trendradar.infrastructure.tushare.writer import atomic_write_parquet
+from trendradar.infrastructure.tushare.writer import (
+    atomic_write_parquet,
+    upsert_code_file,
+)
 
 
 @dataclass
@@ -145,8 +148,6 @@ def run_backfill(
     cancel_check=None,
 ) -> list[StockOutcome]:
     """指定代码补齐（INV-3：永不触碰日账本），串行，直接 upsert 进 bars。"""
-    from trendradar.infrastructure.tushare.fetch import _align_columns
-
     bars_dir = Path(bars_dir)
     outcomes: list[StockOutcome] = []
     total = len(tasks)
@@ -171,15 +172,6 @@ def run_backfill(
             continue
         if frames:
             df = pl.concat(frames).sort("date")
-            target = bars_dir / f"{code}.parquet"
-            if target.exists():
-                local = _align_columns(pl.read_parquet(target), df)
-                merged = pl.concat(
-                    [local.filter(~pl.col("date").is_in(df["date"])), df]
-                ).sort("date")
-            else:
-                merged = df
-            bars_dir.mkdir(parents=True, exist_ok=True)
-            atomic_write_parquet(merged, target)
+            upsert_code_file(bars_dir / f"{code}.parquet", df)
         outcomes.append(StockOutcome(code, True))
     return outcomes

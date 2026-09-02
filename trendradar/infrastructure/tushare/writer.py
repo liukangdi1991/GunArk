@@ -33,6 +33,20 @@ def atomic_write_parquet(df: pl.DataFrame, target: Path) -> None:
         raise
 
 
+def upsert_code_file(target: Path, new: pl.DataFrame) -> None:
+    """单个 code 文件按日 upsert（INV-4 幂等）：本地旧行让位于新行。"""
+    target = Path(target)
+    if target.exists():
+        local = _align_columns(pl.read_parquet(target), new)
+        merged = pl.concat(
+            [local.filter(~pl.col("date").is_in(new["date"].to_list())), new]
+        ).sort("date")
+    else:
+        merged = new.sort("date")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_parquet(merged, target)
+
+
 def flush_by_code(all_days: pl.DataFrame, bars_dir: Path) -> list[str]:
     """按 code 分组：每个受影响文件读一次 + 按日期 upsert + 原子写一次（INV-4 幂等）。"""
     if all_days.is_empty():
@@ -42,15 +56,7 @@ def flush_by_code(all_days: pl.DataFrame, bars_dir: Path) -> list[str]:
     written = []
     for code in all_days["code"].unique().to_list():
         group = all_days.filter(pl.col("code") == code)
-        target = bars_dir / f"{code}.parquet"
-        if target.exists():
-            local = _align_columns(pl.read_parquet(target), group)
-            merged = pl.concat(
-                [local.filter(~pl.col("date").is_in(group["date"])), group]
-            ).sort("date")
-        else:
-            merged = group.sort("date")
-        atomic_write_parquet(merged, target)
+        upsert_code_file(bars_dir / f"{code}.parquet", group)
         written.append(str(code))
     return written
 
