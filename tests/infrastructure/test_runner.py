@@ -29,11 +29,6 @@ def _day_resp(day: date, n_stocks: int) -> pd.DataFrame:
     ])
 
 
-class FakeAdj:
-    def to_dict(self, orient):
-        return {}
-
-
 class DaySeqPro:
     """按日期返回预设行数；未知日期返回空。"""
 
@@ -54,7 +49,16 @@ class DaySeqPro:
         return _day_resp(date.fromisoformat(f"{day[:4]}-{day[4:6]}-{day[6:]}"), n)
 
     def adj_factor(self, **kwargs):
-        return FakeAdj()
+        # 与 _day_resp 同一行集：缺行会触发 AdjFactorUnavailable 硬失败
+        day = kwargs["trade_date"]
+        n = self.day_counts.get(date.fromisoformat(
+            f"{day[:4]}-{day[4:6]}-{day[6:]}"), 0)
+        if not n:
+            return pd.DataFrame()
+        return pd.DataFrame([
+            {"ts_code": f"{i:06d}.SZ", "trade_date": day, "adj_factor": 3.5}
+            for i in range(n)
+        ])
 
 
 D1, D2, D3 = date(2026, 8, 25), date(2026, 8, 26), date(2026, 8, 27)
@@ -133,7 +137,10 @@ class CodeRangePro:
         }])
 
     def adj_factor(self, **kwargs):
-        return FakeAdj()
+        # 与 daily 同一行集：缺行会触发 AdjFactorUnavailable 硬失败
+        return pd.DataFrame([{
+            "ts_code": kwargs["ts_code"], "trade_date": "20260825", "adj_factor": 3.5,
+        }])
 
 
 def _patch_sleep():
@@ -189,6 +196,25 @@ def test_run_full_cancel_preserves_written(tmp_path):
     assert cancelled
     # R10：已写入的 staging 文件原地保留（续传）
     assert (staging / "000001.parquet").exists()
+
+
+def test_run_full_early_abort_once_breaker_determined(tmp_path):
+    """失败数超过熔断绝对上限后本轮结局已定，不该再烧完剩余任务
+    （系统性故障下每只白等 1+2+4s 退避，5211 只约 107 分钟）。"""
+    staging = tmp_path / "staging"
+    codes = [f"{i:06d}" for i in range(1, 11)]
+    pro = CodeRangePro([], fail={c: "Connection aborted" for c in codes})
+    with _patch_sleep():
+        outcomes, cancelled = run_full(
+            pro, [(c, D1, D1) for c in codes], staging,
+            max_workers=1, abort_after_failures=2,
+        )
+    # 不是用户取消：调用方仍按熔断路径处理，而不是 ctx.cancel()
+    assert not cancelled
+    assert len(outcomes) < len(codes)                 # 提前中止
+    assert len(outcomes) <= 5                         # 已出队的 future 仍可能跑完
+    assert all(not o.ok for o in outcomes)
+    assert not list(staging.glob("*.parquet"))        # 无一成功，staging 空
 
 
 def test_run_backfill_merges_into_bars_and_never_touches_ledger(tmp_path):

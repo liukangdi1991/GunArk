@@ -92,15 +92,21 @@ def run_full(
     progress=None,
     cancel_check=None,
     max_workers: int = 6,
+    abort_after_failures: int | None = None,
 ) -> tuple[list[StockOutcome], bool]:
     """全量执行：逐只写 staging（本地 bars 一字不动）。返回 (outcomes, cancelled)。
 
     取消时立即停止派发；已写入的 staging 文件原地保留供续传（spec §3.6）。
+    abort_after_failures：失败数超过它即停止派发——此时整批熔断的结局已经
+    确定，与剩余任务的成败无关，没必要烧完（系统性故障下每只还要白等
+    1+2+4s 退避）。这不是用户取消，cancelled 仍为 False，调用方由
+    len(outcomes) < len(tasks) 识别提前中止。
     """
     staging_dir = Path(staging_dir)
     staging_dir.mkdir(parents=True, exist_ok=True)
     outcomes: list[StockOutcome] = []
     cancelled = False
+    failures = 0
     total = len(tasks)
 
     def fetch_one(code: str, start: date, end: date) -> StockOutcome:
@@ -129,10 +135,16 @@ def run_full(
             except Exception as e:
                 outcome = StockOutcome(code, False, FailureKind.UNKNOWN, str(e))
             outcomes.append(outcome)
+            if not outcome.ok:
+                failures += 1
             if progress:
                 progress(i, total, code)
             if cancel_check and cancel_check():
                 cancelled = True
+                for pending in futures:
+                    pending.cancel()
+                break
+            if abort_after_failures is not None and failures > abort_after_failures:
                 for pending in futures:
                     pending.cancel()
                 break

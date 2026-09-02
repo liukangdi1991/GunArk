@@ -283,6 +283,9 @@ def _run_full(ctx, pro, store, effective, request, plan,
     outcomes, cancelled = run_full(
         pro, tasks, staging_dir,
         bucket=bucket, progress=progress, cancel_check=cancel_check,
+        # 失败数超过熔断的绝对上限 ⇒ 结局已定，不必烧完剩余（系统性故障下
+        # 每只还要白等 1+2+4s 退避，5211 只约 107 分钟）
+        abort_after_failures=int(FULL_FAIL_RATE_BREAKER * len(tasks)),
     )
     if cancelled:
         ctx.cancel()
@@ -291,7 +294,9 @@ def _run_full(ctx, pro, store, effective, request, plan,
     failed = [o for o in outcomes if not o.ok]
     # 整批熔断（§3.7 主保险）：>5% ⇒ 环境故障 ⇒ 一律不计次，保留 staging
     if tasks and len(failed) / len(tasks) > FULL_FAIL_RATE_BREAKER:
-        ctx.fail(f"整批熔断：{len(failed)}/{len(tasks)} 只失败（>5%），"
+        cut = (f"，已提前中止（仅投递 {len(outcomes)}/{len(tasks)} 只）"
+               if len(outcomes) < len(tasks) else "")
+        ctx.fail(f"整批熔断：{len(failed)}/{len(tasks)} 只失败（>5%）{cut}，"
                  f"判定环境故障，本轮不计次，staging 保留续传")
         return
     for o in failed:  # 健康轮才记失败；env 不计（INV-5）

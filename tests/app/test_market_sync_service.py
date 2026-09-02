@@ -65,6 +65,8 @@ class FakePro:
         self.raise_daily_codes = set()                        # 按股注水（范围模式）
         self.raise_daily_exc = RuntimeError("频率超限")
         self.daily_calls = 0
+        self.adj_empty = False      # adj_factor 接口通但返回空
+        self.adj_empty_codes = set()   # 只让这些股的 adj_factor 返回空
 
     def trade_cal(self, exchange=None, start_date=None, end_date=None):
         if self.raise_cal:
@@ -101,7 +103,32 @@ class FakePro:
         })
 
     def adj_factor(self, ts_code=None, trade_date=None, start_date=None, end_date=None):
-        return FakeResp({})
+        """镜像 daily 的行集。真接口对 daily 给出的每行都有因子，缺行会触发
+        AdjFactorUnavailable 硬失败 —— fake 不能比真接口宽松。"""
+        if self.adj_empty:
+            return FakeResp({})
+        if trade_date:
+            day = datetime.strptime(trade_date, "%Y%m%d").date()
+            # 少给几只 ⇒ 覆盖不全，与真接口局部缺行的表现一致
+            codes = [c for c in self.day_codes.get(day, [])
+                     if c not in self.adj_empty_codes]
+            if not codes:
+                return FakeResp({})
+            n = len(codes)
+            return FakeResp({"ts_code": [f"{c}.SZ" for c in codes],
+                             "trade_date": [trade_date] * n,
+                             "adj_factor": [3.5] * n})
+        if ts_code.split(".")[0] in self.adj_empty_codes:
+            return FakeResp({})
+        lo = datetime.strptime(start_date, "%Y%m%d").date()
+        hi = datetime.strptime(end_date, "%Y%m%d").date()
+        days = [d for d in self.code_days.get(ts_code.split(".")[0], []) if lo <= d <= hi]
+        if not days:
+            return FakeResp({})
+        n = len(days)
+        return FakeResp({"ts_code": [ts_code] * n,
+                         "trade_date": [d.strftime("%Y%m%d") for d in days],
+                         "adj_factor": [3.5] * n})
 
 
 class FakeCtx:
@@ -370,6 +397,63 @@ def test_r7_full_env_breaker_records_nothing(runtime, job_store, sync_store, fak
     assert "熔断" in ctx.error
     assert sync_store.skipped_rows() == []                      # env 一律不计次
     assert list((runtime / "storage" / "market" / "staging").glob("*.parquet"))  # staging 保留
+
+
+def test_incremental_aborts_when_adj_factor_unavailable(runtime, job_store, sync_store,
+                                                        fake_pro):
+    """因子取不到属环境故障：整批中止，不落账不写盘——绝不写占位 1.0 假绿。"""
+    sync_store.insert_calendar_days(CAL)
+    sync_store.add_done_days(DONE)
+    fake_pro.day_codes = {date(2026, 8, 26): CODES}
+    fake_pro.adj_empty = True
+    ctx = run_worker(fake_pro, {}, job_store)
+
+    assert ctx.status == "failed"
+    assert "增量中止" in ctx.error and "adj_factor" in ctx.error
+    assert sync_store.done_days() == set(DONE)                 # 账本未推进
+    assert not sync_store.ledger_suspect()
+    bars = runtime / "storage" / "market" / "bars"
+    assert not bars.exists() or not list(bars.glob("*.parquet"))
+
+
+def test_full_breaker_when_adj_factor_unavailable(runtime, job_store, sync_store, fake_pro):
+    """全量路径：因子全线取不到 → 每只失败 → 熔断，且提前中止不烧完。"""
+    sync_store.insert_calendar_days(CAL)
+    for c in CODES:
+        fake_pro.code_days[c] = CAL[:4]
+    fake_pro.adj_empty = True
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+
+    assert ctx.status == "failed"
+    assert "整批熔断" in ctx.error
+    assert "提前中止" in ctx.error                              # 结局已定即停
+    # 熔断在计次之前 return（§3.7 主保险）：系统性故障不给任何一只记失败
+    assert sync_store.skipped_rows() == []
+    assert sync_store.done_days() == set()
+
+
+def test_full_single_stock_adj_factor_empty_records_code_strike(
+        runtime, job_store, sync_store, fake_pro):
+    """健康轮里单只股因子取不到 = code 类：计次入 sync_skipped，带缺口提交被拦下。
+
+    判 env 的话这只股永不入账（service 只记 code/unknown），全量批照常绿灯提交，
+    bars 里留一个谁也不知道的洞 —— 出列机制正是为了让它可见、可自愈。
+    """
+    bad = "000002"
+    fake_pro.meta_codes = list(HEALTHY_CODES)
+    sync_store.insert_calendar_days(CAL)
+    for c in HEALTHY_CODES:
+        fake_pro.code_days[c] = CAL[:4]
+    fake_pro.adj_empty_codes = {bad}          # 21 只里挂 1 只 = 4.8% ≤ 5% ⇒ 健康轮
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+
+    assert ctx.status == "failed"
+    assert "accept_partial_baseline" in ctx.error               # 带缺口提交需显式确认
+    rows = sync_store.skipped_rows()
+    assert [r["code"] for r in rows] == [bad]
+    assert rows[0]["kind"] == "code"                            # 计次，3 轮后出列
+    assert "adj_factor" in rows[0]["last_error"]
+    assert sync_store.done_days() == set()                      # 未落账
 
 
 HEALTHY_CODES = [f"{i:06d}" for i in range(1, 22)]   # 21 只：1 只失败 = 4.8% ≤ 5% 健康轮

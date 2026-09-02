@@ -90,31 +90,30 @@ def _response_to_df(resp, code: str) -> pl.DataFrame:
     return df.sort("date")
 
 
-def _warn_placeholder_factor(df: pl.DataFrame, why: str) -> None:
-    """占位 1.0 会击穿下游 _qfq_scale 的守卫（1.0 > 0，不退化原价），指标将
-    静默算在原价上；四条自检也都不查 adj_factor —— 至少让降级可观测。"""
-    logger.warning(
-        "adj_factor 不可用（%s）：%d 行行情保留占位 1.0，复权退化为原价", why, df.height
-    )
+class AdjFactorUnavailable(RuntimeError):
+    """adj_factor 有响应但取不到可用因子。
+
+    静默保留占位 1.0 不可接受：1.0 会击穿下游 _qfq_scale 的守卫（`latest <= 0`
+    不成立），指标全算在原价上；而 1.0 同时是「上市以来从未除权」的合法值，
+    事后无法从数据本身区分故障与正常。部分匹配更不能留：真因子与 1.0 混在
+    同一序列里会造出一个巨大的假跳空，比整列 1.0 更糟。
+    """
 
 
 def _attach_adj_factor(df: pl.DataFrame, adj_df) -> pl.DataFrame:
-    """按 (code, date) 合并真实复权因子，覆盖占位 1.0（语义与旧实现一致）。"""
+    """按 (code, date) 合并真实复权因子，覆盖占位 1.0；取不到就抛，不降级。"""
     if df.is_empty():
         return df
     if adj_df is None:
-        _warn_placeholder_factor(df, "未取到响应")
-        return df
+        raise AdjFactorUnavailable("adj_factor 未取到响应")
     if isinstance(adj_df, pl.DataFrame):
         adj = adj_df
-        if adj.is_empty() or "adj_factor" not in adj.columns:
-            _warn_placeholder_factor(df, "响应为空")
-            return df
     else:
         if not adj_df.to_dict(orient="list"):
-            _warn_placeholder_factor(df, "响应为空")
-            return df
+            raise AdjFactorUnavailable("adj_factor 响应为空")
         adj = pl.DataFrame(adj_df.to_dict(orient="list"))
+    if adj.is_empty() or "adj_factor" not in adj.columns:
+        raise AdjFactorUnavailable("adj_factor 响应为空")
     if "trade_date" in adj.columns:
         adj = adj.with_columns(
             pl.col("trade_date").cast(pl.Utf8).str.strptime(pl.Date, "%Y%m%d").alias("date")
@@ -125,9 +124,8 @@ def _attach_adj_factor(df: pl.DataFrame, adj_df) -> pl.DataFrame:
     df = df.join(adj, on=["code", "date"], how="left")
     unmatched = df["_adj"].null_count()
     if unmatched:
-        logger.warning(
-            "adj_factor 覆盖不全：%d/%d 行未匹配到真实因子，保留占位 1.0",
-            unmatched, df.height,
+        raise AdjFactorUnavailable(
+            f"adj_factor 覆盖不全：{unmatched}/{df.height} 行未匹配到真实因子"
         )
     return df.with_columns(
         pl.coalesce([pl.col("_adj"), pl.col("adj_factor")]).alias("adj_factor")
@@ -209,6 +207,11 @@ def fetch_code_range(
             df = _response_to_df(resp, code)
             adj = pro.adj_factor(ts_code=ts_code, start_date=start_s, end_date=end_s)
             return FetchResult(_attach_adj_factor(df, adj), None)
+        except AdjFactorUnavailable as e:
+            # 本调用只为单只股票取因子，空/缺行就是这只股自己的问题 ⇒ code（计次，
+            # 3 轮后出列，面板带缺口需显式确认）。判 env 则永不入账 sync_skipped，
+            # bars 里留一个谁也不知道的洞。响应格式是好的，热重试也换不出数据。
+            return FetchResult(None, FailureKind.CODE, str(e))
         except Exception as e:
             last_error = str(e)
             kind = classify_error(last_error)
@@ -267,6 +270,12 @@ def fetch_day_by_date(
             df = _normalize_day_df(resp)
             adj = pro.adj_factor(trade_date=day_s)
             return FetchResult(_attach_adj_factor(df, adj), None)
+        except AdjFactorUnavailable as e:
+            # 这里是按 trade_date 一次取全市场，空响应说明整天的因子表还没出
+            # （发布时序问题，下轮自己就好）⇒ env，不计次。与 fetch_code_range
+            # 的 code 相反：那边一次只取一只，空就是那只股自己的事。
+            # 两类都会让 run_incremental 整批中止，绝不写占位 1.0。
+            return FetchResult(None, FailureKind.ENV, str(e))
         except Exception as e:
             last_error = str(e)
             kind = classify_error(last_error)
