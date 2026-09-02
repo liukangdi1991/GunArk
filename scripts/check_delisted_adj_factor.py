@@ -84,17 +84,19 @@ def _latest_tradeable(pro, today: date) -> date:
 
 
 def _probe(pro, code: str, start: date, end: date, sleep: float) -> tuple[str, str]:
-    """跑一次生产路径的 fetch_code_range，把结果归成四类之一。"""
+    """跑一次生产路径的 fetch_code_range，把结果归类。"""
     time.sleep(sleep)
     r = fetch_code_range(pro, code, start, end)
     if r.kind is None:
-        # 成功：因子覆盖完整（不完整会抛 AdjFactorUnavailable，走不到这里）
+        # fetch_code_range 从不返回 OK_EMPTY（那是 runner.py:124 在分片全空时造的），
+        # 所以 daily 无行会带着 kind=None 回来。不判掉的话「这股根本没数据」会被记成
+        # ok —— 而本脚本的职责恰恰是把没测过的边界暴露出来。
+        if r.df is None or r.df.is_empty():
+            return "daily_empty", "daily 区间内无行 ⇒ 该股因子未被检验过"
         return "ok", f"{r.df.height} 行"
     err = r.error or ""
     if "adj_factor" in err:
         return "adj_empty", err
-    if r.kind.value == "ok_empty":
-        return "daily_empty", "daily 区间内无行"
     return r.kind.value, err
 
 
@@ -167,7 +169,15 @@ def main() -> int:
         print(f"  {verdict:12s} {len(buckets[verdict]):4d} 只")
 
     adj_empty = len(buckets.get("adj_empty", []))
+    unchecked = len(buckets.get("daily_empty", []))
     if not adj_empty:
+        if unchecked:
+            # 这些股的 daily 就没数据 ⇒ _attach_adj_factor 在 df.is_empty() 处提前
+            # 返回 ⇒ 因子压根没被查过。说「风险不存在」就是又一轮假绿。
+            print(f"\n结论：{len(targets) - unchecked} 只退市股 adj_factor 可得；"
+                  f"另 {unchecked} 只 daily 无数据、因子**未被检验过**，不能算已排除。")
+            print("  先查这批股为什么没行情（区间钳制？退市日早于 list_date？），再重跑。")
+            return 1
         print("\n结论：退市股 adj_factor 可得，硬失败不会造成缺口。风险不存在。")
         return 0
 

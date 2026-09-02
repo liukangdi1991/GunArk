@@ -304,7 +304,13 @@ TUSHARE_TOKEN=xxx .venv/bin/python scripts/check_delisted_adj_factor.py
 
 脚本走生产同一条路径（`build_effective_list` + `fetch_code_range`），带在市股对照组
 （对照组也挂 ⇒ 是权限/额度问题而非退市边界，退出码 2，不给退市结论），直接报缺口只数
-及其与 5% 阈值的关系。退出码 0 = 风险不存在，脚本可删；1 = 命中上表某一行。
+及其与 5% 阈值的关系。
+
+退出码 **0 = 每一只被测股的因子都被真的查过且拿到了**，风险不存在，脚本可删。
+注意不能只看"有没有空因子响应"：`fetch_code_range` 在 daily 无行时返回 `kind=None` +
+空帧（`OK_EMPTY` 是 `runner.py:124` 分片全空时才造的），而 `_attach_adj_factor` 在
+`df.is_empty()` 处提前 return、**根本没查因子**。这类股单列 `daily_empty` 桶，属于
+"无证据"而非"无风险"，此时退 1 并拒绝下结论。退 1 也可能是命中上表某一行。
 
 **若实测确有缺失，兜底口径待定**（三选一，**实测回来前不要预先实现**——缺失若不存在，
 这些代码就是死重，还会削弱刚建立的硬失败保证）：

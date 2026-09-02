@@ -41,10 +41,11 @@ def _parse_day(s: str) -> date:
 
 
 class FakePro:
-    """bad_codes 的 adj_factor 返回空表，其余镜像 daily 的行集。"""
+    """bad_codes 的 adj_factor 返回空表；no_daily_codes 的 daily 返回空表。"""
 
-    def __init__(self, bad_codes=()):
+    def __init__(self, bad_codes=(), no_daily_codes=()):
         self.bad = set(bad_codes)
+        self.no_daily = set(no_daily_codes)
         all_rows = (_rows(LISTED, date(2010, 1, 1))
                     + _rows(DELIST_IN, date(2010, 1, 1), date(2020, 6, 30))
                     + _rows(DELIST_OUT, date(2005, 1, 1), date(2011, 3, 1)))
@@ -64,6 +65,8 @@ class FakePro:
                              "is_open": [1] * len(days)})
 
     def daily(self, ts_code=None, start_date=None, end_date=None, freq=None):
+        if ts_code.split(".")[0] in self.no_daily:
+            return pd.DataFrame()
         hi, days, d = _parse_day(end_date), [], _parse_day(start_date)
         while d <= hi and len(days) < 5:
             if d.weekday() < 5:
@@ -84,6 +87,8 @@ class FakePro:
         if ts_code.split(".")[0] in self.bad:
             return pd.DataFrame()
         resp = self.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+        if resp.empty:
+            return pd.DataFrame()          # 无列可镜像
         return pd.DataFrame({"ts_code": resp["ts_code"],
                              "trade_date": resp["trade_date"],
                              "adj_factor": [2.5] * len(resp)})
@@ -137,6 +142,16 @@ def test_control_failure_aborts_with_env_verdict(monkeypatch, capsys):
     assert rc == 2
     assert "接口本身有问题" in out
     assert "== 退市组" not in out          # 没往下跑退市组
+
+
+def test_empty_daily_is_not_counted_as_ok(monkeypatch, capsys):
+    """daily 无行的股不能记成 ok：_attach_adj_factor 在空 df 上提前 return，
+    因子根本没被查过，此时报「风险不存在」就是假绿。"""
+    rc, out = _run(monkeypatch, capsys, FakePro(no_daily_codes=[DELIST_IN[0]]))
+    assert rc == 1
+    assert "daily_empty" in out
+    assert "未被检验过" in out
+    assert "风险不存在" not in out
 
 
 def test_missing_token_fails_fast_without_any_call(monkeypatch, capsys):
