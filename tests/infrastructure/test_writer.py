@@ -89,6 +89,25 @@ def test_swap_second_round_overwrites_bars_prev(tmp_path):
     assert list((market / "staging").glob("*.parquet")) == []
 
 
+def test_swap_falls_back_without_renameat2(tmp_path, monkeypatch):
+    """非 x86_64 Linux 走两步 rename 回退，结果必须与原子交换一致。"""
+    from trendradar.infrastructure.tushare import writer
+
+    monkeypatch.setattr(writer, "_CAN_EXCHANGE", False)
+    market = tmp_path / "market"
+    bars, staging = _setup_dirs(market)
+    flush_by_code(pl.DataFrame(_rows("000001", [date(2026, 8, 26)])), bars)
+    flush_by_code(pl.DataFrame(_rows("000001", [date(2026, 8, 27)])), staging)
+
+    swap_in_bars(market)
+
+    out = pl.read_parquet(market / "bars" / "000001.parquet")
+    assert out["date"].to_list() == [date(2026, 8, 27)]
+    prev = pl.read_parquet(market / "bars_prev" / "000001.parquet")
+    assert prev["date"].to_list() == [date(2026, 8, 26)]
+    assert list((market / "staging").glob("*.parquet")) == []
+
+
 def test_atomic_write_no_partial(tmp_path):
     target = tmp_path / "a.parquet"
     df = pl.DataFrame({"x": [1]})

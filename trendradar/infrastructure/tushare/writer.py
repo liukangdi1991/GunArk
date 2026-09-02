@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ctypes
 import os
+import platform
 import shutil
+import sys
 import tempfile
 from datetime import date
 from pathlib import Path
@@ -16,6 +18,9 @@ from trendradar.infrastructure.tushare.fetch import _align_columns
 _AT_FDCWD = -100
 _SYS_RENAMEAT2_X86_64 = 316
 _RENAME_EXCHANGE = 2
+# 316 是 x86_64 专用号；别的架构上它是另一个（或未定义的）调用，
+# 拿 renameat2 的参数去打它属未定义行为，故只在 x86_64 Linux 上尝试
+_CAN_EXCHANGE = sys.platform.startswith("linux") and platform.machine() == "x86_64"
 
 
 def atomic_write_parquet(df: pl.DataFrame, target: Path) -> None:
@@ -77,6 +82,8 @@ def readback_calendar(bars_dir: Path) -> set[date]:
 
 def _try_exchange(a: Path, b: Path) -> bool:
     """renameat2(RENAME_EXCHANGE) 原子交换；平台不支持返回 False。"""
+    if not _CAN_EXCHANGE:
+        return False
     try:
         libc = ctypes.CDLL(None, use_errno=True)
         rc = libc.syscall(
