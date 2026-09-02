@@ -1,5 +1,9 @@
 #!/usr/bin/env python
-"""退市股 adj_factor 可得性实测 —— L∪D 上线前的前置检查（只读）。
+"""退市股 adj_factor 可得性实测 —— L∪D 全量重建前的前置检查（只读）。
+
+结论先行：2026-09-02 实跑通过（有效清单 5,467 只、退市股 252 只、缺因子 0 只，
+退出码 0），风险不存在。脚本保留，因为「保留 L∪D + 硬失败」这个组合的前提就是
+这个数；有效清单显著变化或 Tushare 口径变更时重跑一条命令即可，不用重新推理一遍。
 
 为什么要跑
 ----------
@@ -14,7 +18,8 @@ adj_factor 取不到现在是硬失败（`fetch.AdjFactorUnavailable`），逐�
                                ⇒ 永久少这批股（幸存者偏差换个形式回来）。
 
 5% 是熔断阈值，所以真正要看的不是「有没有退市股缺因子」，而是**缺的只数有没有
-越过 5% × 有效清单**（约 5.5k 只时阈值约 278 只）。本脚本直接把这个数算出来。
+越过 5% × 有效清单**（实测分母 5,467 ⇒ 阈值 273 只；退市股总共才 252 只，第一档
+数学上不可达）。本脚本直接把这个数算出来。
 
 跑法
 ----
@@ -30,7 +35,11 @@ adj_factor 取不到现在是硬失败（`fetch.AdjFactorUnavailable`），逐�
 ----
 - 对照组全 ok、退市组出现 adj_empty ⇒ 边界真实存在，按上面的分支决定兜底口径；
 - 对照组也 adj_empty ⇒ 是接口/权限/额度问题，不是退市股边界，先修环境再重跑；
-- 退市组全 ok ⇒ 风险不存在，本脚本可以删。
+- 退市组只分 ok / outside_baseline ⇒ 风险不存在，本脚本可以删。`outside_baseline`
+  是退市股长期停牌把最后交易日推到基线起点之前，窗口本就无行，生产按 OK_EMPTY
+  视为成功，与因子无关；
+- 出现 daily_empty（任何区间都无行情）⇒ **无证据**而非无风险：这类股的因子压根
+  没被查过（`_attach_adj_factor` 在空 df 上提前 return），退 1 拒绝下结论。
 """
 
 from __future__ import annotations
@@ -39,7 +48,7 @@ import argparse
 import os
 import sys
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -53,7 +62,11 @@ from trendradar.domain.market.sync.spec import (  # noqa: E402
 )
 from trendradar.infrastructure.tushare.calendar import fetch_trade_calendar  # noqa: E402
 from trendradar.infrastructure.tushare.client import get_pro  # noqa: E402
-from trendradar.infrastructure.tushare.fetch import fetch_code_range  # noqa: E402
+# 复用私有的 _to_ts_code：自己重写「6→.SH / 92,4,8→.BJ / 否则 .SZ」更容易与生产漂移
+from trendradar.infrastructure.tushare.fetch import (  # noqa: E402
+    _to_ts_code,
+    fetch_code_range,
+)
 from trendradar.infrastructure.tushare.stocklist import (  # noqa: E402
     _FIELDS,
     build_effective_list,
@@ -83,6 +96,25 @@ def _latest_tradeable(pro, today: date) -> date:
     return latest
 
 
+def _last_trade_before(pro, code: str, start: date) -> date | None:
+    """钳制窗口无行时回看更早区间：区分「基线窗口外停牌」与「接口真没数据」。
+
+    退市股普遍在正式退市前长期停牌。若最后一次交易日落在 BASELINE_START 之前，
+    钳制后的窗口自然为空 —— Tushare 有数据，只是不在基线里，属预期而非边界。
+    """
+    ts_code = _to_ts_code(code)
+    lo = date(start.year - 15, start.month, start.day)
+    resp = pro.daily(ts_code=ts_code, start_date=lo.strftime("%Y%m%d"),
+                     end_date=(start - timedelta(days=1)).strftime("%Y%m%d"))
+    if resp is None or not len(resp):
+        return None
+    return _parse_yyyymmdd(max(resp["trade_date"]))
+
+
+def _parse_yyyymmdd(s) -> date:
+    return date(int(str(s)[:4]), int(str(s)[4:6]), int(str(s)[6:8]))
+
+
 def _probe(pro, code: str, start: date, end: date, sleep: float) -> tuple[str, str]:
     """跑一次生产路径的 fetch_code_range，把结果归类。"""
     time.sleep(sleep)
@@ -92,7 +124,12 @@ def _probe(pro, code: str, start: date, end: date, sleep: float) -> tuple[str, s
         # 所以 daily 无行会带着 kind=None 回来。不判掉的话「这股根本没数据」会被记成
         # ok —— 而本脚本的职责恰恰是把没测过的边界暴露出来。
         if r.df is None or r.df.is_empty():
-            return "daily_empty", "daily 区间内无行 ⇒ 该股因子未被检验过"
+            time.sleep(sleep)
+            last = _last_trade_before(pro, code, start)
+            if last is not None:
+                return "outside_baseline", (
+                    f"最后交易日 {last} 早于基线起点 {start} ⇒ 窗口内本就无交易日")
+            return "daily_empty", "daily 区间内无行，更早区间也无 ⇒ 该股因子未被检验过"
         return "ok", f"{r.df.height} 行"
     err = r.error or ""
     if "adj_factor" in err:
@@ -166,20 +203,28 @@ def main() -> int:
 
     print("\n== 汇总 ==")
     for verdict in sorted(buckets):
-        print(f"  {verdict:12s} {len(buckets[verdict]):4d} 只")
+        print(f"  {verdict:16s} {len(buckets[verdict]):4d} 只")
 
     adj_empty = len(buckets.get("adj_empty", []))
     unchecked = len(buckets.get("daily_empty", []))
-    if not adj_empty:
-        if unchecked:
-            # 这些股的 daily 就没数据 ⇒ _attach_adj_factor 在 df.is_empty() 处提前
-            # 返回 ⇒ 因子压根没被查过。说「风险不存在」就是又一轮假绿。
-            print(f"\n结论：{len(targets) - unchecked} 只退市股 adj_factor 可得；"
-                  f"另 {unchecked} 只 daily 无数据、因子**未被检验过**，不能算已排除。")
-            print("  先查这批股为什么没行情（区间钳制？退市日早于 list_date？），再重跑。")
-            return 1
-        print("\n结论：退市股 adj_factor 可得，硬失败不会造成缺口。风险不存在。")
+    outside = len(buckets.get("outside_baseline", []))
+
+    if not adj_empty and not unchecked:
+        note = (f"\n  另 {outside} 只的最后交易日早于基线起点 ⇒ 钳制窗口内本就无交易日。"
+                "Tushare 有它们的数据，只是不在基线里；生产按 OK_EMPTY 视为成功"
+                "（不写文件、不计次、不出列），与因子边界无关。" if outside else "")
+        print(f"\n结论：{len(targets)} 只退市股，因子无一缺失"
+              f"（{len(buckets.get('ok', []))} 只实拉到行"
+              + (f"，{outside} 只窗口内无交易日" if outside else "") + f"）。{note}")
         return 0
+
+    if not adj_empty:
+        # 这些股的 daily 就没数据 ⇒ _attach_adj_factor 在 df.is_empty() 处提前
+        # 返回 ⇒ 因子压根没被查过。说「风险不存在」就是又一轮假绿。
+        print(f"\n结论：{len(targets) - unchecked} 只退市股 adj_factor 可得；"
+              f"另 {unchecked} 只**任何区间都无行情**、因子未被检验过，不能算已排除。")
+        print("  先查这批股为什么完全没数据（清单脏？ts_code 后缀？），再重跑。")
+        return 1
 
     print(f"\n结论：{adj_empty} 只退市股取不到 adj_factor。")
     if args.limit and args.limit < len(delisted):

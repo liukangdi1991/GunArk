@@ -41,11 +41,13 @@ def _parse_day(s: str) -> date:
 
 
 class FakePro:
-    """bad_codes 的 adj_factor 返回空表；no_daily_codes 的 daily 返回空表。"""
+    """bad_codes 的 adj_factor 返回空表；no_daily_codes 的 daily 返回空表；
+    pre_only_codes 只在 BASELINE_START 之前有行情（退市前长期停牌的那种）。"""
 
-    def __init__(self, bad_codes=(), no_daily_codes=()):
+    def __init__(self, bad_codes=(), no_daily_codes=(), pre_only_codes=()):
         self.bad = set(bad_codes)
         self.no_daily = set(no_daily_codes)
+        self.pre_only = set(pre_only_codes)
         all_rows = (_rows(LISTED, date(2010, 1, 1))
                     + _rows(DELIST_IN, date(2010, 1, 1), date(2020, 6, 30))
                     + _rows(DELIST_OUT, date(2005, 1, 1), date(2011, 3, 1)))
@@ -67,7 +69,10 @@ class FakePro:
     def daily(self, ts_code=None, start_date=None, end_date=None, freq=None):
         if ts_code.split(".")[0] in self.no_daily:
             return pd.DataFrame()
-        hi, days, d = _parse_day(end_date), [], _parse_day(start_date)
+        hi = _parse_day(end_date)
+        if ts_code.split(".")[0] in self.pre_only:
+            hi = min(hi, chk.BASELINE_START - timedelta(days=1))
+        days, d = [], _parse_day(start_date)
         while d <= hi and len(days) < 5:
             if d.weekday() < 5:
                 days.append(d)
@@ -107,7 +112,7 @@ def test_out_of_scope_delisted_are_clamped_away(monkeypatch, capsys):
     assert rc == 0
     assert f"其中退市股 {len(DELIST_IN)} 只、在市股 {len(LISTED)} 只" in out
     assert "002001" not in out                      # 2011 年退市的没被测
-    assert "风险不存在" in out
+    assert "因子无一缺失" in out
 
 
 def test_few_bad_lands_in_gap_branch(monkeypatch, capsys):
@@ -152,6 +157,17 @@ def test_empty_daily_is_not_counted_as_ok(monkeypatch, capsys):
     assert "daily_empty" in out
     assert "未被检验过" in out
     assert "风险不存在" not in out
+
+
+def test_pre_baseline_suspension_is_benign_not_a_gap(monkeypatch, capsys):
+    """最后交易日早于基线起点 ⇒ 钳制窗口本就没有交易日。Tushare 有它的数据，
+    生产按 OK_EMPTY 视为成功，不能和「接口真没数据」混成一档报缺口。"""
+    rc, out = _run(monkeypatch, capsys, FakePro(pre_only_codes=[DELIST_IN[0]]))
+    assert rc == 0
+    assert "outside_baseline" in out
+    assert "因子无一缺失" in out
+    assert "OK_EMPTY" in out
+    assert "daily_empty" not in out       # 不能落进未检验那一档
 
 
 def test_missing_token_fails_fast_without_any_call(monkeypatch, capsys):

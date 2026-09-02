@@ -30,12 +30,16 @@ checkbox 跟踪，所以"全空"是记账缺失，不代表没做。判断完成
 `app/services/market_sync/{service,commit}.py`、`interfaces/api/routes/market.py`、
 `frontend/src/pages/MarketData`；旧 `syncer.py` 与 `market_sync_runs` 表已删（Task 15）。
 
-**仍未完成的只有上线**，且卡在同一个前置上——本环境没有 `TUSHARE_TOKEN`：
+**退市股因子前置实测已跑并通过**（2026-09-02，真 token）：有效清单 5,467 只、其中退市股
+252 只、熔断阈值 273 只，退市组 250 只实拉到行 + 2 只 `outside_baseline`（退市前长期停牌，
+最后交易日早于基线起点，按 `ok_empty` 视为成功）+ **0 只缺因子**，退出码 0。结论与推导见
+spec §3.7「边界实测」。有效清单显著变化后重跑该脚本即可。
 
-1. 先跑退市股因子实测（spec §3.7「边界未实测」）：`TUSHARE_TOKEN=xxx
-   .venv/bin/python scripts/check_delisted_adj_factor.py`，退出码 0 才继续；
-2. `python -m trendradar.cli init-v2 --reset-runtime --confirm-reset` → UI 点"全量重建"
-   （约 41 分钟）→ 跑 Task 17 冒烟。
+**剩下的只有上线**，两步，且第 1 步不可逆、需用户明确点头：
+
+1. `python -m trendradar.cli init-v2 --reset-runtime --confirm-reset`
+   —— 会**删掉本机已有的 5,211 只 `storage/` 数据集**，不能回退；
+2. UI 点"全量重建"（约 41 分钟）→ 跑 Task 17 冒烟。
 
 
 ## 文件结构
