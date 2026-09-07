@@ -20,6 +20,7 @@ from trendradar.domain.backtest.config import (
     BacktestConfig,
     CapitalConfig,
     ExecutionConfig,
+    PortfolioConfig,
 )
 from trendradar.domain.signal.models import SignalSet, StrategySignal
 from trendradar.app.services.backtest_service import _run_backtest_worker
@@ -464,14 +465,16 @@ def _insert_job(tmp_path, job_id: str, request: dict) -> None:
 
 
 def test_report_trade_rule_shows_effective_defaults(tmp_path, monkeypatch):
-    """原来 trade_rule 只装请求里的覆盖项，默认持有 5 天压根不在里面，
-    前端只能说「按当前交易规则执行」——报告得说清这次到底按什么规则跑的。"""
+    """原来 trade_rule 只装请求里的覆盖项，默认持有天数压根不在里面，
+    前端只能说「按当前交易规则执行」——报告得说清这次到底按什么规则跑的。
+    生效配置随产物固化后，持有天数取实跑值（快照），其余字段仍是 dataclass 默认。"""
     from trendradar.interfaces.api.presenters import backtest_result_payload
 
     _run_blocked_backtest(tmp_path, monkeypatch)
     rule = backtest_result_payload(BLOCKED_KEY)["trade_rule"]
 
-    assert rule["fixed_hold_n_days"] == 5           # 引擎默认，从未被任何请求覆盖
+    # 快照记录实跑的 1（_run_blocked_backtest 的 config），不再是读取时重算的默认 5
+    assert rule["fixed_hold_n_days"] == 1
     assert rule["entry_on_signal_day"] is False
     assert rule["entry_at_close"] is False
     assert rule["reject_if_limit_up_on_buy"] is True
@@ -491,14 +494,21 @@ def test_report_trade_rule_shows_effective_defaults(tmp_path, monkeypatch):
 
 
 def test_report_trade_rule_reflects_overrides_and_nested_shape(tmp_path, monkeypatch):
-    """覆盖项要用覆盖后的值；selection_backtest 的配置嵌在 backtest 下，也要读到。"""
+    """覆盖项以实跑快照为准；trade_strategy 仍取自请求（请求数据，不随默认值漂移）。
+    selection_backtest 的嵌套 capital 由 _backtest_config 另读，见 test_backtest_config_reads_nested_capital。"""
     from trendradar.interfaces.api.presenters import backtest_result_payload
 
     days = [date(2026, 8, 10) + timedelta(days=i) for i in range(8)]
     key = "job_ultra"
     _run_backtest_to_disk(
         tmp_path, monkeypatch, key, _make_market(days),
-        BacktestConfig(execution=ExecutionConfig(fixed_hold_n_days=1)),
+        BacktestConfig(
+            capital=CapitalConfig(mode="realistic", fixed_cash_per_trade=80000),
+            execution=ExecutionConfig(
+                fixed_hold_n_days=1, entry_on_signal_day=True, entry_at_close=True,
+            ),
+            portfolio=PortfolioConfig(max_positions=20, max_daily_new_positions=5),
+        ),
     )
     _insert_job(tmp_path, key, {
         "backtest": {
@@ -523,6 +533,58 @@ def test_report_trade_rule_reflects_overrides_and_nested_shape(tmp_path, monkeyp
         "target_positions": None, "max_positions": 20,
         "max_single_position_pct": None, "max_daily_new_positions": 5,
     }
+
+
+def test_worker_persists_effective_config_snapshot(tmp_path, monkeypatch):
+    """生效配置必须随产物固化：读取时重算依赖会漂移的默认值（P1#2 根因）。"""
+    from dataclasses import asdict
+
+    days = [date(2026, 8, 10) + timedelta(days=i) for i in range(8)]
+    config = BacktestConfig(execution=ExecutionConfig(fixed_hold_n_days=3))
+    bt_dir, _ = _run_backtest_to_disk(
+        tmp_path, monkeypatch, "bt-snap-test", _make_market(days), config,
+    )
+
+    snap = json.loads((bt_dir / "effective_config.json").read_text(encoding="utf-8"))
+    assert snap == asdict(config)
+    assert snap["execution"]["fixed_hold_n_days"] == 3
+
+
+def test_report_trade_rule_prefers_snapshot_over_rebuild(tmp_path, monkeypatch):
+    """报告优先读快照：实跑 hold=1，jobs 行重算会吃当前默认 5，必须显示真相 1。
+
+    这正是 P1#2 的失真点——默认值一改，读取时重算就让历史报告集体改口，
+    和自己的逐笔盈亏对不上。快照锚定实跑值，重算不再有机会覆盖它。
+    """
+    from trendradar.interfaces.api.presenters import backtest_result_payload
+
+    days = [date(2026, 8, 10) + timedelta(days=i) for i in range(8)]
+    key = "bt-snap-beats-rebuild"
+    _run_backtest_to_disk(
+        tmp_path, monkeypatch, key, _make_market(days),
+        BacktestConfig(execution=ExecutionConfig(fixed_hold_n_days=1)),
+    )
+    _insert_job(tmp_path, key, {"execution": {}})   # 未覆盖 hold → 重算会得默认 5
+
+    rule = backtest_result_payload(key)["trade_rule"]
+    assert rule["fixed_hold_n_days"] == 1
+
+
+def test_report_trade_rule_falls_back_to_rebuild_without_snapshot(tmp_path, monkeypatch):
+    """旧产物没有快照：回落读取时重算，不劣于现状（默认值照填，报告不空白）。"""
+    from trendradar.interfaces.api.presenters import backtest_result_payload
+
+    days = [date(2026, 8, 10) + timedelta(days=i) for i in range(8)]
+    key = "bt-no-snapshot"
+    bt_dir, _ = _run_backtest_to_disk(
+        tmp_path, monkeypatch, key, _make_market(days),
+        BacktestConfig(execution=ExecutionConfig(fixed_hold_n_days=1)),
+    )
+    (bt_dir / "effective_config.json").unlink()      # 模拟快照机制上线前的历史产物
+    _insert_job(tmp_path, key, {"execution": {}})
+
+    rule = backtest_result_payload(key)["trade_rule"]
+    assert rule["fixed_hold_n_days"] == 5            # 重算吃当前默认
 
 
 # ---------------------------------------------------------------------------

@@ -243,25 +243,17 @@ def _enrich_stock_info(rows: list, meta_map: dict) -> list:
     return rows
 
 
-def _effective_trade_rule(request: dict) -> dict:
-    """参数快照回答的是"这次实际按什么规则跑的"，不是"当时请求了什么"。
+def _rule_from_config_dict(cfg: dict, request: dict) -> dict:
+    """从一份生效配置字典构建 trade_rule。两路（快照 / 回落重算）共用同一映射，
+    避免逻辑分叉：execution 全量 + capital.lot_size + 整个 costs + position_limits 四键。
 
-    把存下来的请求喂回 `_build_config`——引擎真正用的那套默认值由它兜底——再整体
-    导出。否则没被覆盖过的 `fixed_hold_n_days=5` 压根不进 payload，前端只能说一句
-    含糊的"卖出日按当前交易规则执行"，报告说不清默认持有几天。
+    trade_strategy 取自请求——它是请求数据，不随代码默认值漂移，request_json 里一直在。
     """
-    from dataclasses import asdict
-
-    from trendradar.app.services.backtest_service import _build_config
-
-    bt_request = request.get("backtest") or request
-    config = _build_config(bt_request)
-    params = request.get("params") or {}
-    rule = asdict(config.execution)
-    rule["lot_size"] = config.capital.lot_size
-    rule["costs"] = asdict(config.costs)
+    rule = dict(cfg["execution"])
+    rule["lot_size"] = cfg["capital"]["lot_size"]
+    rule["costs"] = dict(cfg["costs"])
     # 持仓上限不进快照的话，"每天限开 5 只"的报告和不限的报告长得一模一样
-    portfolio = asdict(config.portfolio)
+    portfolio = cfg["portfolio"]
     rule["position_limits"] = {
         k: portfolio[k]
         for k in (
@@ -269,8 +261,29 @@ def _effective_trade_rule(request: dict) -> dict:
             "max_single_position_pct", "max_daily_new_positions",
         )
     }
+    params = request.get("params") or {}
     rule["trade_strategy"] = params.get("trade_strategy") or request.get("trade_strategy")
     return rule
+
+
+def _effective_trade_rule(request: dict, key: str) -> dict:
+    """参数快照回答的是"这次实际按什么规则跑的"，不是"当时请求了什么"。
+
+    优先读 worker 随产物固化的 `effective_config.json`——引擎真正用的那套配置。
+    读不到（快照机制上线前的历史产物）才回落：把存下来的请求喂回 `_build_config`
+    重算。回落不劣于现状（request_json 里显式设过的字段仍准），但吃了默认值的字段
+    会随**今天**的默认值漂移，与产物自己的逐笔盈亏对不上——这正是 P1#2 的失真，
+    新产物起不再发生（见 2026-09-07-effective-config-snapshot-design.md）。
+    """
+    snapshot = _read_json(_executions_root() / key / "backtest" / "effective_config.json")
+    if snapshot is None:
+        from dataclasses import asdict
+
+        from trendradar.app.services.backtest_service import _build_config
+
+        bt_request = request.get("backtest") or request
+        snapshot = asdict(_build_config(bt_request))
+    return _rule_from_config_dict(snapshot, request)
 
 
 def _db_utc_to_iso(value: str | None) -> str | None:
@@ -318,7 +331,7 @@ def _backtest_config(key: str) -> dict:
     return {
         "capital_mode": params.get("mode") or capital.get("mode", "unlimited_cash"),
         "cash_per_trade": params.get("cash_per_trade") or capital.get("fixed_cash_per_trade", 50000),
-        "trade_rule": _effective_trade_rule(request),
+        "trade_rule": _effective_trade_rule(request, key),
         "created_at": _db_utc_to_iso(job.get("created_at")),
         "finished_at": _db_utc_to_iso(job.get("finished_at")),
         "status": job.get("status"),

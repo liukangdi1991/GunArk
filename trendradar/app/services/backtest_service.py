@@ -262,6 +262,7 @@ def _run_backtest_worker(
 
     if result_json_path:
         import json
+        from dataclasses import asdict
         from pathlib import Path
         import polars as pl
 
@@ -283,6 +284,12 @@ def _run_backtest_worker(
         )
         Path(out_dir / "result.json").write_text(
             json.dumps(output, ensure_ascii=False, default=str, indent=2),
+            encoding="utf-8",
+        )
+        # 生效配置随产物固化：报告读取时不再用会漂移的默认值重算（P1#2）。
+        # config 就是喂给引擎的那个对象，asdict 即真相，无需重算。
+        Path(out_dir / "effective_config.json").write_text(
+            json.dumps(asdict(config), ensure_ascii=False, default=str, indent=2),
             encoding="utf-8",
         )
 
