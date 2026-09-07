@@ -112,7 +112,7 @@ def test_out_of_scope_delisted_are_clamped_away(monkeypatch, capsys):
     assert rc == 0
     assert f"其中退市股 {len(DELIST_IN)} 只、在市股 {len(LISTED)} 只" in out
     assert "002001" not in out                      # 2011 年退市的没被测
-    assert "因子无一缺失" in out
+    assert f"{len(DELIST_IN)} 只实查到因子、0 只缺因子" in out
 
 
 def test_few_bad_lands_in_gap_branch(monkeypatch, capsys):
@@ -161,11 +161,13 @@ def test_empty_daily_is_not_counted_as_ok(monkeypatch, capsys):
 
 def test_pre_baseline_suspension_is_benign_not_a_gap(monkeypatch, capsys):
     """最后交易日早于基线起点 ⇒ 钳制窗口本就没有交易日。Tushare 有它的数据，
-    生产按 OK_EMPTY 视为成功，不能和「接口真没数据」混成一档报缺口。"""
+    生产按 OK_EMPTY 视为成功，不能和「接口真没数据」混成一档报缺口。但这只的
+    adj_factor 压根没被查过，脚本必须如实说「因子未实查」，不靠「无一缺失」糊过去。"""
     rc, out = _run(monkeypatch, capsys, FakePro(pre_only_codes=[DELIST_IN[0]]))
     assert rc == 0
     assert "outside_baseline" in out
-    assert "因子无一缺失" in out
+    assert "因子未实查" in out
+    assert "0 只缺因子" in out
     assert "OK_EMPTY" in out
     assert "daily_empty" not in out       # 不能落进未检验那一档
 
