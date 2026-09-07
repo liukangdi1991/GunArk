@@ -76,16 +76,21 @@ GET /api/market-data/kline?code=000001&period=daily|weekly|monthly&adjust=qfq|no
 ### 4.3 计算规则
 
 1. **复权先于聚合**：逐 bar `scale = adj_factor / 最新因子`，OHLC × scale；
-   volume/amount **永不缩放**。因子列缺失或最新因子 ≤ 0 时整体退化原价（与
-   `_qfq_scale` 守卫语义一致：占位 1.0 已被 fetch 层硬失败拦截，此处防旧数据/测试 fixture）。
+   volume/amount **永不缩放**。守卫为**整列语义**：因子列缺失、列内含 null、
+   或最新因子 ≤ 0 时**整列**退化原价——禁止部分行缩放（部分缩放部分原价会造出假跳空；
+   占位 1.0 已被 fetch 层硬失败拦截，此处防旧数据/测试 fixture）。
    `adjust=none` 时不缩放。
 2. **周/月聚合**：按 bar 日期自然周（周一为首日）/自然月分组；
    open=组内首日 open、high=max、low=min、close=组内末日 close、
-   volume/amount=sum、`date`=组内最后交易日。
+   volume/amount=sum、`date`=组内最后交易日。整周/整月停牌（组内无任何 bar）则该
+   周期不产出 bar，不造平价棒。
 3. **zx 两线随行返回**：直接调用 `compute_zx_lines(df)`（不移植 JS、不复制公式），
    参数用公式默认 (m1..m4 = 14/28/57/114)，在「返回周期对应的（复权后）close 序列」上
    计算——TDX 语义：指标随周期重算。窗口不足为 null，前端跳过。输出列名映射：
    `short_term_trend_line → zx_short`（短期趋势线）、`long_term_bull_bear_line → zx_long`（多空线）。
+   **当前数据量限制（known limitation）**：日线 zx_long 需 ≥114 根、MA233 需 ≥233 根
+   才有首个值；当前本地仅 397 个交易日，周线（~80 根）/月线下 zx_long 与 MA233 恒为
+   null——数据累积后自然出现，非缺陷，验收勿判为 bug。
 4. **涨跌幅口径**（前端）：复权序列相邻 bar 的 close 比值与真实涨幅数学等价（含除权日），
    因 Tushare `pre_close` 已是可比昨收。前端直接由返回序列末两根计算。
 
@@ -102,10 +107,12 @@ domain 单测断言：kline 模块的 qfq 输出与 `_qfq_scale` 同语义（同
 - 新增 `/stocks/:code?period=&adjust=` → `StockKlinePage`（`frontend/src/pages/Stocks/`），
   `React.lazy` + `Suspense` 懒加载，`AppRouter.tsx` 注册。
 - `period`/`adjust` 同步到 URL query：刷新/分享/回退状态不丢。
+- 页面加载前对路由参数 `code` 做 `^\d{6}$` 本地校验，非法直接渲染错误态，不发请求。
 
 ### 5.2 页面结构（自上而下）
 
-1. **信息栏**：名称 / 代码 / 行业（接口返回）+ 最新价、涨跌幅（由复权序列末两根算，见 4.3.4）。
+1. **信息栏**：名称 / 代码 / 行业（接口返回）+ 最新价、涨跌幅（由复权序列末两根算，见
+   4.3.4；**跟随当前周期**——周线页显示周环比，月线页显示月环比）。
 2. **工具栏**：
    - 周期 Segmented：日 / 周 / 月
    - 复权 Segmented：前复权 / 不复权
@@ -121,6 +128,9 @@ domain 单测断言：kline 模块的 qfq 输出与 `_qfq_scale` 同语义（同
     `zx_short`/`zx_long` 字段返回两线值，null 跳过；两线颜色区分（短期趋势线/多空线），
     precision 2。
 - 副图：VOL、MACD 默认；每个副图独立 pane，十字光标跨 pane 联动（库默认）。
+- 数据映射：接口 `date` 字符串在前端转毫秒 `timestamp`，组装为 klinecharts KLineData
+  （`{timestamp, open, high, low, close, volume, zx_short, zx_long}`）；VOL 副图开
+  `shouldFormatBigNumber` 做万/亿缩写。
 - 切换周期/复权：重新请求后 `applyNewData` 整体刷新，视图回到最右端（v1 简化，
   不做可见区间保留）。
 
@@ -150,7 +160,7 @@ domain 单测断言：kline 模块的 qfq 输出与 `_qfq_scale` 同语义（同
 
 - `tests/domain/market/test_kline.py`：
   - 周/月聚合不变量（open=首、high=max、low=min、close=末、vol/amount=sum、date=组内末交易日）
-  - 复权缩放数学（含多因子序列、因子缺失退化原价、adjust=none 不缩放）
+  - 复权缩放数学（多因子序列、因子列缺失/列内 null 整列退化原价、adjust=none 不缩放）
   - 复权一致性（4.4：与 `_qfq_scale` 同语义逐值相等）
   - zx 两线 = 对同一序列直接调 `compute_zx_lines` 的结果
   - 复权先于聚合（先缩放再聚合 == 直接对缩放后序列聚合）
