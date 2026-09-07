@@ -1,4 +1,6 @@
 from __future__ import annotations
+import dataclasses
+
 from trendradar.domain.strategy.registry import get as get_defn
 from trendradar.domain.strategy.models import StrategyDefinition
 
@@ -54,6 +56,14 @@ def resolve(
         defn = get_defn(sid)
         if defn is None:
             continue
+
+        # 执行层接线：用户参数（settings.params）覆盖注册表默认，selector 实际生效。
+        # replace 产生新实例，不污染注册表共享的 definition。
+        if s.get("params"):
+            defn = dataclasses.replace(
+                defn,
+                default_params={**defn.default_params, **s["params"]},
+            )
         result.append(defn)
 
     return result

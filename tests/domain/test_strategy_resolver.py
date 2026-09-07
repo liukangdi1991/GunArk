@@ -123,3 +123,27 @@ class TestValidateRequestIds:
         with pytest.raises(ValueError) as ei:
             validate_request_ids(self.GROUPS, {"strategies": ["bad1", "s1", "bad2"]})
         assert "bad1" in str(ei.value) and "bad2" in str(ei.value)
+
+
+def test_resolve_merges_params_into_definition():
+    """执行层接线：settings_map 里的用户参数必须合并进 default_params。
+
+    否则 PATCH /api/strategies/{id}/settings 设置的参数只在报告快照里展示，
+    实际选股永远用注册表默认——展示与执行不一致。
+    """
+    groups = [{"id": "default", "enabled": True, "sort_order": 0}]
+    members = [{"group_id": "default", "strategy_id": "s1", "sort_order": 0}]
+    settings = {"s1": {"enabled": True, "params": {"j_threshold": 5}}}
+    result = resolve(groups, members, settings, None)
+    assert result[0].default_params == {"j_threshold": 5}
+
+
+def test_resolve_params_do_not_pollute_registry():
+    """合并必须产生新实例，不能原地改注册表共享的 definition。"""
+    groups = [{"id": "default", "enabled": True, "sort_order": 0}]
+    members = [{"group_id": "default", "strategy_id": "s1", "sort_order": 0}]
+    settings = {"s1": {"enabled": True, "params": {"j_threshold": 5}}}
+    resolve(groups, members, settings, None)
+    from trendradar.domain.strategy.registry import get
+
+    assert get("s1").default_params == {}  # 注册表原定义未被污染
