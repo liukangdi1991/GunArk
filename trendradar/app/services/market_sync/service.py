@@ -269,12 +269,16 @@ def _run_incremental(ctx, pro, store, effective, exclude_boards, plan,
         store.set_ledger_suspect(True)
         return False, "自检②④失败：读回日历与声称集合漂移（已置 ledger_suspect）", False
 
-    # ⑥ 单事务落账（仅声称日；doubtful 合并 = 旧 − 已入账 ∪ 新）
-    merged_doubtful = sorted({*store.doubtful_days(), *res.doubtful_days} - claimed)
-    if merged_doubtful:
-        # 数据已落盘并过⑤，doubtful 先独立持久化：commit_incremental 把它与
-        # done_days 写在同一事务里，回滚会一起吞掉（同全量路径）
-        store.set_doubtful_days(merged_doubtful)
+    # ⑥ 单事务落账（仅声称日；doubtful 合并 = 旧 ∪ 新 − 已入账）
+    union_doubtful = sorted({*store.doubtful_days(), *res.doubtful_days})
+    merged_doubtful = sorted(set(union_doubtful) - claimed)
+    if union_doubtful:
+        # 预写「旧 ∪ 新」全集（不减 claimed）：commit_incremental 把 doubtful 与
+        # done_days 写在同一事务里，回滚会一起吞掉。预写全集保证回滚/崩溃后每个
+        # doubtful 标记都还在——含本轮自愈、正要转入 done 的那些日；它们只有随
+        # 事务成功落账后才该从 doubtful 清除，否则回滚会让这些日既不在 done 也不
+        # 在 doubtful，标记凭空丢失（P1#4）。事务成功时会把 doubtful 覆写为 merged。
+        store.set_doubtful_days(union_doubtful)
     commit_incremental(store, sorted(claimed), merged_doubtful)
 
     if res.doubtful_days:
@@ -298,19 +302,28 @@ def _run_full(ctx, pro, store, effective, request, plan,
     excluded = set(store.excluded_codes())
     existing = {p.stem for p in staging_dir.glob("*.parquet")}
     tasks = []
+    staged = 0   # 本轮批次里已暂存成功、被续传剔除的只数
     for code in effective.codes:
-        if code in excluded or code in existing:
+        if code in excluded:
+            continue
+        if code in existing:
+            staged += 1
             continue
         rng = effective.clamped_range(code)
         tasks.append((code, rng[0], rng[1]))
-    ctx.log(f"全量：待拉 {len(tasks)} 只（续传剔除 {len(existing)}，出列剔除 {len(excluded)}）")
+    # 熔断分母 = 本轮负责的完整批次（待拉 + 已暂存），即 spec §3.7 的「有效清单」
+    # 减去已出列，而非待拉余量：续传轮往往只剩少数永久失败票，若按 len(tasks) 算，
+    # 1 只失败就是 1/1=100% > 5% → 整批熔断 → 不计次 → attempts 永远到不了出列
+    # 门槛（≥3），同步链路死锁（P1#3）。已暂存的成功票同属本轮批次，计入分母。
+    batch_total = len(tasks) + staged
+    ctx.log(f"全量：待拉 {len(tasks)} 只（续传剔除 {staged}，出列剔除 {len(excluded)}）")
 
     outcomes, cancelled = run_full(
         pro, tasks, staging_dir,
         bucket=bucket, progress=progress, cancel_check=cancel_check,
         # 失败数超过熔断的绝对上限 ⇒ 结局已定，不必烧完剩余（系统性故障下
         # 每只还要白等 1+2+4s 退避，5211 只约 107 分钟）
-        abort_after_failures=int(FULL_FAIL_RATE_BREAKER * len(tasks)),
+        abort_after_failures=int(FULL_FAIL_RATE_BREAKER * batch_total),
     )
     if cancelled:
         ctx.cancel()
@@ -318,10 +331,10 @@ def _run_full(ctx, pro, store, effective, request, plan,
 
     failed = [o for o in outcomes if not o.ok]
     # 整批熔断（§3.7 主保险）：>5% ⇒ 环境故障 ⇒ 一律不计次，保留 staging
-    if tasks and len(failed) / len(tasks) > FULL_FAIL_RATE_BREAKER:
+    if batch_total and len(failed) / batch_total > FULL_FAIL_RATE_BREAKER:
         cut = (f"，已提前中止（仅投递 {len(outcomes)}/{len(tasks)} 只）"
                if len(outcomes) < len(tasks) else "")
-        ctx.fail(f"整批熔断：{len(failed)}/{len(tasks)} 只失败（>5%）{cut}，"
+        ctx.fail(f"整批熔断：{len(failed)}/{batch_total} 只失败（>5%）{cut}，"
                  f"判定环境故障，本轮不计次，staging 保留续传")
         return
     for o in failed:  # 健康轮才记失败；env 不计（INV-5）
@@ -368,10 +381,13 @@ def _run_full(ctx, pro, store, effective, request, plan,
 
     # ---- 单向换名（§3.6）→ ④ → 单事务落账 ----
     swap_in_bars(market_dir)
-    if doubtful:
-        # commit_full 把 doubtful 与 done_days 写在同一事务里，回滚会一起吞掉；
-        # 换名后这些日已在盘上，先独立持久化，「确认入账」入口当轮即可用
-        store.set_doubtful_days(doubtful)
+    union_doubtful = sorted({*store.doubtful_days(), *doubtful})
+    if union_doubtful:
+        # 预写「旧 ∪ 新」全集：commit_full 把 doubtful 与 done_days 写在一个事务里，
+        # 回滚会一起吞掉。换名后这些日已在盘上，先独立持久化，「确认入账」入口当轮
+        # 即可用；且回滚时本轮已健康、正转入 booked 的旧 doubtful 日不会被整体覆盖
+        # 抹掉而既不在 done 也不在 doubtful（同增量路径 P1#4）。成功时事务覆写为 doubtful。
+        store.set_doubtful_days(union_doubtful)
     booked = sorted(set(covered) - set(doubtful))
     if not ledger_subset_ok(set(booked), readback_calendar(bars_dir)):
         # 全量批 ④ 失败：不置 suspect（置则逼迫重建已换名成功的数据）

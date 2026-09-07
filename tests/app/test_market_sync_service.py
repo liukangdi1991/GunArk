@@ -510,6 +510,32 @@ def test_r7_three_healthy_rounds_then_excluded(runtime, job_store, sync_store, f
     assert sync_store.excluded_codes() == ["000002"]   # 第 3 个健康轮失败 → 出列
 
 
+def test_r7_resume_round_breaker_uses_full_batch_denominator(
+        runtime, job_store, sync_store, fake_pro):
+    """续传轮的分母必须是完整有效清单，不是待拉余量（P1#3 死锁复现）。
+
+    第 1 轮（无 accept_partial_baseline）：1/21 健康 → 计次 1，卡在带缺口提交，
+    staging 保留 20 只成功文件。第 2 轮续传只拉 000002：若分母收缩成 len(tasks)=1，
+    1/1=100%>5% → 整批熔断 → 不计次 → attempts 永远停在 1，出列门槛（≥3）不可达，
+    同步链路死锁。修复后分母 = 待拉 + 已暂存 = 21，照常计次直至出列。
+    """
+    _seed_healthy_full(fake_pro, sync_store, "000002")
+
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+    assert "accept_partial_baseline" in ctx.error      # 第 1 轮：计次后卡门槛
+    assert [r["attempts"] for r in sync_store.skipped_rows()] == [1]
+
+    for want in (2, 3):                                 # 第 2、3 轮续传：照常计次
+        ctx = run_worker(fake_pro, {"force": True}, job_store)
+        assert "整批熔断" not in (ctx.error or "")      # 分母未收缩才不熔断
+        assert [r["attempts"] for r in sync_store.skipped_rows()] == [want]
+    assert sync_store.excluded_codes() == ["000002"]    # 第 3 个健康轮失败 → 出列
+
+    ctx = run_worker(fake_pro, {"force": True, "accept_partial_baseline": True}, job_store)
+    assert ctx.status == "success"                      # 出列后带缺口提交放行
+    assert sync_store.done_days() == set(CAL[:4])       # 20 只的覆盖日照常落账
+
+
 def test_r7_success_clears_skip_and_unblocks_commit(runtime, job_store, sync_store, fake_pro):
     """中间任一次成功即计数归零（spec §3.7）：销账后本轮全成功不需 accept_partial_baseline。"""
     fake_pro.meta_codes = list(HEALTHY_CODES)
@@ -702,6 +728,38 @@ def test_r17_full_doubtful_survives_commit_failure(runtime, job_store, sync_stor
     assert sync_store.done_days() == set()                      # 账本仍未推进
 
 
+def test_r17_full_self_healed_doubtful_survives_commit_failure(
+        runtime, job_store, sync_store, fake_pro, monkeypatch):
+    """P1#4 全量路径同构：commit_full 回滚时，本轮已健康、正转入 booked 的旧
+    doubtful 日不得被预写从 doubtful 抹掉（否则既不在 done 也不在 doubtful）。
+
+    第 1 轮增量让 d26/d27 双双 doubtful。第 2 轮全量：d27 回补满（→ booked），
+    d26 仍缺一只（fresh doubtful 非空 → 触发预写）。预写若整体覆盖为 fresh 集合，
+    d27 被抹掉；commit_full 回滚后 d27 既没进 done 也不在 doubtful。修复：预写
+    「旧 ∪ 新」全集，事务成功后由事务覆写为 fresh 集合。
+    """
+    d26, d27 = date(2026, 8, 26), date(2026, 8, 27)
+    sync_store.insert_calendar_days(CAL)
+    sync_store.add_done_days(DONE)
+    fake_pro.day_codes = {d26: CODES[:2], d27: CODES[:2]}       # 第 1 轮增量：两日 doubtful
+    run_worker(fake_pro, {}, job_store)
+    assert sync_store.doubtful_days() == [d26, d27]
+
+    for c in CODES:                                             # 第 2 轮全量：d27 自愈
+        fake_pro.code_days[c] = CAL[:4]
+    fake_pro.code_days["600000"] = [d for d in CAL[:4] if d != d26]   # d26 仍缺 → fresh doubtful
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("txn boom")
+
+    monkeypatch.setattr(service, "commit_full", boom)
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+
+    assert ctx.status == "failed" and "事务" in ctx.error
+    assert sync_store.done_days() == set(DONE)                  # 回滚：账本未推进
+    assert sync_store.doubtful_days() == [d26, d27]             # d27 标记未被预写抹掉
+
+
 def test_r17_incremental_doubtful_survives_commit_failure(runtime, job_store, sync_store,
                                                           fake_pro, monkeypatch):
     """增量批同一机制：commit_incremental 也把 doubtful 与 done_days 写在一个事务里。"""
@@ -719,6 +777,38 @@ def test_r17_incremental_doubtful_survives_commit_failure(runtime, job_store, sy
     assert ctx.status == "failed" and "txn boom" in ctx.error
     assert sync_store.doubtful_days() == [d27]                  # 未被事务回滚吞掉
     assert sync_store.done_days() == set(DONE)                  # 账本仍未推进
+
+
+def test_r17_incremental_self_healed_doubtful_survives_commit_failure(
+        runtime, job_store, sync_store, fake_pro, monkeypatch):
+    """P1#4：自愈中的旧 doubtful 日不得在事务回滚时凭空消失。
+
+    第 1 轮 d26/d27 双双 doubtful。第 2 轮 d27 回补满（claimed，本应转入 done）、
+    d26 仍缺（doubtful）。commit_incremental 把 doubtful 与 done 写在一个事务里，
+    预写若只写「合并后」集合（已减掉 claimed 的 d27），一旦事务回滚：d27 既没进
+    done（回滚），又被预写从 doubtful 抹掉 → 既不 done 也不 doubtful，标记丢失，
+    「确认入账」入口也看不到它。修复：预写「旧 ∪ 新」全集，事务成功后由事务覆写
+    为合并集；回滚则全集原样保留。
+    """
+    d26, d27 = date(2026, 8, 26), date(2026, 8, 27)
+    sync_store.insert_calendar_days(CAL)
+    sync_store.add_done_days(DONE)
+    fake_pro.day_codes = {d26: CODES[:2], d27: CODES[:2]}       # 两日都 0.667 < 0.75
+    run_worker(fake_pro, {}, job_store)                          # 第 1 轮：d26/d27 入 doubtful
+    assert sync_store.doubtful_days() == [d26, d27]
+    assert sync_store.done_days() == set(DONE)
+
+    fake_pro.day_codes = {d26: CODES[:2], d27: CODES}           # 第 2 轮：d27 自愈、d26 仍缺
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("txn boom")
+
+    monkeypatch.setattr(service, "commit_incremental", boom)
+    ctx = run_worker(fake_pro, {}, job_store)
+
+    assert ctx.status == "failed" and "txn boom" in ctx.error
+    assert sync_store.done_days() == set(DONE)                  # 回滚：d27 未入账
+    assert sync_store.doubtful_days() == [d26, d27]             # d27 标记未被预写抹掉
 
 
 # ---- R18：UPTODATE 尾部补齐失败不翻转终态 ----
