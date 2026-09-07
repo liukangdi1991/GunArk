@@ -975,6 +975,39 @@ class TestMinimumLotForHighPrice:
         assert result.trades[0].shares == 200
         assert result.trades[0].buy_amount == pytest.approx(1600 * 200 * 1.0002)
 
+    def test_star_market_rounds_up_when_budget_covers_only_one_lot(self):
+        """300 元的科创板：5 万够买 100 股（>0），但 100 股低于科创板 200 股
+        最小成交单位，是无效单——不能因为"凑得满一手"就绕过最小单位。"""
+        result = self._run(
+            "688256", 300.0,
+            capital={"mode": "unlimited_cash", "fixed_cash_per_trade": 50000},
+        )
+        assert result.skips == []
+        assert len(result.trades) == 1
+        assert result.trades[0].shares == 200
+        assert result.trades[0].buy_amount == pytest.approx(300 * 200 * 1.0002)
+
+    def test_star_market_keeps_truncated_shares_when_above_minimum(self):
+        """160 元的科创板：5 万算出 312 股、按手截断成 300 股 ≥ 200，
+        合法单不受最小单位影响，不抬到 400。"""
+        result = self._run(
+            "688256", 160.0,
+            capital={"mode": "unlimited_cash", "fixed_cash_per_trade": 50000},
+        )
+        assert result.trades[0].shares == 300
+
+    def test_realistic_star_market_skips_when_budget_below_minimum(self):
+        """realistic 下预算只够 100 股科创板（280 元 × 200 = 5.6 万 > 4 万预算）：
+        凑不满最小成交单位就是买不了，"资金预算不足"在这里是真话。
+        按手截断 < 200 股时 200 股必然超预算，抬上去在 realistic 里不合法。"""
+        result = self._run(
+            "688256", 280.0,
+            capital={"mode": "realistic", "initial_cash": 40000,
+                     "position_budget_cash": 40000},
+        )
+        assert result.trades == []
+        assert [s.reason for s in result.skips] == ["资金预算不足"]
+
     def test_budget_sufficient_trade_is_unchanged(self):
         """名义额够买时一切照旧：5 万 ÷ 10 元 = 5000 股，不是最小单位 100 股。"""
         result = self._run(

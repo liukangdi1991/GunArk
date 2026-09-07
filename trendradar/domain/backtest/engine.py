@@ -308,13 +308,17 @@ class BacktestEngine:
                 budget = self._calc_position_budget(equity, state.cash)
 
             lot_size = self.config.capital.lot_size
+            required_shares = max(lot_size, min_trading_shares(code=code))
             shares = int(budget / open_price / lot_size) * lot_size
-            if shares <= 0 and self.config.capital.mode == "unlimited_cash":
+            if shares < required_shares and self.config.capital.mode == "unlimited_cash":
                 # 该模式不校验现金，名义额只是"想投多少"：1300 元的茅台 5 万凑不满
-                # 一手，也要按最小成交单位买满（科创板 200 股），否则整笔信号消失，
-                # 报告里还挂一条在无限资金下站不住脚的"资金预算不足"
-                shares = max(lot_size, min_trading_shares(code=code))
-            if shares <= 0:
+                # 一手，300 元的科创板凑得满一手但 100 股低于 200 股最小成交单位。
+                # 都按最小成交单位买满，否则整笔信号消失或下出无效单，报告里还挂
+                # 一条在无限资金下站不住脚的"资金预算不足"
+                shares = required_shares
+            if shares < required_shares:
+                # realistic：按手截断后不足最小成交单位 ⇒ 补齐到最小单位的金额
+                # 必然超出预算，硬抬会破坏预算约束，只能放弃
                 skips.append(
                     SkipRecord(
                         strategy=sig["strategy"],
