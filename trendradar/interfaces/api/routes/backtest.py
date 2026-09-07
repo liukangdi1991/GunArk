@@ -27,6 +27,10 @@ def _signal_repo(request: FastAPIRequest):
     return request.app.state.signal_repo
 
 
+def _store(request: FastAPIRequest):
+    return request.app.state.store
+
+
 def _artifacts_root(request: FastAPIRequest) -> Path:
     from trendradar.infrastructure.runtime import runtime_root
     return runtime_root() / "storage" / "objects" / "executions"
@@ -140,13 +144,20 @@ def submit_backtest_route(body: BacktestSubmitRequest, request: FastAPIRequest):
 @router.post("/selection-backtest")
 def submit_selection_backtest_route(body: SelectionBacktestRequest, request: FastAPIRequest):
     from trendradar.app.services.backtest_service import submit_selection_backtest
+    from trendradar.app.services.selection_service import validate_selection_request
+
+    req = body.model_dump(exclude_none=True)
+    try:
+        validate_selection_request(req, _store(request))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     try:
         job_id = submit_selection_backtest(
             _executor(request),
             _market_store(request),
             _signal_repo(request),
-            body.model_dump(exclude_none=True),
+            req,
         )
         return {"data": {"job_id": job_id, "status": "submitted"}}
     except Exception as e:

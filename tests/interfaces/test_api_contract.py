@@ -132,6 +132,26 @@ def _write_backtest_artifacts(storage: Path, key: str) -> None:
         {"date": "2026-08-11", "cash": 950000.0, "equity": 1000000.0, "position_count": 2},
         {"date": "2026-08-18", "cash": 951200.0, "equity": 1011200.0, "position_count": 0},
     ]
+    open_positions = [
+        {
+            "execution_key": key,
+            "strategy": "bbi_kdj_b1",
+            "code": "000002",
+            "signal_date": "2026-08-10",
+            "buy_date": "2026-08-11",
+            "target_sell_date": "2026-08-14",
+            "shares": 4000,
+            "entry_price": 10.0,
+            "entry_cost": 40030.0,
+            "mark_price": 7.29,
+            "mark_date": "2026-08-18",
+            "blocked_since": "2026-08-14",
+            "blocked_reason": "跌停封死",
+            "blocked_trading_days": 5,
+            "unrealized_pnl": -10810.0,
+            "unrealized_return_pct": -27.0,
+        }
+    ]
     result = {
         "metrics": {
             "trade_count": 2,
@@ -139,11 +159,13 @@ def _write_backtest_artifacts(storage: Path, key: str) -> None:
             "win_rate_pct": 50.0,
             "sharpe": 0.8,
             "max_drawdown_pct": -1.0,
+            "open_position_count": 1,
         },
         "trade_count": 2,
         "skip_count": 1,
         "trades": trades,
         "skips": skips,
+        "open_positions": open_positions,
         "equity_curve": equity,
     }
     (bt_dir / "result.json").write_text(
@@ -355,28 +377,36 @@ def test_backtest_results_list_shape(client):
     assert run["status"] == "success"
     assert run["start_date"] == "2026-08-11"
     assert run["end_date"] == "2026-08-18"
-    assert set(run["strategies"]) == {"bbi_kdj_b1", "peak_kdj"}
+    # strategies 是展示字段：中文名取自注册表；筛选键与 rowKey 用 summary[].strategy（id）
+    assert set(run["strategies"]) == {"B1战法", "填坑战法"}
     assert run["capital_mode"] in ("unlimited_cash", "realistic")
     summaries = {s["strategy"]: s for s in run["summary"]}
     assert "bbi_kdj_b1" in summaries
+    assert summaries["bbi_kdj_b1"]["strategy_name"] == "B1战法"
     assert summaries["bbi_kdj_b1"]["trade_count"] == 1
     assert summaries["bbi_kdj_b1"]["skip_count"] == 1
     assert summaries["bbi_kdj_b1"]["win_rate_pct"] == 100.0
     assert summaries["peak_kdj"]["trade_count"] == 1
     assert summaries["peak_kdj"]["win_rate_pct"] == 0.0
+    assert summaries["bbi_kdj_b1"]["open_positions"] == 1
+    assert summaries["peak_kdj"]["open_positions"] == 0
 
 
 def test_backtest_report_shape(client):
     resp = client.get("/api/backtest-results/20260820_100100_backtest_c3d4/report")
     assert resp.status_code == 200
     payload = resp.json()
-    assert set(payload) == {"result", "artifacts", "trades", "equity", "skips"}
+    assert set(payload) == {
+        "result", "artifacts", "trades", "equity", "skips", "open_positions",
+    }
     assert payload["result"]["execution_key"] == "20260820_100100_backtest_c3d4"
     assert len(payload["trades"]) == 2
     assert payload["trades"][0]["strategy"] == "bbi_kdj_b1"
     assert len(payload["equity"]) == 2
     assert len(payload["skips"]) == 1
     assert len(payload["artifacts"]) >= 2
+    assert len(payload["open_positions"]) == 1
+    assert payload["open_positions"][0]["blocked_reason"] == "跌停封死"
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +471,75 @@ def test_submit_execution_accepts_flat_request(client):
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["execution_id"]
+
+
+def test_submit_selection_unknown_strategy_returns_400(client):
+    """未知策略 id 是调用方错误，提交时就该 400，而不是静默吞掉后给个空结果。"""
+    resp = client.post(
+        "/api/executions",
+        json={
+            "type": "selection_single",
+            "params": {"date": "2026-08-20", "strategies": ["bbi_kdj_b1", "no_such_strategy"]},
+        },
+    )
+    assert resp.status_code == 400
+    assert "no_such_strategy" in resp.json()["detail"]
+
+
+def test_submit_selection_unknown_group_returns_400(client):
+    resp = client.post(
+        "/api/executions",
+        json={
+            "type": "selection_single",
+            "params": {"date": "2026-08-20", "groups": ["ghost_group"]},
+        },
+    )
+    assert resp.status_code == 400
+    assert "ghost_group" in resp.json()["detail"]
+
+
+def test_submit_selection_known_strategy_still_200(client):
+    """校验不能误伤正常路径：已注册策略照常提交。"""
+    resp = client.post(
+        "/api/executions",
+        json={
+            "type": "selection_single",
+            "params": {"date": "2026-08-20", "strategies": ["bbi_kdj_b1"]},
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["execution_id"]
+
+
+def test_submit_selection_backtest_unknown_strategy_returns_400(client):
+    """selection_backtest 走同一条校验：未知策略 id 提交时 400，不入队。"""
+    resp = client.post(
+        "/api/executions",
+        json={
+            "type": "selection_backtest",
+            "params": {
+                "from": "2026-08-18",
+                "to": "2026-08-20",
+                "strategies": ["bbi_kdj_b1", "no_such_strategy"],
+            },
+        },
+    )
+    assert resp.status_code == 400
+    assert "no_such_strategy" in resp.json()["detail"]
+
+
+def test_legacy_selection_backtest_route_unknown_strategy_returns_400(client):
+    """POST /api/selection-backtest 是同类公开入口，未知策略 id 同样 400。"""
+    resp = client.post(
+        "/api/selection-backtest",
+        json={
+            "start_date": "2026-08-18",
+            "end_date": "2026-08-20",
+            "strategies": ["bbi_kdj_b1", "no_such_strategy"],
+        },
+    )
+    assert resp.status_code == 400
+    assert "no_such_strategy" in resp.json()["detail"]
 
 
 def test_console_response_shape(client):

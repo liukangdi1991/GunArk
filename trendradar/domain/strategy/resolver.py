@@ -64,3 +64,31 @@ def _find_group(groups: list[dict], gid: str) -> dict | None:
         if g["id"] == gid:
             return g
     return None
+
+
+def validate_request_ids(group_defs: list[dict], request: dict | None) -> None:
+    """提交时同步校验：调用方显式传入的 id 必须存在，否则 400。
+
+    与 resolve 的静默跳过分工明确——disabled 是正常配置（resolve 阶段跳过），
+    未知 id 是调用方错误（拼写/已删除），必须当场报出来，不能让任务跑完
+    给个空结果还以为是"今天没信号"。
+    """
+    if not request:
+        return
+
+    unknown_groups = [
+        gid for gid in (request.get("groups") or [])
+        if _find_group(group_defs, gid) is None
+    ]
+    unknown_strategies = [
+        sid for sid in (request.get("strategies") or [])
+        if get_defn(sid) is None
+    ]
+
+    problems: list[str] = []
+    if unknown_groups:
+        problems.append(f"策略组不存在: {', '.join(unknown_groups)}")
+    if unknown_strategies:
+        problems.append(f"策略不存在: {', '.join(unknown_strategies)}")
+    if problems:
+        raise ValueError("；".join(problems))

@@ -20,6 +20,7 @@ from trendradar.domain.strategy.protocol import (
 )
 from trendradar.domain.strategy.registry import get as get_defn, list_all
 from trendradar.domain.strategy.resolver import resolve as resolve_strategies
+from trendradar.domain.strategy.resolver import validate_request_ids
 from trendradar.infrastructure.tushare.market_cap import daily_basic_circ_mv
 
 
@@ -101,6 +102,16 @@ def _get_strategy_resolve_input(store) -> tuple[list[dict], list[dict], dict[str
             }
 
     return group_defs, member_defs, settings_map
+
+
+def validate_selection_request(request: dict, store) -> None:
+    """提交时同步校验请求里的 group/strategy id，未知 id 抛 ValueError → API 400。
+
+    必须在 enqueue 之前调用：worker 里的 resolve 是静默跳过未知 id 的，等任务跑完
+    才发现少了一个策略就太晚了。disabled 不算错误，仍由 resolve 阶段正常跳过。
+    """
+    group_defs, _member_defs, _settings_map = _get_strategy_resolve_input(store)
+    validate_request_ids(group_defs, request)
 
 
 def _run_selection(

@@ -20,6 +20,11 @@ from trendradar.domain.signal.models import SignalSet
 from trendradar.domain.signal.repository import SignalRepository
 
 
+def _pct_or_na(value) -> str:
+    """N-A 就写 N-A：0.00% 会被读成"不赚不亏"。"""
+    return "N-A" if value is None else f"{value:.2f}%"
+
+
 def validate_backtest_prerequisites(
     signal_set: SignalSet,
     trading_dates: list[date],
@@ -83,7 +88,6 @@ def _build_config(request: dict) -> BacktestConfig:
     )
     execution = ExecutionConfig(
         fixed_hold_n_days=exe.get("fixed_hold_n_days", 5),
-        max_sell_postpone_days=exe.get("max_sell_postpone_days", 10),
         reject_if_limit_up_on_buy=exe.get("reject_if_limit_up_on_buy", True),
         postpone_if_limit_down_on_sell=exe.get("postpone_if_limit_down_on_sell", True),
         force_sell_on_two_day_close_below_long_term_bull_bear_line=exe.get(
@@ -96,7 +100,7 @@ def _build_config(request: dict) -> BacktestConfig:
     costs = CostConfig(
         commission_rate=cost.get("commission_rate", 0.0003),
         commission_min=cost.get("commission_min", 5.0),
-        stamp_duty_rate_sell=cost.get("stamp_duty_rate_sell", 0.0001),
+        stamp_duty_rate_sell=cost.get("stamp_duty_rate_sell", 0.0005),
         transfer_fee_rate=cost.get("transfer_fee_rate", 0.00001),
         slippage_buy_bp=cost.get("slippage_buy_bp", 2.0),
         slippage_sell_bp=cost.get("slippage_sell_bp", 2.0),
@@ -106,7 +110,7 @@ def _build_config(request: dict) -> BacktestConfig:
         max_positions=port.get("max_positions"),
         max_single_position_pct=port.get("max_single_position_pct"),
         max_daily_new_positions=port.get("max_daily_new_positions"),
-        allow_reentry_same_stock=port.get("allow_reentry_same_stock", False),
+        allow_reentry_same_stock=port.get("allow_reentry_same_stock", True),
     )
     risk = RiskConfig(
         benchmark=risk.get("benchmark", "000300.SH"),
@@ -198,11 +202,30 @@ def _run_backtest_worker(
         for e in result.equity_curve
     ]
 
+    open_position_data = [
+        {
+            "execution_key": ctx.job_id,
+            "strategy": p.strategy,
+            "code": p.code,
+            "signal_date": str(p.signal_date),
+            "buy_date": str(p.buy_date),
+            "target_sell_date": str(p.target_sell_date),
+            "shares": p.shares,
+            "entry_price": p.entry_price,
+            "entry_cost": p.entry_cost,
+            "mark_price": p.mark_price,
+            "mark_date": str(p.mark_date) if p.mark_date else None,
+            "blocked_since": str(p.blocked_since) if p.blocked_since else None,
+            "blocked_reason": p.blocked_reason,
+            "blocked_trading_days": p.blocked_trading_days,
+            "unrealized_pnl": p.unrealized_pnl,
+            "unrealized_return_pct": p.unrealized_return_pct,
+        }
+        for p in result.open_positions
+    ]
+
     metrics = dict(result.metrics)
-    metrics["initial_cash"] = config.capital.initial_cash
-    metrics["final_cash"] = (
-        result.equity_curve[-1]["cash"] if result.equity_curve else config.capital.initial_cash
-    )
+    metrics["open_position_count"] = len(result.open_positions)
 
     output = {
         "metrics": metrics,
@@ -210,13 +233,32 @@ def _run_backtest_worker(
         "skip_count": len(result.skips),
         "trades": trades_data,
         "skips": skip_data,
+        "open_positions": open_position_data,
         "equity_curve": equity_data,
     }
 
-    ctx.log(f"Backtest complete: {result.metrics.get('trade_count', 0)} trades, "
-            f"total_return={result.metrics.get('total_return_pct', 0):.2f}%, "
-            f"win_rate={result.metrics.get('win_rate_pct', 0):.2f}%, "
-            f"sharpe={result.metrics.get('sharpe', 0):.2f}")
+    if metrics.get("total_return_pct") is None:
+        # unlimited_cash 不产净值曲线：报逐笔盈亏，别把 N-A 凑成一个百分比
+        ctx.log(f"Backtest complete: {metrics.get('trade_count', 0)} trades, "
+                f"win_rate={metrics.get('win_rate_pct', 0):.2f}%, "
+                f"pnl={metrics.get('realized_profit_sum', 0.0):,.0f} / "
+                f"invested={metrics.get('invested_notional_sum', 0.0):,.0f} ("
+                f"{_pct_or_na(metrics.get('pnl_return_pct'))}), "
+                f"未平仓 {metrics.get('open_position_count', 0)} "
+                f"unrealized={metrics.get('unrealized_pnl', 0.0):,.0f}")
+    else:
+        ctx.log(f"Backtest complete: {metrics.get('trade_count', 0)} trades, "
+                f"total_return={metrics['total_return_pct']:.2f}%, "
+                f"win_rate={metrics.get('win_rate_pct', 0):.2f}%, "
+                f"sharpe={metrics.get('sharpe', 0):.2f}")
+
+    for p in open_position_data:
+        ctx.log(
+            f"截至回测结束仍未能卖出: {p['code']} {p['strategy']} "
+            f"计划卖出日 {p['target_sell_date']}，已顺延 {p['blocked_trading_days']} 个交易日，"
+            f"原因: {p['blocked_reason']}",
+            level="WARNING",
+        )
 
     if result_json_path:
         import json
@@ -230,11 +272,13 @@ def _run_backtest_worker(
             pl.DataFrame(trades_data).write_parquet(out_dir / "trades.parquet")
         if skip_data:
             pl.DataFrame(skip_data).write_parquet(out_dir / "skips.parquet")
+        if open_position_data:
+            pl.DataFrame(open_position_data).write_parquet(out_dir / "open_positions.parquet")
         if equity_data:
             pl.DataFrame(equity_data).write_parquet(out_dir / "equity.parquet")
 
         Path(out_dir / "metrics.json").write_text(
-            json.dumps(result.metrics, ensure_ascii=False, default=str, indent=2),
+            json.dumps(metrics, ensure_ascii=False, default=str, indent=2),
             encoding="utf-8",
         )
         Path(out_dir / "result.json").write_text(

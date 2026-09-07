@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from trendradar.infrastructure.runtime import runtime_root
@@ -243,41 +243,139 @@ def _enrich_stock_info(rows: list, meta_map: dict) -> list:
     return rows
 
 
-def _backtest_config(key: str) -> dict:
-    """Read the original request (mode/cash) from the jobs table."""
+def _effective_trade_rule(request: dict) -> dict:
+    """参数快照回答的是"这次实际按什么规则跑的"，不是"当时请求了什么"。
+
+    把存下来的请求喂回 `_build_config`——引擎真正用的那套默认值由它兜底——再整体
+    导出。否则没被覆盖过的 `fixed_hold_n_days=5` 压根不进 payload，前端只能说一句
+    含糊的"卖出日按当前交易规则执行"，报告说不清默认持有几天。
+    """
+    from dataclasses import asdict
+
+    from trendradar.app.services.backtest_service import _build_config
+
+    bt_request = request.get("backtest") or request
+    config = _build_config(bt_request)
+    params = request.get("params") or {}
+    rule = asdict(config.execution)
+    rule["lot_size"] = config.capital.lot_size
+    rule["costs"] = asdict(config.costs)
+    # 持仓上限不进快照的话，"每天限开 5 只"的报告和不限的报告长得一模一样
+    portfolio = asdict(config.portfolio)
+    rule["position_limits"] = {
+        k: portfolio[k]
+        for k in (
+            "target_positions", "max_positions",
+            "max_single_position_pct", "max_daily_new_positions",
+        )
+    }
+    rule["trade_strategy"] = params.get("trade_strategy") or request.get("trade_strategy")
+    return rule
+
+
+def _db_utc_to_iso(value: str | None) -> str | None:
+    """jobs/executions 里的时间戳是无时区的 UTC 字符串，有两种写法：
+    SQLite `CURRENT_TIMESTAMP` 的 `"YYYY-MM-DD HH:MM:SS"` 和代码写的 `"...T..."`。
+
+    必须补上 `+00:00` 再返回：裸字符串到了前端 `dayjs()` 会被当**本地**时间解析，
+    非 UTC 时区的用户看到的完成时间是错的。
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace(" ", "T"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.isoformat()
+
+
+def _backtest_job_row(key: str) -> dict:
     import sqlite3
 
     db = _storage_root() / "app.db"
+    columns = ("request_json", "created_at", "finished_at", "status")
     try:
         conn = sqlite3.connect(str(db))
+        conn.row_factory = sqlite3.Row
         row = conn.execute(
-            "SELECT request_json FROM jobs WHERE job_id = ?", (key,)
+            f"SELECT {', '.join(columns)} FROM jobs WHERE job_id = ?", (key,)
         ).fetchone()
         conn.close()
     except Exception:
-        row = None
-    if not row or not row[0]:
-        return {"capital_mode": "unlimited_cash", "cash_per_trade": 50000}
-    request = json.loads(row[0])
+        return {}
+    return dict(row) if row else {}
+
+
+def _backtest_config(key: str) -> dict:
+    """Read the original request (mode/cash) and timing from the jobs table."""
+    job = _backtest_job_row(key)
+    request = json.loads(job["request_json"]) if job.get("request_json") else {}
     params = request.get("params") or {}
-    # execution/capital 可能位于顶层（backtest_from_selection）或 backtest 下（selection_backtest）
-    execution = request.get("execution") or (request.get("backtest") or {}).get("execution") or {}
+    # capital 可能位于顶层（backtest_from_selection）或 backtest 下（selection_backtest）
     capital = request.get("capital") or (request.get("backtest") or {}).get("capital") or {}
     return {
         "capital_mode": params.get("mode") or capital.get("mode", "unlimited_cash"),
         "cash_per_trade": params.get("cash_per_trade") or capital.get("fixed_cash_per_trade", 50000),
-        "execution": execution,
-        "trade_strategy": params.get("trade_strategy") or request.get("trade_strategy"),
+        "trade_rule": _effective_trade_rule(request),
+        "created_at": _db_utc_to_iso(job.get("created_at")),
+        "finished_at": _db_utc_to_iso(job.get("finished_at")),
+        "status": job.get("status"),
+    }
+
+
+def _backtest_selection_sources(key: str, linked_keys: list[str]) -> list[str]:
+    """回测的选股来源：血缘链接指向的选股，或组合管线自己目录下的 `selection/`。
+
+    `selection_backtest` 里选股与回测共用 job_id、不写血缘链接，所以查不到链接时
+    还要看同目录。
+    """
+    if linked_keys:
+        return linked_keys
+    return [key] if (_executions_root() / key / "selection" / "signals.json").exists() else []
+
+
+def _selection_provenance(selection_keys: list[str]) -> dict:
+    """从来源选股的 signals.json / lineage.json 还原"这批信号是怎么选出来的"。
+
+    多个来源时日期取并集首尾、快照按策略名去重——报告要回答的是覆盖面，
+    不是每个来源各跑了一遍。
+    """
+    from_dates: list[str] = []
+    to_dates: list[str] = []
+    snapshots: list[dict] = []
+    seen: set[str] = set()
+
+    for sel_key in selection_keys:
+        sel_dir = _executions_root() / sel_key / "selection"
+        signals = _read_json(sel_dir / "signals.json", {})
+        lineage = _read_json(sel_dir / "lineage.json", {})
+        if signals.get("signal_from"):
+            from_dates.append(signals["signal_from"])
+        if signals.get("signal_to"):
+            to_dates.append(signals["signal_to"])
+        for snap in _selection_snapshots(lineage):
+            if snap["name"] in seen:
+                continue
+            seen.add(snap["name"])
+            snapshots.append(snap)
+
+    return {
+        "selection_from": min(from_dates) if from_dates else None,
+        "selection_to": max(to_dates) if to_dates else None,
+        "strategy_snapshots": snapshots,
     }
 
 
 def _backtest_summary(key: str, result: dict, metrics: dict) -> list[dict]:
     trades = result.get("trades", [])
     skips = result.get("skips", [])
+    open_positions = result.get("open_positions", [])
     by_strategy: dict[str, dict] = {}
-    for t in trades:
-        strat = t.get("strategy") or "未知"
-        row = by_strategy.setdefault(
+
+    def row_for(strat: str) -> dict:
+        return by_strategy.setdefault(
             strat,
             {
                 "strategy": strat,
@@ -285,11 +383,16 @@ def _backtest_summary(key: str, result: dict, metrics: dict) -> list[dict]:
                 "skip_count": 0,
                 "win_rate_pct": 0.0,
                 "total_return_pct": 0.0,
-                "annual_return_pct": metrics.get("annual_return_pct") or 0.0,
-                "max_drawdown_pct": metrics.get("max_drawdown_pct") or 0.0,
-                "sharpe": metrics.get("sharpe") or 0.0,
-                "final_cash": metrics.get("final_cash") or 0.0,
-                "initial_cash": metrics.get("initial_cash") or 0.0,
+                "realized_profit_sum": 0.0,
+                "invested_notional_sum": 0.0,
+                "unrealized_pnl": 0.0,
+                # 组合级净值原样透传：unlimited_cash 模式下它们是 N-A，
+                # 用 `or 0.0` 兜底等于把"没有定义"改成"不赚不亏"
+                "annual_return_pct": metrics.get("annual_return_pct"),
+                "max_drawdown_pct": metrics.get("max_drawdown_pct"),
+                "sharpe": metrics.get("sharpe"),
+                "final_cash": metrics.get("final_cash"),
+                "initial_cash": metrics.get("initial_cash"),
                 "open_positions": 0,
                 "capital_mode": "",
                 "fixed_cash_per_trade": 0.0,
@@ -297,11 +400,16 @@ def _backtest_summary(key: str, result: dict, metrics: dict) -> list[dict]:
                 "end_date": "",
             },
         )
+
+    for t in trades:
+        row = row_for(t.get("strategy") or "未知")
         row["trade_count"] += 1
         # 按投入资金加权的策略收益率（sum(profit)/sum(buy_price*shares)），
         # 避免"每笔收益率简单相加"产生误导性的巨大数值
-        row["_profit_sum"] = row.get("_profit_sum", 0.0) + float(t.get("profit") or 0.0)
-        row["_cost_sum"] = row.get("_cost_sum", 0.0) + float(t.get("buy_price") or 0.0) * float(t.get("shares") or 0)
+        row["realized_profit_sum"] += float(t.get("profit") or 0.0)
+        row["invested_notional_sum"] += (
+            float(t.get("buy_price") or 0.0) * float(t.get("shares") or 0)
+        )
         if float(t.get("return_pct") or 0.0) > 0:
             row["win_rate_pct"] = (
                 (row["win_rate_pct"] * (row["trade_count"] - 1) + 100.0)
@@ -312,33 +420,32 @@ def _backtest_summary(key: str, result: dict, metrics: dict) -> list[dict]:
                 (row["win_rate_pct"] * (row["trade_count"] - 1)) / row["trade_count"]
             )
     for s in skips:
-        strat = s.get("strategy") or "未知"
-        row = by_strategy.setdefault(
-            strat,
-            {
-                "strategy": strat,
-                "trade_count": 0,
-                "skip_count": 0,
-                "win_rate_pct": 0.0,
-                "total_return_pct": 0.0,
-                "annual_return_pct": metrics.get("annual_return_pct") or 0.0,
-                "max_drawdown_pct": metrics.get("max_drawdown_pct") or 0.0,
-                "sharpe": metrics.get("sharpe") or 0.0,
-                "final_cash": metrics.get("final_cash") or 0.0,
-                "initial_cash": metrics.get("initial_cash") or 0.0,
-                "open_positions": 0,
-                "capital_mode": "",
-                "fixed_cash_per_trade": 0.0,
-                "start_date": "",
-                "end_date": "",
-            },
-        )
-        row["skip_count"] += 1
+        row_for(s.get("strategy") or "未知")["skip_count"] += 1
+    for p in open_positions:
+        row = row_for(p.get("strategy") or "未知")
+        row["open_positions"] += 1
+        row["unrealized_pnl"] += float(p.get("unrealized_pnl") or 0.0)
     for row in by_strategy.values():
-        cost = row.pop("_cost_sum", 0.0)
-        profit = row.pop("_profit_sum", 0.0)
-        row["total_return_pct"] = (profit / cost * 100.0) if cost > 0 else 0.0
+        invested = row["invested_notional_sum"]
+        # 一笔都没成交 ⇒ 收益率无定义，不是 0.00%
+        row["total_return_pct"] = (
+            (row["realized_profit_sum"] / invested * 100.0) if invested > 0 else None
+        )
     return list(by_strategy.values())
+
+
+def _backtest_window(result: dict, equity: list[dict]) -> tuple[str | None, str | None]:
+    """回测区间。曲线的收发两端原来就是它，但 unlimited_cash 模式不产曲线。"""
+    if equity:
+        return equity[0].get("date"), equity[-1].get("date")
+    dates: list[str] = []
+    for t in result.get("trades", []):
+        dates += [d for d in (t.get("buy_date"), t.get("sell_date")) if d]
+    for p in result.get("open_positions", []):
+        dates += [d for d in (p.get("buy_date"),
+                              p.get("mark_date") or p.get("target_sell_date")) if d]
+    dates += [s.get("buy_date") for s in result.get("skips", []) if s.get("buy_date")]
+    return (min(dates), max(dates)) if dates else (None, None)
 
 
 def _backtest_artifacts(key: str) -> list[dict]:
@@ -368,6 +475,24 @@ def _backtest_selection_keys(key: str) -> list[str]:
     return [r[0] for r in rows]
 
 
+def _strategy_display_name(strategy_id) -> str | None:
+    """回测产物里只存 strategy id（机器键），展示名在提交时从注册表现查。
+
+    查不到返回 None 而不是回落 id：前端 `strategy_name ?? strategy` 自己回落，
+    已删除策略的历史报告因此仍能渲染，只是显示英文 id。
+    """
+    from trendradar.domain.strategy.registry import get
+
+    defn = get(strategy_id or "")
+    return defn.name if defn else None
+
+
+def _with_strategy_names(rows: list[dict]) -> list[dict]:
+    for row in rows:
+        row["strategy_name"] = _strategy_display_name(row.get("strategy"))
+    return rows
+
+
 def backtest_result_payload(key: str, include_report: bool = False) -> dict:
     bt_dir = _executions_root() / key / "backtest"
     result = _read_json(bt_dir / "result.json", {})
@@ -375,12 +500,17 @@ def backtest_result_payload(key: str, include_report: bool = False) -> dict:
     equity = result.get("equity_curve", [])
 
     config = _backtest_config(key)
-    start_date = equity[0].get("date") if equity else None
-    end_date = equity[-1].get("date") if equity else None
-    strategies = sorted({t.get("strategy") for t in result.get("trades", [])} | {s.get("strategy") for s in result.get("skips", [])})
+    start_date, end_date = _backtest_window(result, equity)
+    strategies = sorted(
+        {t.get("strategy") for t in result.get("trades", [])}
+        | {s.get("strategy") for s in result.get("skips", [])}
+        | {p.get("strategy") for p in result.get("open_positions", [])}
+    )
     selection_keys = _backtest_selection_keys(key)
+    provenance = _selection_provenance(_backtest_selection_sources(key, selection_keys))
+    mtime_iso = _file_mtime_iso(bt_dir) if bt_dir.exists() else None
 
-    summaries = _backtest_summary(key, result, metrics)
+    summaries = _with_strategy_names(_backtest_summary(key, result, metrics))
     for row in summaries:
         row["capital_mode"] = config["capital_mode"]
         row["fixed_cash_per_trade"] = config["cash_per_trade"]
@@ -389,23 +519,21 @@ def backtest_result_payload(key: str, include_report: bool = False) -> dict:
 
     run = {
         "execution_key": key,
-        "created_at": _file_mtime_iso(bt_dir) if bt_dir.exists() else None,
-        "finished_at": _file_mtime_iso(bt_dir) if bt_dir.exists() else None,
+        "created_at": config["created_at"] or mtime_iso,
+        "finished_at": config["finished_at"] or mtime_iso,
         "start_date": start_date,
         "end_date": end_date,
-        "strategies": strategies,
+        "strategies": [_strategy_display_name(sid) or sid for sid in strategies],
         "capital_mode": config["capital_mode"],
         "cash_per_trade": config["cash_per_trade"],
-        "trade_rule": {
-            **config.get("execution", {}),
-            "trade_strategy": config.get("trade_strategy"),
-        },
-        "strategy_snapshots": [],
-        "status": "success",
+        "trade_rule": config["trade_rule"],
+        # 产物存在即视为跑完：查不到 jobs 行的历史产物回落 success，与时间字段的 mtime 回落同理
+        "status": config["status"] or "success",
+        "strategy_snapshots": provenance["strategy_snapshots"],
         "summary": summaries,
         "selection_execution_keys": selection_keys,
-        "selection_from": None,
-        "selection_to": None,
+        "selection_from": provenance["selection_from"],
+        "selection_to": provenance["selection_to"],
     }
 
     if not include_report:
@@ -413,8 +541,11 @@ def backtest_result_payload(key: str, include_report: bool = False) -> dict:
 
     # 交易/跳过明细补股票名称与板块（前端"名称"列）
     meta_map = _stock_meta_map()
-    trades = _enrich_stock_info(result.get("trades", []), meta_map)
-    skips = _enrich_stock_info(result.get("skips", []), meta_map)
+    trades = _with_strategy_names(_enrich_stock_info(result.get("trades", []), meta_map))
+    skips = _with_strategy_names(_enrich_stock_info(result.get("skips", []), meta_map))
+    open_positions = _with_strategy_names(
+        _enrich_stock_info(result.get("open_positions", []), meta_map)
+    )
 
     return {
         "result": run,
@@ -422,6 +553,7 @@ def backtest_result_payload(key: str, include_report: bool = False) -> dict:
         "trades": trades,
         "equity": result.get("equity_curve", []),
         "skips": skips,
+        "open_positions": open_positions,
     }
 
 
@@ -699,6 +831,7 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
     from trendradar.app.services.selection_service import (
         submit_batch_selection,
         submit_selection,
+        validate_selection_request,
     )
 
     from trendradar.domain.signal.repository import SignalRepository
@@ -729,6 +862,7 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
             "groups": params.get("groups"),
             "strategies": _strategies_names_to_ids(params.get("strategies")),
         }
+        validate_selection_request(sel_params, store)
         if jtype == "selection_batch":
             job_id = submit_batch_selection(executor, market_store, sel_params, store)
             job_type = "batch_selection"
@@ -775,24 +909,26 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
         )
         job_type = "backtest"
     elif jtype == "selection_backtest":
+        bt_params = {
+            "start_date": params.get("from") or params.get("start_date"),
+            "end_date": params.get("to") or params.get("end_date"),
+            "groups": params.get("groups"),
+            "strategies": _strategies_names_to_ids(params.get("strategies")),
+            "backtest": {
+                "capital": {
+                    "mode": params.get("mode", "unlimited_cash"),
+                    "fixed_cash_per_trade": params.get("cash_per_trade", 50000),
+                },
+                "execution": _trade_strategy_execution(params.get("trade_strategy")),
+            },
+            "trade_strategy": params.get("trade_strategy"),
+        }
+        validate_selection_request(bt_params, store)
         job_id = submit_selection_backtest(
             executor,
             market_store,
             repo,
-            {
-                "start_date": params.get("from") or params.get("start_date"),
-                "end_date": params.get("to") or params.get("end_date"),
-                "groups": params.get("groups"),
-                "strategies": _strategies_names_to_ids(params.get("strategies")),
-                "backtest": {
-                    "capital": {
-                        "mode": params.get("mode", "unlimited_cash"),
-                        "fixed_cash_per_trade": params.get("cash_per_trade", 50000),
-                    },
-                    "execution": _trade_strategy_execution(params.get("trade_strategy")),
-                },
-                "trade_strategy": params.get("trade_strategy"),
-            },
+            bt_params,
         )
         job_type = "selection_backtest"
     elif jtype == "market_bars_sync":
