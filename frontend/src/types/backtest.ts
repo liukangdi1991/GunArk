@@ -1,16 +1,27 @@
 import type { Strategy } from "./strategy";
 
 export interface BacktestSummary {
+  /** 策略 id：rowKey / 筛选键，稳定不随改名变 */
   strategy: string;
+  /** 中文展示名，来自策略注册表；策略已被删除时为 null，显示回落 strategy */
+  strategy_name?: string | null;
   trade_count: number;
   skip_count: number;
   win_rate_pct: number;
-  total_return_pct: number;
-  annual_return_pct: number;
-  max_drawdown_pct: number;
-  sharpe: number;
-  final_cash: number;
-  initial_cash: number;
+  /** Σ盈亏 / Σ投入面额；一笔都没成交时为 null（不是 0%） */
+  total_return_pct: number | null;
+  realized_profit_sum: number;
+  invested_notional_sum: number;
+  unrealized_pnl: number;
+  /**
+   * 组合级净值。unlimited_cash 模式不产净值曲线（现金上限无限，没有"这个账户
+   * 值多少钱"可言），此时全部为 null。
+   */
+  annual_return_pct: number | null;
+  max_drawdown_pct: number | null;
+  sharpe: number | null;
+  final_cash: number | null;
+  initial_cash: number | null;
   open_positions: number;
   capital_mode: string;
   fixed_cash_per_trade: number;
@@ -42,6 +53,7 @@ export interface BacktestResult {
 export interface BacktestTrade {
   execution_key: string;
   strategy: string;
+  strategy_name?: string | null;
   code: string;
   name?: string;
   industry?: string;
@@ -72,6 +84,7 @@ export interface BacktestEquity {
 export interface BacktestSkip {
   execution_key: string;
   strategy: string;
+  strategy_name?: string | null;
   code: string;
   name?: string;
   industry?: string;
@@ -80,6 +93,29 @@ export interface BacktestSkip {
   stage: string;
   reason: string;
   date_ref?: string;
+}
+
+/** 回测结束时仍卖不掉的持仓：占着钱、算在净值里，但没有成交可对账。 */
+export interface BacktestOpenPosition {
+  execution_key: string;
+  strategy: string;
+  strategy_name?: string | null;
+  code: string;
+  name?: string;
+  industry?: string;
+  signal_date: string;
+  buy_date: string;
+  target_sell_date: string;
+  shares: number;
+  entry_price: number;
+  entry_cost: number;
+  mark_price: number;
+  mark_date?: string | null;
+  blocked_since?: string | null;
+  blocked_reason: string;
+  blocked_trading_days: number;
+  unrealized_pnl: number;
+  unrealized_return_pct: number;
 }
 
 export interface BacktestArtifact {
@@ -102,4 +138,5 @@ export interface BacktestReportResponse {
   trades: BacktestTrade[];
   equity: BacktestEquity[];
   skips: BacktestSkip[];
+  open_positions: BacktestOpenPosition[];
 }

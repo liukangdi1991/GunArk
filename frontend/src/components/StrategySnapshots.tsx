@@ -42,6 +42,57 @@ function formatMoney(value: unknown): string {
   });
 }
 
+function describeCosts(params: Record<string, unknown>): string {
+  const costs = (params.costs || {}) as Record<string, unknown>;
+  const ratio = (key: string) => {
+    const value = Number(costs[key]);
+    return Number.isFinite(value) ? formatRatio(value) : "-";
+  };
+  const basisPoint = (key: string) => {
+    const value = Number(costs[key]);
+    return Number.isFinite(value) ? `${value}bp` : "-";
+  };
+  const lotSize = numberParam(params, "lot_size");
+  const commissionMin = Number(costs.commission_min);
+
+  return (
+    `交易成本：佣金 ${ratio("commission_rate")}` +
+    `${Number.isFinite(commissionMin) ? `（单笔最低 ${formatMoney(commissionMin)} 元）` : ""}` +
+    `、卖出印花税 ${ratio("stamp_duty_rate_sell")}、过户费 ${basisPoint("transfer_fee_rate")}` +
+    `、滑点买入 ${basisPoint("slippage_buy_bp")} / 卖出 ${basisPoint("slippage_sell_bp")}` +
+    `${lotSize !== null ? `，一手 ${lotSize} 股` : ""}。`
+  );
+}
+
+function describePositionLimits(params: Record<string, unknown>): string {
+  const limits = (params.position_limits || {}) as Record<string, unknown>;
+  const count = (key: string) => {
+    const value = Number(limits[key]);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  };
+  const maxPositions = count("max_positions");
+  const maxDaily = count("max_daily_new_positions");
+  const target = count("target_positions");
+  const singlePct = Number(limits.max_single_position_pct);
+
+  const parts: string[] = [];
+  if (maxPositions !== null) {
+    parts.push(`同时最多持有 ${maxPositions} 份`);
+  }
+  if (maxDaily !== null) {
+    parts.push(`每天最多新开 ${maxDaily} 份`);
+  }
+  if (target !== null) {
+    parts.push(`目标持仓 ${target} 份（每份预算 = 权益 ÷ ${target}）`);
+  }
+  if (Number.isFinite(singlePct) && singlePct > 0) {
+    parts.push(`单份持仓不超过权益的 ${formatRatio(singlePct)}`);
+  }
+  return parts.length
+    ? `持仓上限：${parts.join("、")}。`
+    : "不限持仓数量、开仓节奏与单票占比（选出多少买多少）。";
+}
+
 function describeTradeRule(
   params: Record<string, unknown>,
   capitalMode?: string,
@@ -67,16 +118,27 @@ function describeTradeRule(
     lines.unshift(`交易策略为${tradeStrategyName}。`);
   }
 
-  if (params["连续两日收盘低于长期多空线强制卖出"]) {
+  if (params["reject_if_limit_up_on_buy"]) {
+    lines.push("买入日若涨停无法成交，则放弃该笔买入。");
+  }
+  if (params["force_sell_on_two_day_close_below_long_term_bull_bear_line"]) {
     lines.push("持仓期间若连续两日收盘价低于长期多空线，则在第二日按收盘价触发强制卖出。");
   }
   if (recentLowWindow !== null) {
     lines.push(`持仓期间若今日收盘价低于买入后截至昨日最近 ${recentLowWindow} 个交易日最低价，则按今日收盘价触发止损卖出。`);
   }
-  lines.push("如果卖出日跌停无法成交，跌停顺延卖出优先于其他卖出规则。");
+  if (params["postpone_if_limit_down_on_sell"]) {
+    lines.push("如果卖出日跌停无法成交，跌停顺延卖出优先于其他卖出规则。");
+  }
+  lines.push(describePositionLimits(params));
+  lines.push(describeCosts(params));
 
   if (capitalMode === "unlimited_cash") {
-    lines.push(`资金模式为${capitalModeLabel(capitalMode)}：每只股票按 ${formatMoney(cashPerTrade)} 元名义金额买入，不做现金不足限制。`);
+    lines.push(
+      `资金模式为${capitalModeLabel(capitalMode)}：每只股票按 ${formatMoney(cashPerTrade)} 元名义金额买入，` +
+        `不做现金不足限制；名义金额凑不满最小成交单位时按最小成交单位买入` +
+        `（主板 100 股、科创板 200 股），该笔实际投入会超过名义金额。`,
+    );
   } else if (capitalMode) {
     lines.push(`资金模式为${capitalModeLabel(capitalMode)}：买入前会校验可用现金。`);
   }

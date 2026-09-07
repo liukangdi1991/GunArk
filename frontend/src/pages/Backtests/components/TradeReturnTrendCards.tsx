@@ -186,6 +186,7 @@ function TradeReturnTrendCard({
     return null;
   }
 
+  const label = trades.find((trade) => trade.strategy_name)?.strategy_name || strategy;
   const last = points[points.length - 1];
   const cumulativePoints = buildCumulativeTrendPoints(points);
   const cumulativeDomain = percentDomain(cumulativePoints.map((point) => point.cumulativeReturnPct));
@@ -195,7 +196,7 @@ function TradeReturnTrendCard({
   return (
     <Card className="return-trend-card">
       <div className="equity-card-head">
-        <Tag color="blue">{strategy}</Tag>
+        <Tag color="blue">{label}</Tag>
         <Text className="muted-text">按卖出日统计已平仓交易收益</Text>
       </div>
       <div className="equity-card-metrics">

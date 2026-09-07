@@ -7,7 +7,7 @@ import { getBacktestReport } from "../../services/backtests";
 import type { BacktestReportResponse, BacktestSummary } from "../../types/backtest";
 import { formatDateRange, formatPercent, parseFiniteNumber } from "../../utils/format";
 import { formatPlainPercent } from "./components/BacktestSignedValue";
-import { skipColumns, summaryColumns, tradeColumns } from "./components/BacktestReportTables";
+import { buildSummaryColumns, openPositionColumns, skipColumns, tradeColumns } from "./components/BacktestReportTables";
 import { TradeReturnTrendCards } from "./components/TradeReturnTrendCards";
 
 const { Paragraph, Text, Title } = Typography;
@@ -101,6 +101,10 @@ export function BacktestReportPage() {
   const filteredSkips = useMemo(
     () => (report?.skips || []).filter((item) => selectedSet.has(item.strategy)),
     [report?.skips, selectedSet],
+  );
+  const filteredOpenPositions = useMemo(
+    () => (report?.open_positions || []).filter((item) => selectedSet.has(item.strategy)),
+    [report?.open_positions, selectedSet],
   );
   const overviewWinRate = weightedWinRate(selectedSummaries);
   const overviewBestReturn = bestTotalReturn(selectedSummaries);
@@ -201,7 +205,7 @@ export function BacktestReportPage() {
               </Paragraph>
               <Table
                 rowKey={(record) => record.strategy}
-                columns={summaryColumns}
+                columns={buildSummaryColumns(run.capital_mode)}
                 dataSource={run.summary || []}
                 pagination={false}
                 rowSelection={{
@@ -218,7 +222,7 @@ export function BacktestReportPage() {
                   },
                 })}
                 rowClassName={(record) => (selectedSet.has(record.strategy) ? "selected-summary-row" : "")}
-                scroll={{ x: 900 }}
+                scroll={{ x: 1150 }}
                 size="middle"
               />
             </section>
@@ -244,6 +248,27 @@ export function BacktestReportPage() {
                   dataSource={filteredSkips}
                   pagination={{ pageSize: 8 }}
                   scroll={{ x: 1060 }}
+                  size="middle"
+                />
+              </section>
+            ) : null}
+
+            {filteredOpenPositions.length ? (
+              <section>
+                <div className="section-title">期末未平仓（卖不掉）</div>
+                <Alert
+                  className="workbench-alert"
+                  type="warning"
+                  showIcon
+                  message={`有 ${filteredOpenPositions.length} 笔持仓到最后一个交易日仍没能卖出，按"顺延到底"处理，不在跌停价上假装成交。`}
+                  description="这些票的钱还压在里面，组合收益、回撤、期末市值都含它们的浮动盈亏，但没有一笔成交可以对账。"
+                />
+                <Table
+                  rowKey={(record, index) => `${record.strategy}-${record.code}-${record.buy_date}-${index}`}
+                  columns={openPositionColumns}
+                  dataSource={filteredOpenPositions}
+                  pagination={{ pageSize: 8 }}
+                  scroll={{ x: 1700 }}
                   size="middle"
                 />
               </section>
