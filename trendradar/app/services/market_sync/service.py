@@ -26,6 +26,7 @@ from trendradar.domain.market.sync.spec import (
     FailureKind,
     PlanKind,
     SHANGHAI,
+    is_bse_code,
 )
 from trendradar.infrastructure.storage.sync_store import SyncStore
 from trendradar.infrastructure.tushare.calendar import fetch_trade_calendar
@@ -47,6 +48,8 @@ from trendradar.infrastructure.tushare.writer import (
 )
 
 FULL_FAIL_RATE_BREAKER = 0.05
+BSE_UNAVAILABLE_REASON = "北交所行情物理不可得（Tushare daily 不提供）"
+NOT_IN_LIST_REASON = "不在有效清单（可能已退市或代码有误）"
 
 
 def _invalidate_status_cache() -> None:
@@ -62,7 +65,25 @@ def register_market_sync_execution(job_id: str) -> None:
     from trendradar.infrastructure.storage.registration import register_execution
 
     with StorageConnection(storage_root()).connection() as conn:
-        register_execution(conn, job_id, "market_bars_sync")
+        register_execution(conn, job_id, "market_bars_sync", status="running")
+        conn.commit()
+
+
+def _finalize_market_sync_execution(ctx: JobContext) -> None:
+    """executions 行回填真实终态：审计里失败的轮次不能是绿的。
+
+    jobs 表还没有终态（worker 被硬中断）时保持 running —— 猜一个反而更假。
+    """
+    from trendradar.infrastructure.runtime import storage_root
+    from trendradar.infrastructure.storage.connection import StorageConnection
+    from trendradar.infrastructure.storage.registration import set_execution_status
+
+    job = ctx.store.get_job(ctx.job_id)
+    status = job["status"] if job else None
+    if status not in ("success", "failed", "cancelled"):
+        return
+    with StorageConnection(storage_root()).connection() as conn:
+        set_execution_status(conn, ctx.job_id, status)
         conn.commit()
 
 
@@ -79,6 +100,7 @@ def bars_sync_worker(
     except Exception as e:  # 意外异常如实 failed，绝不假绿（INV-1）
         ctx.fail(f"意外错误: {e}")
     finally:
+        _finalize_market_sync_execution(ctx)
         _invalidate_status_cache()
 
 
@@ -128,14 +150,17 @@ def _bars_sync_body(ctx, request, store, market_dir, now_cn=None):
     bucket = TokenBucket()
 
     if plan.kind is PlanKind.BACKFILL_CODES:
-        ok = _run_backfill_batch(
+        ok, skipped = _run_backfill_batch(
             ctx, pro, store, effective, request.get("codes") or [],
             bars_dir, bucket, progress, cancel_check,
         )
-        if ok:
-            ctx.succeed({"kind": "backfill_codes"})
+        problems = [] if ok else ["存在拉取失败（明细见日志）"]
+        if skipped:
+            problems.append(f"{len(skipped)} 只未投递：{_skipped_detail(skipped)}")
+        if problems:
+            ctx.fail("指定代码补齐：" + "；".join(problems))
         else:
-            ctx.fail("指定代码补齐存在失败")
+            ctx.succeed({"kind": "backfill_codes"})
         return
 
     if plan.kind is PlanKind.FULL:
@@ -161,7 +186,7 @@ def _bars_sync_body(ctx, request, store, market_dir, now_cn=None):
         ctx.fail(fail_msg)
 
 
-def _link_calendar_stage(cal_job_id: str, bars_job_id: str) -> None:
+def _link_calendar_stage(cal_job_id: str, bars_job_id: str, cal_ok: bool) -> None:
     """stage-1/stage-2 审计关联（spec §3.9）。
 
     spec 原文写「共用同一 execution_key」，但 executions.execution_key 是
@@ -173,8 +198,9 @@ def _link_calendar_stage(cal_job_id: str, bars_job_id: str) -> None:
     from trendradar.infrastructure.storage.registration import register_execution
 
     with StorageConnection(storage_root()).connection() as conn:
-        register_execution(conn, cal_job_id, "market_calendar_sync")
-        register_execution(conn, bars_job_id, "market_bars_sync")
+        register_execution(conn, cal_job_id, "market_calendar_sync",
+                           status="success" if cal_ok else "failed")
+        register_execution(conn, bars_job_id, "market_bars_sync", status="running")
         conn.execute(
             "INSERT OR IGNORE INTO execution_links "
             "(source_execution_key, target_execution_key, link_type) "
@@ -197,7 +223,7 @@ def _stage1_calendar(ctx, store, pro, now_cn) -> bool:
         ctx.store.set_status(cal_job_id, "failed", error=str(e))
         ctx.log(f"stage-1 日历刷新失败: {e}", level="ERROR")
     finally:
-        _link_calendar_stage(cal_job_id, ctx.job_id)  # 失败也要留审计链
+        _link_calendar_stage(cal_job_id, ctx.job_id, ok)  # 失败也要留审计链
     return ok
 
 
@@ -259,10 +285,9 @@ def _run_incremental(ctx, pro, store, effective, exclude_boards, plan,
 
 def _memory_structure_ok(all_days: pl.DataFrame) -> bool:
     if all_days.is_empty():
-        return True
-    for code in all_days["code"].unique().to_list():
-        group = all_days.filter(pl.col("code") == code).sort("date")
-        if not file_structure_ok(group):
+        return True     # 可能是无列空表（runner 兜底），partition_by 会找不到 "code"
+    for group in all_days.partition_by("code", maintain_order=True):
+        if not file_structure_ok(group.sort("date")):
             return False
     return True
 
@@ -402,18 +427,24 @@ def _staging_day_rows(staging_dir: Path) -> dict:
 
 
 def _run_backfill_batch(ctx, pro, store, effective, codes, bars_dir,
-                        bucket, progress, cancel_check) -> bool:
-    """INV-3：永不触碰日账本。成功销账；失败仅记 code/unknown（INV-5）。"""
-    tasks = []
+                        bucket, progress, cancel_check) -> tuple[bool, list[dict]]:
+    """INV-3：永不触碰日账本。成功销账；失败仅记 code/unknown（INV-5）。
+
+    返回 (是否全部拉成功, 未投递的代码及原因)。后者由调用方决定是否翻转终态：
+    显式请求拉不到就是没完成，自动通道不能被脏名单永久卡死。
+    """
+    tasks, skipped = [], []
     for code in codes:
         rng = effective.clamped_range(code)
         if rng is None:
-            ctx.log(f"补齐跳过 {code}：不在有效清单")
+            reason = BSE_UNAVAILABLE_REASON if is_bse_code(code) else NOT_IN_LIST_REASON
+            ctx.log(f"补齐跳过 {code}：{reason}", level="WARNING")
+            skipped.append({"code": code, "reason": reason})
             continue
         tasks.append((code, rng[0], rng[1]))
     if not tasks:
         ctx.log("补齐：无可拉代码")
-        return True
+        return True, skipped
     outcomes = run_backfill(pro, tasks, bars_dir,
                             bucket=bucket, progress=progress, cancel_check=cancel_check)
     ok = True
@@ -427,7 +458,11 @@ def _run_backfill_batch(ctx, pro, store, effective, codes, bars_dir,
             ctx.log(f"补齐 {o.code} 失败（{o.kind.value if o.kind else '?'}）: {o.error}",
                     level="ERROR")
     ctx.log(f"补齐完成：{sum(1 for o in outcomes if o.ok)}/{len(outcomes)} 成功")
-    return ok
+    return ok, skipped
+
+
+def _skipped_detail(skipped: list[dict]) -> str:
+    return "、".join(f"{s['code']}（{s['reason']}）" for s in skipped)
 
 
 def _tail_backfill(ctx, pro, store, effective, bars_dir, bucket, progress, cancel_check):
@@ -436,9 +471,11 @@ def _tail_backfill(ctx, pro, store, effective, bars_dir, bucket, progress, cance
     if not rows:
         return
     ctx.log(f"尾部补齐：重试 sync_skipped 中 {len(rows)} 只")
-    if not _run_backfill_batch(ctx, pro, store, effective, [r["code"] for r in rows],
-                               bars_dir, bucket, progress, cancel_check):
-        ctx.log("尾部补齐存在失败（主作业终态不受影响）")
+    ok, skipped = _run_backfill_batch(ctx, pro, store, effective, [r["code"] for r in rows],
+                                      bars_dir, bucket, progress, cancel_check)
+    if not ok or skipped:
+        detail = f"：{_skipped_detail(skipped)}" if skipped else ""
+        ctx.log(f"尾部补齐存在未完成项（主作业终态不受影响）{detail}")
 
 
 def backfill_codes_worker(ctx: JobContext, request: dict, now_cn: datetime | None = None) -> None:
@@ -465,20 +502,25 @@ def backfill_codes_worker(ctx: JobContext, request: dict, now_cn: datetime | Non
             meta = sync_stock_list(bars_dir)
         effective = build_effective_list(meta, request.get("exclude_boards") or [], latest)
         codes = request.get("codes") or store.excluded_codes()
+        explicit = bool(request.get("codes"))
         # 清零必须在取名单之后：否则 attempts>=3 的出列条件被抹掉，通道二无单可补
         store.reset_skip_attempts()
         bucket = TokenBucket()
-        ok = _run_backfill_batch(
+        ok, skipped = _run_backfill_batch(
             ctx, get_pro(), store, effective, codes, bars_dir, bucket,
             lambda cur, total, msg: ctx.update_progress(cur, total, msg),
             lambda: ctx.check_cancelled(),
         )
+        problems = [] if ok else ["存在拉取失败（明细见日志）"]
+        if skipped and explicit:
+            problems.append(f"{len(skipped)} 只未投递：{_skipped_detail(skipped)}")
         if ctx.check_cancelled():
             ctx.cancel()
-        elif ok:
-            ctx.succeed({"kind": "market_backfill_codes", "codes": len(codes)})
+        elif problems:
+            ctx.fail("补齐：" + "；".join(problems))
         else:
-            ctx.fail("补齐存在失败（明细见日志）")
+            ctx.succeed({"kind": "market_backfill_codes", "codes": len(codes),
+                         "skipped": skipped})
     except Exception as e:
         ctx.fail(f"意外错误: {e}")
     finally:

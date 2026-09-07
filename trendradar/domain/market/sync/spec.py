@@ -10,6 +10,12 @@ from zoneinfo import ZoneInfo
 BASELINE_START = date(2015, 1, 1)
 DATA_CUTOFF_HOUR = 16
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+BSE_PREFIXES = ("92", "4", "8")     # 92 为新代码段，4/8 为原三板平移而来
+
+
+def is_bse_code(code: str) -> bool:
+    """裸代码是否属北交所 —— Tushare daily 物理不提供其行情。"""
+    return str(code).split(".")[0].zfill(6).startswith(BSE_PREFIXES)
 
 
 class PlanKind(str, Enum):

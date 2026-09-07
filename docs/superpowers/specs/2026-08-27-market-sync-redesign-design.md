@@ -277,6 +277,13 @@ CREATE TABLE IF NOT EXISTS sync_skipped (
 - **通道一（自动）**：每次 stage-2 运行结尾，只要 `sync_skipped` 非空（**含 `UPTODATE` 与 `INCREMENTAL` 两种批**，否则无缺口时名单永无重试机会）即自动带一轮 `BACKFILL_CODES` 补齐，成本 N × 2 次调用（N 通常为 0），成功即销账。**补齐失败不翻转主作业终态**——主作业按日账本判定照实记 `success`/`failed`，补齐的成败只写入 `coverage` 与日志，避免"已最新"的点击被后台个股拉取失败染红；
 - **通道二（手动）**：面板"立即补齐"按钮触发同一批，并先清空 `attempts` 计数（用于误判后重新给 3 次机会）。此为**独立提交的作业**，`job_type=market_backfill_codes`，纳入 executor 互斥集（§3.9），不得与主同步并行写文件；
 
+**入口约束：投不出去的股票必须点名**（2026-09-03 补）。补齐请求里的代码可能根本进不了拉取任务（`clamped_range` 返回 `None`）：北交所（§3.6 永不可拉）、已退市出表、或代码写错。"未投递"与"拉取失败"一样是没完成，不得只留一行日志就记 `success`：
+
+- 显式请求（`request.codes` 非空）→ 作业 `failed`，逐只点名并给原因（`北交所行情物理不可得（Tushare daily 不提供）` / `不在有效清单（可能已退市或代码有误）`）；
+- 自动通道（通道一尾批、通道二取 `sync_skipped` 名单）→ 只记 WARNING 日志与 `result.skipped`，**不翻转终态**——名单是历史残留，一只永久拉不到的股票不该让补齐作业永远染红，否则残留项再无人能清。
+
+原因判定用 `spec.is_bse_code`（裸代码前缀 `92/4/8`，与 `fetch._to_ts_code` 同源）；清单侧仍按 `ts_code` 的 `.BJ` 后缀走（权威值，不做前缀推断）。
+
 **带缺口提交需显式确认**：`sync_skipped` 非空时，全量批不得自动推进日账本；仅当名单内全部为 `code`/`unknown` 类（无 `env` 残留）且用户显式传 `accept_partial_baseline=true` 时才提交并保留面板红字。若缺口含 `env` 类，拒绝提交、等下轮——限流造成的缺失自己就会好。
 
 **边界实测：退市股的 `adj_factor` 可得性 —— 风险不存在**（2026-09-02）
@@ -402,7 +409,7 @@ TUSHARE_TOKEN=xxx .venv/bin/python scripts/check_delisted_adj_factor.py
 | stage-1 日历 | `market_calendar_sync` | `queued → running → success/failed`（<1 秒） |
 | stage-2 行情 | `market_bars_sync` | `queued → running → success/failed/cancelled`（增量 0.5 秒~3 分钟；全量约 41 分钟，可跨天） |
 
-`running` 必须保留（面板需区分"排队中"与"正在跑"）；`queued` 沿用现名，不引入 `pending`。一次 UI 点击 = stage-1 一行 + stage-2 一行；**stage-1 是 stage-2 worker 内的同步步骤**（不经 executor 二次提交、非嵌套异步作业）：stage-2 起跑前先执行 stage-1 并等待其完成，再读日历表做硬检（§3.3），确保决策不基于旧日历。两行 job 各自登记一行 `executions`，再用现成的 `execution_links` 表关联（`link_type='bars_sync_uses_calendar'`，source=stage-2、target=stage-1，与 `backtest_uses_selection` 同一套路）；**stage-1 失败也要留链**，否则审计看不到"这次点击卡在哪一阶段"。（原稿写"两行 job 共用同一 `execution_key`"，但 `executions.execution_key` 带 `UNIQUE`、`jobs` 表也没有该列，字面不可实现，故改用 links 表表达从属。）面板 ① 行"查看控制台"跳 stage-1 job、③ 行跳 stage-2 job。
+`running` 必须保留（面板需区分"排队中"与"正在跑"）；`queued` 沿用现名，不引入 `pending`。一次 UI 点击 = stage-1 一行 + stage-2 一行；**stage-1 是 stage-2 worker 内的同步步骤**（不经 executor 二次提交、非嵌套异步作业）：stage-2 起跑前先执行 stage-1 并等待其完成，再读日历表做硬检（§3.3），确保决策不基于旧日历。两行 job 各自登记一行 `executions`，再用现成的 `execution_links` 表关联（`link_type='bars_sync_uses_calendar'`，source=stage-2、target=stage-1，与 `backtest_uses_selection` 同一套路）；**stage-1 失败也要留链**，否则审计看不到"这次点击卡在哪一阶段"。（原稿写"两行 job 共用同一 `execution_key`"，但 `executions.execution_key` 带 `UNIQUE`、`jobs` 表也没有该列，字面不可实现，故改用 links 表表达从属。）面板 ① 行"查看控制台"跳 stage-1 job、③ 行跳 stage-2 job。`executions.status` 与 `jobs.status` 同步：起跑登记 `running`，收口按 `jobs` 表终态回填（`register_execution` 曾无条件写 `success`，失败轮在审计里隐身）；`jobs` 行没有终态（worker 被硬中断）时保持 `running` 不猜。
 
 需一并修掉的现状坑：
 

@@ -59,8 +59,8 @@ def flush_by_code(all_days: pl.DataFrame, bars_dir: Path) -> list[str]:
     bars_dir = Path(bars_dir)
     bars_dir.mkdir(parents=True, exist_ok=True)
     written = []
-    for code in all_days["code"].unique().to_list():
-        group = all_days.filter(pl.col("code") == code)
+    for group in all_days.partition_by("code", maintain_order=True):
+        code = group["code"][0]
         upsert_code_file(bars_dir / f"{code}.parquet", group)
         written.append(str(code))
     return written

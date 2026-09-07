@@ -9,7 +9,7 @@ from datetime import date, timedelta
 
 import polars as pl
 
-from trendradar.domain.market.sync.spec import FailureKind
+from trendradar.domain.market.sync.spec import FailureKind, is_bse_code
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ def _to_ts_code(code: str) -> str:
     code = str(code).split(".")[0].zfill(6)
     if code.startswith(("60", "68", "900", "901")):
         return f"{code}.SH"
-    elif code.startswith(("92", "4", "8")):
+    elif is_bse_code(code):
         return f"{code}.BJ"
     return f"{code}.SZ"
 

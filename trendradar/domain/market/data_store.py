@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from abc import ABC, abstractmethod
 from datetime import date
 from pathlib import Path
@@ -10,6 +12,24 @@ from typing import Optional
 import polars as pl
 
 _calendar_lock = __import__("threading").Lock()
+
+
+def _atomic_write_calendar_cache(cache_path: Path, dates: list[date]) -> None:
+    """临时文件 + 换名落盘：原地写会截断共享同一 inode 的副本，中断时还留半截文件。"""
+    fd, tmp = tempfile.mkstemp(dir=cache_path.parent, suffix=".tmp")
+    try:
+        os.close(fd)
+        pl.DataFrame({"date": dates}).with_columns(
+            pl.col("date").cast(pl.Date)
+        ).write_parquet(tmp)
+        os.replace(tmp, cache_path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
 
 POLARS_KLINE_SCHEMA: dict[str, type] = {
     "code": pl.Utf8,
@@ -250,9 +270,7 @@ class LocalParquetMarketStore(MarketDataStore):
             result = sorted(dates)
 
             try:
-                pl.DataFrame({"date": result}).with_columns(
-                    pl.col("date").cast(pl.Date)
-                ).write_parquet(cache_path)
+                _atomic_write_calendar_cache(cache_path, result)
             except Exception:
                 pass
 

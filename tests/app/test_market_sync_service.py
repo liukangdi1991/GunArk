@@ -154,12 +154,15 @@ class FakeCtx:
 
     def succeed(self, result):
         self.status, self.result = "success", result
+        self.store.set_status(self.job_id, "success", result=result)
 
     def fail(self, error):
         self.status, self.error = "failed", error
+        self.store.set_status(self.job_id, "failed", error=error)
 
     def cancel(self, reason="Cancelled by user"):
         self.status, self.error = "cancelled", reason
+        self.store.set_status(self.job_id, "cancelled", error=reason)
 
 
 @pytest.fixture
@@ -223,9 +226,21 @@ def fake_pro(monkeypatch):
 
 
 def run_worker(fake_pro, request, job_store, cancel_after=None):
-    ctx = FakeCtx("20260827_180000_market_bars_sync_t1", job_store, cancel_after)
+    # 生产里 worker 起跑前 jobs 行已存在（executor 建）→ 测试同样如此，
+    # 否则 worker 无从得知自己的终态
+    ctx = FakeCtx(job_store.create_job("market_bars_sync", request), job_store, cancel_after)
     service.bars_sync_worker(ctx, request, now_cn=NOW)
     return ctx
+
+
+def _execution_status_by_type(runtime) -> dict:
+    from trendradar.infrastructure.storage.connection import StorageConnection
+
+    with StorageConnection(runtime / "storage").connection() as conn:
+        return {
+            r["execution_type"]: r["status"]
+            for r in conn.execute("SELECT execution_type, status FROM executions").fetchall()
+        }
 
 
 # ---- R1 / R2 / R3：stage-1 日历 ----
@@ -281,6 +296,23 @@ def test_r3_stage1_linked_to_stage2(runtime, job_store, sync_store, fake_pro):
     tgt = links[0]["target_execution_key"]
     assert types[src] == "market_bars_sync"
     assert types[tgt] == "market_calendar_sync"
+
+
+def test_execution_rows_record_success(runtime, job_store, sync_store, fake_pro):
+    sync_store.insert_calendar_days(CAL)
+    sync_store.add_done_days(CAL[:4])                           # 无缺口 → UPTODATE
+    assert run_worker(fake_pro, {}, job_store).status == "success"
+    assert _execution_status_by_type(runtime) == {
+        "market_bars_sync": "success", "market_calendar_sync": "success"}
+
+
+def test_execution_rows_record_failure(runtime, job_store, sync_store, fake_pro):
+    """登记在起跑时，终态回填在收口时：stage-1 挂掉的轮次不得在审计里是绿的。"""
+    sync_store.insert_calendar_days([date(2026, 8, 20)])       # MAX < today
+    fake_pro.raise_cal = RuntimeError("Connection aborted")
+    assert run_worker(fake_pro, {}, job_store).status == "failed"
+    assert _execution_status_by_type(runtime) == {
+        "market_bars_sync": "failed", "market_calendar_sync": "failed"}
 
 
 # ---- R6 / R14：增量 doubtful 与自愈 ----
@@ -554,6 +586,57 @@ def test_backfill_worker_backfills_excluded_list(runtime, job_store, sync_store,
     assert ctx.status == "success"
     assert (runtime / "storage" / "market" / "bars" / "000002.parquet").exists()
     assert sync_store.skipped_rows() == []          # 成功即销账
+
+
+# ---- 补齐入口：不可投递的代码必须可见 ----
+
+def test_explicit_backfill_rejects_bse_code(runtime, job_store, sync_store, fake_pro):
+    """北交所行情物理不可得：显式请求不能记一句"无可拉代码"就绿灯。"""
+    sync_store.insert_calendar_days(CAL)
+    sync_store.add_done_days(DONE)
+    ctx = run_worker(fake_pro, {"codes": ["920001"]}, job_store)
+    assert ctx.status == "failed"
+    assert "920001" in ctx.error
+    assert "北交所" in ctx.error
+
+
+def test_explicit_backfill_rejects_code_outside_effective_list(runtime, job_store,
+                                                              sync_store, fake_pro):
+    ctx = run_worker(fake_pro, {"codes": ["000003"]}, job_store)   # 清单里没有这只
+    assert ctx.status == "failed"
+    assert "000003" in ctx.error
+    assert "有效清单" in ctx.error
+
+
+def test_explicit_backfill_partial_fails_but_keeps_what_it_fetched(runtime, job_store,
+                                                                  sync_store, fake_pro):
+    """能拉的照常落盘，终态仍是 failed 且点名拉不到的那只。"""
+    sync_store.insert_calendar_days(CAL)
+    sync_store.add_done_days(DONE)
+    fake_pro.code_days = {"000002": [date(2026, 8, 26)]}
+    ctx = run_worker(fake_pro, {"codes": ["000002", "920001"]}, job_store)
+    assert ctx.status == "failed"
+    assert "920001" in ctx.error
+    assert (runtime / "storage" / "market" / "bars" / "000002.parquet").exists()
+
+
+def test_auto_backfill_skips_unfetchable_without_failing(runtime, job_store, sync_store,
+                                                        fake_pro):
+    """通道二自动模式取的是 sync_skipped 名单，可能含已出表的历史残留项：
+    这类项记为 skipped 但不翻转终态，否则补齐作业被永久卡死。"""
+    sync_store.insert_calendar_days(CAL)
+    for _ in range(3):
+        sync_store.record_skip_failure("000002", "无此股票", "code")
+        sync_store.record_skip_failure("920001", "无此股票", "code")
+    fake_pro.code_days = {"000002": CAL[:4]}
+
+    ctx = FakeCtx("20260827_180000_market_backfill_codes_t2", job_store)
+    service.backfill_codes_worker(ctx, {}, now_cn=NOW)
+
+    assert ctx.status == "success"
+    assert [s["code"] for s in ctx.result["skipped"]] == ["920001"]
+    assert (runtime / "storage" / "market" / "bars" / "000002.parquet").exists()
+    assert [r["code"] for r in sync_store.skipped_rows()] == ["920001"]
 
 
 # ---- R13：全量批单日语义 ----

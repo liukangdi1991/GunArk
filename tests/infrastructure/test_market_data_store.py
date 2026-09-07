@@ -227,6 +227,33 @@ def test_get_calendar_refreshes_when_bars_change(tmp_path):
     ]
 
 
+def test_get_calendar_cache_replaces_instead_of_writing_in_place(tmp_path):
+    """缓存换名落盘，不得原地改写。
+
+    硬链接模拟 rsync -al / 快照 / 复制出的第二份库：这类部署下两个进程共享
+    同一个 calendar.parquet inode，原地写会把一方的日历覆到另一方身上——
+    行情库没动，交易日历却凭空缩短了。
+    """
+    import os
+    import time
+
+    bars_dir = tmp_path / "bars"
+    old_dates = [date(2024, 1, 5), date(2024, 1, 8)]
+    _make_bars_file(bars_dir / "000001.parquet", "000001", old_dates)
+    store = LocalParquetMarketStore(bars_dir)
+    assert store.get_calendar() == old_dates
+
+    snapshot = tmp_path / "snapshot-calendar.parquet"
+    os.link(bars_dir.parent / "calendar.parquet", snapshot)
+
+    _make_bars_file(bars_dir / "000002.parquet", "000002", [date(2024, 2, 1)])
+    new_mtime = time.time() + 5
+    os.utime(bars_dir / "000002.parquet", (new_mtime, new_mtime))
+    assert store.get_calendar() == [*old_dates, date(2024, 2, 1)]
+
+    assert pl.read_parquet(snapshot)["date"].to_list() == old_dates
+
+
 def test_get_row_returns_single_row_dict(tmp_path):
     bars_dir = tmp_path / "bars"
     _make_bars_file(

@@ -7,6 +7,7 @@ from trendradar.domain.market.sync.spec import (
     FailureKind,
     PlanKind,
     SyncPlan,
+    is_bse_code,
     latest_tradeable_day,
 )
 
@@ -55,3 +56,10 @@ def test_latest_tradeable_weekend_is_friday():
 
 def test_latest_tradeable_empty_calendar_is_none():
     assert latest_tradeable_day(set(), datetime(2026, 8, 27, 16, 0, tzinfo=CN)) is None
+
+
+def test_is_bse_code_prefix_boundaries():
+    # 900/901 是沪市 B 股，误判会在补齐入口直接判死一只可拉的股票
+    assert is_bse_code("920099") and is_bse_code("430047") and is_bse_code("830799")
+    assert not is_bse_code("900901") and not is_bse_code("600519")
+    assert is_bse_code("920099.BJ") and is_bse_code("920099")   # 带后缀同样幂等

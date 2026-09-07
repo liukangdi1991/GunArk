@@ -33,13 +33,22 @@ def register_execution(
     execution_type: str,
     manifest_key: str | None = None,
     lineage_key: str | None = None,
+    status: str = "success",
 ) -> None:
-    """Insert an executions row (idempotent per execution_key)."""
+    """Insert an executions row (idempotent)；长跑作业起跑传 running，收口回填终态。"""
     conn.execute(
         "INSERT OR IGNORE INTO executions "
         "(execution_key, execution_type, status, manifest_key, lineage_key) "
-        "VALUES (?, ?, 'success', ?, ?)",
-        (execution_key, execution_type, manifest_key, lineage_key),
+        "VALUES (?, ?, ?, ?, ?)",
+        (execution_key, execution_type, status, manifest_key, lineage_key),
+    )
+
+
+def set_execution_status(conn: sqlite3.Connection, execution_key: str, status: str) -> None:
+    """回填终态；未登记的 key 影响 0 行（并非所有作业都有 executions 行）。"""
+    conn.execute(
+        "UPDATE executions SET status = ? WHERE execution_key = ?",
+        (status, execution_key),
     )
 
 
