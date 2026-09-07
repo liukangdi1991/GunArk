@@ -7,7 +7,13 @@ import { tradeStrategyLabel } from "../utils/tradeStrategy";
 const { Text } = Typography;
 
 function numberParam(params: Record<string, unknown>, key: string): number | null {
-  const value = Number(params[key]);
+  const raw = params[key];
+  // Number(null) === 0 且有限，会把后端的 null（如 close_below_recent_low_stop_window）
+  // 当成 0，渲染出「低于最近 0 个交易日最低价止损」这种假规则。空值一律视为未设。
+  if (raw === null || raw === undefined || raw === "") {
+    return null;
+  }
+  const value = Number(raw);
   return Number.isFinite(value) ? value : null;
 }
 
@@ -49,8 +55,14 @@ function describeCosts(params: Record<string, unknown>): string {
     return Number.isFinite(value) ? formatRatio(value) : "-";
   };
   const basisPoint = (key: string) => {
+    // 值本身就是 bp（买卖滑点）
     const value = Number(costs[key]);
     return Number.isFinite(value) ? `${value}bp` : "-";
+  };
+  const ratioToBasisPoint = (key: string) => {
+    // 值是比率，×10000 折成 bp：过户费 0.00001 = 0.1bp，直接当 bp 会差一万倍
+    const value = Number(costs[key]);
+    return Number.isFinite(value) ? `${+(value * 10000).toFixed(4)}bp` : "-";
   };
   const lotSize = numberParam(params, "lot_size");
   const commissionMin = Number(costs.commission_min);
@@ -58,38 +70,51 @@ function describeCosts(params: Record<string, unknown>): string {
   return (
     `交易成本：佣金 ${ratio("commission_rate")}` +
     `${Number.isFinite(commissionMin) ? `（单笔最低 ${formatMoney(commissionMin)} 元）` : ""}` +
-    `、卖出印花税 ${ratio("stamp_duty_rate_sell")}、过户费 ${basisPoint("transfer_fee_rate")}` +
+    `、卖出印花税 ${ratio("stamp_duty_rate_sell")}、过户费 ${ratioToBasisPoint("transfer_fee_rate")}` +
     `、滑点买入 ${basisPoint("slippage_buy_bp")} / 卖出 ${basisPoint("slippage_sell_bp")}` +
     `${lotSize !== null ? `，一手 ${lotSize} 股` : ""}。`
   );
 }
 
-function describePositionLimits(params: Record<string, unknown>): string {
+function describePositionLimits(
+  params: Record<string, unknown>,
+  capitalMode?: string,
+): string {
   const limits = (params.position_limits || {}) as Record<string, unknown>;
-  const count = (key: string) => {
-    const value = Number(limits[key]);
-    return Number.isFinite(value) && value > 0 ? value : null;
-  };
-  const maxPositions = count("max_positions");
-  const maxDaily = count("max_daily_new_positions");
-  const target = count("target_positions");
-  const singlePct = Number(limits.max_single_position_pct);
+  // 未设（null）与 0 必须分开，且引擎对 0 的处理逐项不同：
+  //   max_positions / max_daily_new_positions：0 是硬上限（照 0 执行，一笔都不开）；
+  //   target_positions：引擎走真值判断，0 等同未设，不能显示「权益 ÷ 0」；
+  //   max_single_position_pct：0 是硬上限（每份预算 0，买不进）。
+  const maxPositions = numberParam(limits, "max_positions");
+  const maxDaily = numberParam(limits, "max_daily_new_positions");
+  const target = numberParam(limits, "target_positions");
+  const singlePct = numberParam(limits, "max_single_position_pct");
+
+  // target_positions / max_single_position_pct 只喂 _calc_position_budget（按权益算每份
+  // 预算），仅 realistic 生效；unlimited_cash 每笔预算是固定名义额，这两项设了也不起作用，
+  // 写进报告就是假话。max_positions / max_daily_new_positions 进开仓槽位逻辑，两种模式都生效。
+  const unlimited = capitalMode === "unlimited_cash";
 
   const parts: string[] = [];
-  if (maxPositions !== null) {
+  if (maxPositions !== null && maxPositions >= 0) {
     parts.push(`同时最多持有 ${maxPositions} 份`);
   }
-  if (maxDaily !== null) {
+  if (maxDaily !== null && maxDaily >= 0) {
     parts.push(`每天最多新开 ${maxDaily} 份`);
   }
-  if (target !== null) {
-    parts.push(`目标持仓 ${target} 份（每份预算 = 权益 ÷ ${target}）`);
+  if (!unlimited) {
+    if (target !== null && target > 0) {
+      parts.push(`目标持仓 ${target} 份（每份预算 = 权益 ÷ ${target}）`);
+    }
+    if (singlePct !== null && singlePct >= 0) {
+      parts.push(`单份持仓不超过权益的 ${formatRatio(singlePct)}`);
+    }
   }
-  if (Number.isFinite(singlePct) && singlePct > 0) {
-    parts.push(`单份持仓不超过权益的 ${formatRatio(singlePct)}`);
+  if (parts.length) {
+    return `持仓上限：${parts.join("、")}。`;
   }
-  return parts.length
-    ? `持仓上限：${parts.join("、")}。`
+  return unlimited
+    ? "不限持仓数量与开仓节奏（选出多少买多少）。"
     : "不限持仓数量、开仓节奏与单票占比（选出多少买多少）。";
 }
 
@@ -130,7 +155,7 @@ function describeTradeRule(
   if (params["postpone_if_limit_down_on_sell"]) {
     lines.push("如果卖出日跌停无法成交，跌停顺延卖出优先于其他卖出规则。");
   }
-  lines.push(describePositionLimits(params));
+  lines.push(describePositionLimits(params, capitalMode));
   lines.push(describeCosts(params));
 
   if (capitalMode === "unlimited_cash") {

@@ -261,7 +261,11 @@ export function BacktestReportPage() {
                   type="warning"
                   showIcon
                   message={`有 ${filteredOpenPositions.length} 笔持仓到最后一个交易日仍没能卖出，按"顺延到底"处理，不在跌停价上假装成交。`}
-                  description="这些票的钱还压在里面，组合收益、回撤、期末市值都含它们的浮动盈亏，但没有一笔成交可以对账。"
+                  description={
+                    run.capital_mode === "unlimited_cash"
+                      ? "这些票的名义金额还压在里面，浮动盈亏计入「未平仓盈亏」；无限资金模式不产组合收益、回撤与期末市值，也没有一笔成交可以对账。"
+                      : "这些票的钱还压在里面，组合收益、回撤、期末市值都含它们的浮动盈亏，但没有一笔成交可以对账。"
+                  }
                 />
                 <Table
                   rowKey={(record, index) => `${record.strategy}-${record.code}-${record.buy_date}-${index}`}

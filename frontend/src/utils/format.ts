@@ -1,4 +1,11 @@
 export function parseFiniteNumber(value: unknown): number | null {
+  // null/undefined/"" 一律视为缺失：Number(null) === 0，会把后端可空字段
+  // （如 unlimited_cash 下为 null 的 total_return_pct）虚构成 0，渲染成 "+0.00%"
+  // 甚至在「最佳总收益」的 max 比较里压过真实的负收益。
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
   if (typeof value === "string") {
     const text = value.trim();
     const numpyMatch = text.match(/^np\.(?:float\d*|int\d*)\(([-+0-9.eE]+)\)$/);
