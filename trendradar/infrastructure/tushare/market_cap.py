@@ -7,24 +7,35 @@ process-level cache needs no TTL. circ_mv unit: 万元 (verified 2026-08-23:
 
 from __future__ import annotations
 
+import threading
 from datetime import date
 
 _MARKET_CAP_CACHE: dict[date, dict[str, float]] = {}
+_CACHE_LOCK = threading.Lock()
 
 
 def daily_basic_circ_mv(pro, trade_date: date) -> dict[str, float]:
-    """Full-market float market cap for one trade day: {code: circ_mv_万元}."""
-    if trade_date in _MARKET_CAP_CACHE:
-        return _MARKET_CAP_CACHE[trade_date]
+    """Full-market float market cap for one trade day: {code: circ_mv_万元}.
+
+    并发：锁内查缓存、锁外拉取（网络 IO 不持锁）；同时 miss 最多重复拉一次，
+    结果幂等无害。接口返回 None（异常/限流）时返回空 dict 且**不缓存**——
+    空结果让市值 gate 可见地降级，同时保留下次调用重试的机会。
+    """
+    with _CACHE_LOCK:
+        if trade_date in _MARKET_CAP_CACHE:
+            return _MARKET_CAP_CACHE[trade_date]
     resp = pro.daily_basic(
         trade_date=trade_date.strftime("%Y%m%d"),
         fields="ts_code,circ_mv",
     )
+    if resp is None:
+        return {}
     result: dict[str, float] = {}
     for row in resp.to_dict(orient="records"):
         code = str(row["ts_code"])[:6]
         mv = row["circ_mv"]
         if mv is not None and mv == mv:  # skip NaN
             result[code] = float(mv)
-    _MARKET_CAP_CACHE[trade_date] = result
+    with _CACHE_LOCK:
+        _MARKET_CAP_CACHE[trade_date] = result
     return result

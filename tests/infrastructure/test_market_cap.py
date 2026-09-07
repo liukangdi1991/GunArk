@@ -35,3 +35,17 @@ def test_nan_circ_mv_skipped(tmp_path):
     result = mc.daily_basic_circ_mv(pro, date(2026, 8, 21))
     assert result == {}
     mc._MARKET_CAP_CACHE.clear()
+
+
+def test_none_response_returns_empty_without_cache(tmp_path):
+    """接口返回 None（异常/限流）：返回空 dict、不抛 AttributeError、不缓存失败结果。
+
+    空结果会让市值 gate 全部跳过（降级可见），但不固化——下次调用仍会重试接口。
+    """
+    mc._MARKET_CAP_CACHE.clear()
+    pro = MagicMock()
+    pro.daily_basic.return_value = None
+    result = mc.daily_basic_circ_mv(pro, date(2026, 8, 21))
+    assert result == {}
+    assert date(2026, 8, 21) not in mc._MARKET_CAP_CACHE  # 失败不缓存，保留重试机会
+    mc._MARKET_CAP_CACHE.clear()

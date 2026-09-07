@@ -61,6 +61,7 @@ export function ExecutionConsolePage() {
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
+    const controller = new AbortController();
     offsetRef.current = 0;
     pendingTextRef.current = "";
     setExecution(null);
@@ -76,7 +77,7 @@ export function ExecutionConsolePage() {
       }
 
       try {
-        const payload = await getExecutionConsole(executionId, offsetRef.current);
+        const payload = await getExecutionConsole(executionId, offsetRef.current, controller.signal);
         if (cancelled) {
           return;
         }
@@ -114,6 +115,7 @@ export function ExecutionConsolePage() {
       if (timer) {
         window.clearTimeout(timer);
       }
+      controller.abort(); // 中止在途轮询请求，卸载后不再占用连接
     };
   }, [executionId]);
 

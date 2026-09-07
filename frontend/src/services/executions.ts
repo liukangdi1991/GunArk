@@ -13,9 +13,11 @@ export interface CancelExecutionResponse {
 export function getExecutionConsole(
   executionId: string,
   offset: number,
+  signal?: AbortSignal,
 ): Promise<ExecutionConsoleResponse> {
   return requestJson<ExecutionConsoleResponse>(
     `/api/executions/${encodeURIComponent(executionId)}/console?offset=${offset}`,
+    { signal },
   );
 }
 
