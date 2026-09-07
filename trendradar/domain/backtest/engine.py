@@ -6,13 +6,26 @@ from typing import Any, Callable, List, Optional
 
 import polars as pl
 from trendradar.domain.backtest.config import BacktestConfig
-from trendradar.domain.backtest.execution import FillResult, calc_buy_fill, calc_sell_fill, is_limit_down, is_limit_up
-from trendradar.domain.backtest.models import Position, SkipRecord, TradeRecord
+from trendradar.domain.backtest.execution import (
+    FillResult,
+    calc_buy_fill,
+    calc_sell_fill,
+    is_limit_down,
+    is_limit_up,
+    min_trading_shares,
+)
+from trendradar.domain.backtest.models import (
+    OpenPositionRecord,
+    Position,
+    SkipRecord,
+    TradeRecord,
+)
 from trendradar.domain.backtest.portfolio import (
     PortfolioState,
+    PositionKey,
     available_open_slots,
     current_equity,
-    filter_reentry_codes,
+    filter_reentry_keys,
     is_holding,
 )
 from trendradar.domain.signal.models import SignalSet
@@ -23,6 +36,7 @@ from trendradar.domain.market.data_store import MarketDataStore
 class BacktestResult:
     trades: list[TradeRecord] = field(default_factory=list)
     skips: list[SkipRecord] = field(default_factory=list)
+    open_positions: list[OpenPositionRecord] = field(default_factory=list)
     equity_curve: list[dict] = field(default_factory=list)
     metrics: dict[str, Any] = field(default_factory=dict)
 
@@ -40,16 +54,19 @@ class BacktestEngine:
     ) -> BacktestResult:
         calendar = market_store.get_calendar()
         if not calendar:
-            return BacktestResult()
+            return self._no_trade_result()
 
         signals_by_date = self._group_signals_by_date(signal_set, calendar)
         if not signals_by_date:
-            return BacktestResult()
+            return self._no_trade_result()
 
         state = PortfolioState(cash=self.config.capital.initial_cash)
         trades: list[TradeRecord] = []
         skips: list[SkipRecord] = []
         equity_curve: list[dict] = []
+        # unlimited_cash 不限现金（实测首日 −2.33 亿），"这个账户现在值多少钱"问不通，
+        # 于是不产净值曲线、只算逐笔盈亏。见 2026-09-04 那份 unlimited-cash 设计。
+        tracks_nav = self.config.capital.mode != "unlimited_cash"
         cal_index = {d: i for i, d in enumerate(calendar)}
         # 从首个买入日开始、到最后一个买入日之后持仓了结为止
         # （信号前后的平线段不进 equity，年化指标不被稀释）
@@ -63,26 +80,40 @@ class BacktestEngine:
             if progress:
                 progress(idx - start_idx + 1, total)
 
-            self._process_exits(cur_date, state, trades, skips, cal_index, market_store)
+            self._process_exits(cur_date, state, trades, cal_index, market_store)
             self._process_entries(cur_date, signals_by_date.get(cur_date, []), state, skips, market_store)
 
-            mark_prices: dict[str, float] = {}
-            for code, pos in state.positions.items():
-                mark_prices[code] = self._get_latest_close(market_store, code, cur_date, pos.entry_price)
-            equity = current_equity(state, mark_prices)
-            equity_curve.append(
-                {
-                    "date": cur_date,
-                    "cash": state.cash,
-                    "equity": equity,
-                    "position_count": len(state.positions),
-                }
-            )
+            if tracks_nav:
+                mark_prices: dict[PositionKey, float] = {}
+                for key, pos in state.positions.items():
+                    mark_prices[key] = self._mark(market_store, pos, cur_date)
+                equity = current_equity(state, mark_prices)
+                equity_curve.append(
+                    {
+                        "date": cur_date,
+                        "cash": state.cash,
+                        "equity": equity,
+                        "position_count": len(state.positions),
+                    }
+                )
             if idx >= last_buy_idx and not state.positions:
                 break  # 无持仓且不再有买入 → 结束（含跌停顺延后的了结）
 
-        metrics = self._compute_metrics(equity_curve, trades)
-        return BacktestResult(trades=trades, skips=skips, equity_curve=equity_curve, metrics=metrics)
+        if not tracks_nav:
+            # 不日标 ≠ 不标：标记价靠 _mark 推进 pos.last_close，期末统一标一次，
+            # 「期末未平仓」的标记价/浮动盈亏才不会停在成本上
+            for pos in state.positions.values():
+                self._mark_final(market_store, pos, cur_date)
+
+        open_positions = [self._open_record(pos, cal_index, cur_date)
+                          for pos in state.positions.values()]
+        metrics = self._compute_metrics(trades, equity_curve, open_positions)
+        return BacktestResult(trades=trades, skips=skips, open_positions=open_positions,
+                              equity_curve=equity_curve, metrics=metrics)
+
+    def _no_trade_result(self) -> BacktestResult:
+        """没有任何可交易信号时也要给出指标：空的 metrics dict 会让报告把初始资金显示成 0。"""
+        return BacktestResult(metrics=self._compute_metrics([], [], []))
 
     def _group_signals_by_date(
         self, signal_set: SignalSet, calendar: list[date]
@@ -128,11 +159,67 @@ class BacktestEngine:
             return data.to_dicts()
         return list(data) if data else []
 
-    def _get_latest_close(self, market_store: MarketDataStore, code: str, dt: date, fallback: float) -> float:
-        row = market_store.get_row(code, dt)
+    def _mark(self, market_store: MarketDataStore, pos: Position, dt: date) -> float:
+        """标记价 = 最后一根真实收盘价，停牌时沿用上一根。
+
+        原来无当日行情就回落到 entry_price：停牌第一天把浮盈凭空抹平（曲线上是一
+        条没发生过的回撤），退市股更惨——净值永久冻结在成本，实际接近归零。
+        """
+        row = market_store.get_row(pos.code, dt)
         if row is not None:
-            return float(row.get("close", fallback))
-        return fallback
+            pos.last_close = float(row.get("close", pos.last_close))
+            pos.last_close_date = dt
+        return pos.last_close if pos.last_close > 0 else pos.entry_price
+
+    def _mark_final(
+        self, market_store: MarketDataStore, pos: Position, until: date
+    ) -> None:
+        """期末补标：标记价 = `until` 之前**最后一根**真实收盘价。
+
+        不能像 `_mark` 那样只看 `until` 这一天——到期还卖不掉的票，恰恰常是那天
+        没有 K 线的停牌股（`_mark` 取不到当日行情就不推进 `last_close`，于是标记价
+        永远停在成本，浮动盈亏恒为 0）。
+        """
+        rows = self._to_rows(market_store.get_rows(pos.code, pos.entry_date, until))
+        if not rows:
+            return
+        last = rows[-1]
+        close = float(last.get("close", 0) or 0)
+        if close <= 0:
+            return
+        pos.last_close = close
+        pos.last_close_date = last.get("date") or until
+
+    @staticmethod
+    def _mark_blocked(pos: Position, dt: date, reason: str) -> None:
+        if pos.blocked_since is None:
+            pos.blocked_since = dt
+        pos.blocked_reason = reason
+
+    def _open_record(self, pos: Position, cal_index: dict[date, int], until: date) -> OpenPositionRecord:
+        mark = pos.last_close if pos.last_close > 0 else pos.entry_price
+        pnl = mark * pos.shares - pos.entry_cost
+        if pos.blocked_since and pos.blocked_since in cal_index and until in cal_index:
+            blocked_days = cal_index[until] - cal_index[pos.blocked_since] + 1
+        else:
+            blocked_days = 0
+        return OpenPositionRecord(
+            strategy=pos.strategy,
+            code=pos.code,
+            signal_date=pos.signal_date,
+            buy_date=pos.entry_date,
+            target_sell_date=pos.target_sell_date,
+            shares=pos.shares,
+            entry_price=pos.entry_price,
+            entry_cost=pos.entry_cost,
+            mark_price=mark,
+            mark_date=pos.last_close_date,
+            blocked_since=pos.blocked_since,
+            blocked_reason=pos.blocked_reason or "未成交",
+            blocked_trading_days=blocked_days,
+            unrealized_pnl=pnl,
+            unrealized_return_pct=(pnl / pos.entry_cost * 100.0) if pos.entry_cost > 0 else 0.0,
+        )
 
     def _process_entries(
         self,
@@ -145,10 +232,11 @@ class BacktestEngine:
         if not day_signals:
             return
 
-        codes = [s["code"] for s in day_signals]
-        filtered_codes = filter_reentry_codes(state, codes, self.config.portfolio.allow_reentry_same_stock)
-        signal_by_code = {s["code"]: s for s in day_signals if s["code"] in filtered_codes}
-        candidates = sorted(signal_by_code.keys())
+        keys = [(s["code"], s["strategy"]) for s in day_signals]
+        filtered_keys = filter_reentry_keys(state, keys, self.config.portfolio.allow_reentry_same_stock)
+        allowed = set(filtered_keys)
+        signal_by_key = {(s["code"], s["strategy"]): s for s in day_signals if (s["code"], s["strategy"]) in allowed}
+        candidates = sorted(signal_by_key.keys())
 
         max_daily = self.config.portfolio.max_daily_new_positions
         slots = min(
@@ -158,14 +246,25 @@ class BacktestEngine:
         if slots <= 0:
             return
 
+        # 当日每份持仓只标一次价：_mark 要整文件读 parquet，放进候选循环里
+        # 就成了 候选数 × 持仓数 次读（全市场实测占满 82% 的回测时间）
+        marks: dict[PositionKey, float] = {}
+
+        def mark_prices() -> dict[PositionKey, float]:
+            for key, p in state.positions.items():
+                if key not in marks:
+                    marks[key] = self._mark(market_store, p, cur_date)
+            return marks
+
         opened = 0
-        for code in candidates:
+        for key in candidates:
             if opened >= slots:
                 break
-            if is_holding(state, code):
+            code, strategy = key
+            if is_holding(state, code, strategy):
                 continue
             row = market_store.get_row(code, cur_date)
-            sig = signal_by_code[code]
+            sig = signal_by_key[key]
             if row is None:
                 skips.append(
                     SkipRecord(
@@ -205,15 +304,16 @@ class BacktestEngine:
             if self.config.capital.mode == "unlimited_cash":
                 budget = float(self.config.capital.fixed_cash_per_trade)
             else:
-                mark_prices = {
-                    c: self._get_latest_close(market_store, c, cur_date, p.entry_price)
-                    for c, p in state.positions.items()
-                }
-                equity = current_equity(state, mark_prices)
+                equity = current_equity(state, mark_prices())
                 budget = self._calc_position_budget(equity, state.cash)
 
             lot_size = self.config.capital.lot_size
             shares = int(budget / open_price / lot_size) * lot_size
+            if shares <= 0 and self.config.capital.mode == "unlimited_cash":
+                # 该模式不校验现金，名义额只是"想投多少"：1300 元的茅台 5 万凑不满
+                # 一手，也要按最小成交单位买满（科创板 200 股），否则整笔信号消失，
+                # 报告里还挂一条在无限资金下站不住脚的"资金预算不足"
+                shares = max(lot_size, min_trading_shares(code=code))
             if shares <= 0:
                 skips.append(
                     SkipRecord(
@@ -258,7 +358,7 @@ class BacktestEngine:
                 shares=shares,
                 entry_cost=cash_needed,
             )
-            state.open_position(code, position, cash_needed)
+            state.open_position(code, strategy, position, cash_needed)
             opened += 1
 
     def _calc_position_budget(self, equity: float, cash: float) -> float:
@@ -293,14 +393,18 @@ class BacktestEngine:
         cur_date: date,
         state: PortfolioState,
         trades: list[TradeRecord],
-        skips: list[SkipRecord],
         cal_index: dict[date, int],
         market_store: MarketDataStore,
     ) -> None:
-        to_close: list[tuple[str, Position]] = []
-        for code, pos in state.positions.items():
+        to_close: list[tuple[PositionKey, Position]] = []
+        for key, pos in state.positions.items():
+            code = pos.code
             row = market_store.get_row(code, cur_date)
             if row is None:
+                # 没有当日行情就无从判断触发条件。只有"本来就该卖了"（已到计划卖出日，
+                # 或已在顺延中）才算卖不掉，否则只是还没到该卖的时候。
+                if cur_date >= pos.target_sell_date or pos.blocked_since:
+                    self._mark_blocked(pos, cur_date, "停牌无行情")
                 continue
             trigger_by_hold = cur_date >= pos.target_sell_date
             trigger_by_zx = (
@@ -309,43 +413,28 @@ class BacktestEngine:
             )
             trigger_by_recent_low = self._is_close_below_recent_low_stop(market_store, code, cur_date, pos)
             if not (trigger_by_hold or trigger_by_zx or trigger_by_recent_low):
+                pos.blocked_since = None      # 卖出意图解除 → 顺延状态归零，下次从头算
+                pos.blocked_reason = ""
                 continue
 
-            can_sell = True
             prev_close = market_store.get_previous_close(code, cur_date)
-            if self.config.execution.postpone_if_limit_down_on_sell and is_limit_down(row["close"], prev_close, code=code):
-                pos.planned_sell_attempts += 1
-                can_sell = False
-                if pos.planned_sell_attempts > self.config.execution.max_sell_postpone_days:
-                    can_sell = True
-                    reason = "跌停顺延超上限，按收盘强制平仓"
-                    if trigger_by_zx and not trigger_by_hold:
-                        reason = "长期多空线连续两日跌破触发卖出，但跌停顺延超上限，按收盘强制平仓"
-                    if trigger_by_recent_low and not trigger_by_hold:
-                        reason = "近期低点止损触发卖出，但跌停顺延超上限，按收盘强制平仓"
-                    skips.append(
-                        SkipRecord(
-                            strategy=pos.strategy,
-                            code=pos.code,
-                            signal_date=pos.signal_date,
-                            buy_date=pos.entry_date,
-                            stage="sell",
-                            reason=reason,
-                            date_ref=cur_date,
-                        )
-                    )
-
-            if not can_sell:
+            if (self.config.execution.postpone_if_limit_down_on_sell
+                    and is_limit_down(row["close"], prev_close, code=code)):
+                # 顺延到底：跌停价卖不掉，那就别假装卖得掉。旧实现数到上限后按当日
+                # 收盘强行成交，等于用同一个价格自己否掉自己的前提。
+                self._mark_blocked(pos, cur_date, "跌停封死")
                 continue
-            to_close.append((code, pos))
 
-        for code, pos in to_close:
+            to_close.append((key, pos))
+
+        for key, pos in to_close:
+            code = pos.code
             row = market_store.get_row(code, cur_date)
             if row is None:
                 continue
             sell_fill = calc_sell_fill(float(row["close"]), pos.shares, self.config.costs)
             cash_back = sell_fill.amount - sell_fill.fee
-            state.close_position(code, cash_back)
+            state.close_position(code, pos.strategy, cash_back)
 
             total_fee = (pos.entry_cost - pos.entry_price * pos.shares) + sell_fill.fee
             profit = cash_back - pos.entry_cost
@@ -435,18 +524,34 @@ class BacktestEngine:
         recent_low = float(min(r["low"] for r in holding_rows[-window:]))
         return today_close < recent_low
 
-    def _compute_metrics(self, equity_curve: list[dict], trades: list[TradeRecord]) -> dict[str, Any]:
+    def _compute_metrics(
+        self,
+        trades: list[TradeRecord],
+        equity_curve: list[dict],
+        open_positions: list[OpenPositionRecord],
+    ) -> dict[str, Any]:
+        from trendradar.domain.backtest.metrics import (
+            NAV_METRIC_KEYS,
+            compute_summary,
+            money_summary,
+        )
+
+        if self.config.capital.mode == "unlimited_cash":
+            summary = money_summary(trades, open_positions)
+            summary.update({key: None for key in NAV_METRIC_KEYS})
+            return summary
+
         if not equity_curve:
-            return {
-                "total_return_pct": 0.0,
-                "annual_return_pct": 0.0,
-                "max_drawdown_pct": 0.0,
-                "sharpe": 0.0,
-                "trade_count": 0,
-                "win_rate_pct": 0.0,
-            }
-        from trendradar.domain.backtest.metrics import compute_summary
+            # 曲线为空不等于钱亏了：没有成交时初始/期末现金都应是本金，不能让报告显示 0
+            summary = money_summary(trades, open_positions)
+            initial = float(self.config.capital.initial_cash)
+            summary.update({key: 0.0 for key in NAV_METRIC_KEYS})
+            summary["initial_cash"] = initial
+            summary["final_cash"] = initial
+            return summary
+
         return compute_summary(
             equity_curve, trades, self.config.risk,
             initial_cash=self.config.capital.initial_cash,
+            open_positions=open_positions,
         )

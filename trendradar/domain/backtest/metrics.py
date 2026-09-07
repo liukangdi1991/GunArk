@@ -1,11 +1,44 @@
 from __future__ import annotations
 
-from typing import Any, List
+from typing import Any, Iterable, Sequence
 
 import polars as pl
 
 from trendradar.domain.backtest.config import RiskConfig
-from trendradar.domain.backtest.models import TradeRecord
+from trendradar.domain.backtest.models import OpenPositionRecord, TradeRecord
+
+# 组合级净值指标：只有"这个账户现在值多少钱"问得通时才有定义
+NAV_METRIC_KEYS = (
+    "total_return_pct",
+    "annual_return_pct",
+    "max_drawdown_pct",
+    "sharpe",
+    "initial_cash",
+    "final_cash",
+)
+
+
+def money_summary(
+    trades: Sequence[TradeRecord],
+    open_positions: Iterable[OpenPositionRecord] = (),
+) -> dict[str, Any]:
+    """逐笔金额口径：不依赖权益/现金，unlimited_cash 模式只有这一份账。
+
+    分母用买入面额（buy_price × shares），与报告里按策略的收益率、前端
+    「逐笔盈亏」卡片同一口径——三处三个数才是这个函数存在的理由。
+    """
+    realized = float(sum(t.profit for t in trades))
+    notional = float(sum(t.buy_amount for t in trades))
+    win_count = sum(1 for t in trades if t.profit > 0)
+    return {
+        "realized_profit_sum": realized,
+        "invested_notional_sum": notional,
+        # 一分钱都没投过 ⇒ 收益率没有定义，0.00% 会被读成"不赚不亏"
+        "pnl_return_pct": (realized / notional * 100.0) if notional > 0 else None,
+        "unrealized_pnl": float(sum(p.unrealized_pnl for p in open_positions)),
+        "trade_count": len(trades),
+        "win_rate_pct": (win_count / len(trades) * 100.0) if trades else 0.0,
+    }
 
 
 def compute_summary(
@@ -13,18 +46,21 @@ def compute_summary(
     trades: list[TradeRecord],
     risk_cfg: RiskConfig,
     initial_cash: float | None = None,
+    open_positions: Iterable[OpenPositionRecord] = (),
 ) -> dict[str, Any]:
+    summary = money_summary(trades, open_positions)
+
     if not equity_curve:
-        return {
+        initial = float(initial_cash) if initial_cash is not None else 0.0
+        summary.update({
             "total_return_pct": 0.0,
             "annual_return_pct": 0.0,
             "max_drawdown_pct": 0.0,
             "sharpe": 0.0,
-            "trade_count": 0,
-            "win_rate_pct": 0.0,
-            "initial_cash": 0.0,
-            "final_cash": 0.0,
-        }
+            "initial_cash": initial,
+            "final_cash": initial,
+        })
+        return summary
 
     df = pl.DataFrame(equity_curve)
     nav = df["equity"]
@@ -59,18 +95,12 @@ def compute_summary(
         else:
             sharpe = float((risk_cfg.trading_days_per_year ** 0.5) * excess_daily.mean() / vol)
 
-    win_rate = 0.0
-    if trades:
-        win_count = sum(1 for t in trades if t.profit > 0)
-        win_rate = win_count / len(trades)
-
-    return {
+    summary.update({
         "total_return_pct": total_return * 100.0,
         "annual_return_pct": annual_return * 100.0,
         "max_drawdown_pct": max_drawdown * 100.0,
         "sharpe": sharpe,
-        "trade_count": len(trades),
-        "win_rate_pct": win_rate * 100.0,
         "initial_cash": float(initial_cash) if initial_cash is not None else float(first_equity),
         "final_cash": float(last_equity),
-    }
+    })
+    return summary

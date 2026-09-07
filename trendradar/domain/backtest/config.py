@@ -17,7 +17,6 @@ class CapitalConfig:
 @dataclass(frozen=True)
 class ExecutionConfig:
     fixed_hold_n_days: int = 5
-    max_sell_postpone_days: int = 10
     reject_if_limit_up_on_buy: bool = True
     postpone_if_limit_down_on_sell: bool = True
     force_sell_on_two_day_close_below_long_term_bull_bear_line: bool = False
@@ -42,7 +41,7 @@ class PortfolioConfig:
     max_positions: Optional[int] = None
     max_single_position_pct: Optional[float] = None
     max_daily_new_positions: Optional[int] = None
-    allow_reentry_same_stock: bool = False
+    allow_reentry_same_stock: bool = True
 
 
 @dataclass(frozen=True)

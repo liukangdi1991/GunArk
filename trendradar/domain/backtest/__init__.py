@@ -14,9 +14,10 @@ from trendradar.domain.backtest.config import (
 )
 from trendradar.domain.backtest.portfolio import (
     PortfolioState,
+    PositionKey,
     available_open_slots,
     current_equity,
-    filter_reentry_codes,
+    filter_reentry_keys,
     is_holding,
 )
 from trendradar.domain.backtest.execution import (
@@ -27,6 +28,7 @@ from trendradar.domain.backtest.execution import (
     is_limit_up,
     limit_down_price,
     limit_up_price,
+    min_trading_shares,
 )
 from trendradar.domain.backtest.engine import (
     BacktestEngine,
@@ -47,9 +49,10 @@ __all__ = [
     "PortfolioConfig",
     "RiskConfig",
     "PortfolioState",
+    "PositionKey",
     "available_open_slots",
     "current_equity",
-    "filter_reentry_codes",
+    "filter_reentry_keys",
     "is_holding",
     "FillResult",
     "calc_buy_fill",
@@ -58,6 +61,7 @@ __all__ = [
     "is_limit_up",
     "limit_down_price",
     "limit_up_price",
+    "min_trading_shares",
     "BacktestEngine",
     "BacktestResult",
     "MarketDataStore",

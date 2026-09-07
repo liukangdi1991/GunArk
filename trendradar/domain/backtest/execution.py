@@ -23,6 +23,13 @@ def _limit_pct(*, code: str = "") -> float:
     return 0.10
 
 
+def min_trading_shares(*, code: str = "") -> int:
+    """最小买入数量：科创板（688/689 的 CDR）200 股起，其余板块一手 100 股。"""
+    if str(code or "").strip().startswith(("688", "689")):
+        return 200
+    return 100
+
+
 def _round_tick(value: float) -> float:
     return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
