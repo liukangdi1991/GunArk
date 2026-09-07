@@ -568,10 +568,12 @@ def test_report_trade_rule_prefers_snapshot_over_rebuild(tmp_path, monkeypatch):
 
     rule = backtest_result_payload(key)["trade_rule"]
     assert rule["fixed_hold_n_days"] == 1
+    assert rule["rebuilt_from_request"] is False   # 来自快照，无漂移，前端不提示
 
 
 def test_report_trade_rule_falls_back_to_rebuild_without_snapshot(tmp_path, monkeypatch):
-    """旧产物没有快照：回落读取时重算，不劣于现状（默认值照填，报告不空白）。"""
+    """旧产物没有快照：回落读取时重算，不劣于现状（默认值照填，报告不空白）；
+    但重算的失真不再静默——打上 rebuilt_from_request 让前端能提示。"""
     from trendradar.interfaces.api.presenters import backtest_result_payload
 
     days = [date(2026, 8, 10) + timedelta(days=i) for i in range(8)]
@@ -585,6 +587,7 @@ def test_report_trade_rule_falls_back_to_rebuild_without_snapshot(tmp_path, monk
 
     rule = backtest_result_payload(key)["trade_rule"]
     assert rule["fixed_hold_n_days"] == 5            # 重算吃当前默认
+    assert rule["rebuilt_from_request"] is True      # 前端据此提示"可能与实跑不符"
 
 
 # ---------------------------------------------------------------------------

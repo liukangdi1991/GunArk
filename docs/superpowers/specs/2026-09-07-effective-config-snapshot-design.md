@@ -80,3 +80,29 @@ Path(out_dir / "effective_config.json").write_text(
   `GET /api/backtest-results/{key}/report` 返回 200，`trade_rule` 取自该快照（印花税显示
   0.0005，与成交口径一致）。注：本轮请求全空 ⇒ 快照值恰等于默认值，单看报告无法区分
   「读快照」还是「重算」；区分逻辑由上面 `hold=1` vs 默认 5 的单测钉死，实跑只证快照确实落盘且可读。
+
+## 补录（2026-09-07）：旧产物回落重算的失真不再静默
+
+第二轮 review 通过全部修复，仅留一条无阻塞观察：**快照机制上线前的旧产物**仍走回落重算，
+未显式设置的字段按今天的默认值回显，可能与实跑不符。上文「为什么不按 review 建议『旧产物标未知』」
+论证了「整块标未知」回归过大（清空所有历史报告的交易规则），当时的结论是「可接受的已知取舍、无需动作」。
+
+复查后修正这个结论：真相确实无从恢复，但「无从察觉」是可以修的——问题段自己就写着
+「报告与产物自相矛盾，**且无从察觉**」。前半句无解，后半句能解。取中间档：
+
+- **不清空**（保留回落重算的值，用户显式设过的字段仍准，报告不空白）；
+- **但打标记**：回落路径给 `trade_rule` 加 `rebuilt_from_request=True`（读快照时为 `False`），
+  前端据此在交易规则块顶部挂一条 warning，说明「未显式设置的参数按当前默认值回显，可能与实跑不符」。
+
+这样新产物无任何提示（快照即真相），旧产物保留可读性的同时把失真从静默变成可见，失真面仍随时间自然收敛。
+
+### 触点
+
+- `presenters._effective_trade_rule`：`rebuilt = snapshot is None`，构建规则后 `rule["rebuilt_from_request"] = rebuilt`。
+- `frontend/src/components/StrategySnapshots.tsx` 的 `ParamsSnapshot`：`params.rebuilt_from_request` 为真时渲染 antd `Alert`（type=warning）。
+- 测试 `tests/app/test_backtest_report_fields.py`：`prefers_snapshot_over_rebuild` 断言 `rebuilt_from_request is False`；`falls_back_to_rebuild_without_snapshot` 断言 `is True`。
+
+### 验证
+
+全量 `.venv/bin/pytest -q`：533 passed（仅在两条既有测试上补断言，无新增用例）。
+前端 `tsc -b` 无错、`vite build` 成功。

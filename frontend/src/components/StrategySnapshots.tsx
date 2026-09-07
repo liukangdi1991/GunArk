@@ -1,4 +1,4 @@
-import { Card, Space, Tag, Typography } from "antd";
+import { Alert, Card, Space, Tag, Typography } from "antd";
 import type { ReactNode } from "react";
 import type { Strategy } from "../types/strategy";
 import { capitalModeLabel } from "../utils/capital";
@@ -317,9 +317,21 @@ export function ParamsSnapshot({
   capitalMode?: string;
   cashPerTrade?: number;
 }) {
+  // 旧产物（参数快照机制上线前）没有 effective_config.json，后端只能按【今天】的
+  // 默认值重算规则回显。用户显式设过的字段仍准，吃了默认值的字段可能与实跑不符
+  // （如印花税默认从 0.01% 改到 0.05%）。这条失真无法恢复，但必须可察觉，不能静默改口。
+  const rebuilt = Boolean(params["rebuilt_from_request"]);
   return (
     <Card className="strategy-snapshot-card">
       <Space direction="vertical" size={8}>
+        {rebuilt ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="此报告早于参数快照机制"
+            description="下列交易规则中，你未显式设置的参数按当前默认值回显，可能与该报告实际运行时的取值不符。"
+          />
+        ) : null}
         <ul className="snapshot-lines">
           {describeTradeRule(params, capitalMode, cashPerTrade).map((line) => (
             <li key={line}>

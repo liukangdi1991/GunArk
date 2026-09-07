@@ -274,16 +274,23 @@ def _effective_trade_rule(request: dict, key: str) -> dict:
     重算。回落不劣于现状（request_json 里显式设过的字段仍准），但吃了默认值的字段
     会随**今天**的默认值漂移，与产物自己的逐笔盈亏对不上——这正是 P1#2 的失真，
     新产物起不再发生（见 2026-09-07-effective-config-snapshot-design.md）。
+
+    回落路径的失真无法恢复（当时没存），但可以不再**静默**：给规则打上
+    `rebuilt_from_request` 标记，前端据此提示"未显式设置的参数按当前默认值回显，
+    可能与实跑不符"，把 spec 里说的"无从察觉"变成可察觉。
     """
     snapshot = _read_json(_executions_root() / key / "backtest" / "effective_config.json")
-    if snapshot is None:
+    rebuilt = snapshot is None
+    if rebuilt:
         from dataclasses import asdict
 
         from trendradar.app.services.backtest_service import _build_config
 
         bt_request = request.get("backtest") or request
         snapshot = asdict(_build_config(bt_request))
-    return _rule_from_config_dict(snapshot, request)
+    rule = _rule_from_config_dict(snapshot, request)
+    rule["rebuilt_from_request"] = rebuilt
+    return rule
 
 
 def _db_utc_to_iso(value: str | None) -> str | None:
