@@ -1,4 +1,5 @@
-tushare>=1.4.0
-fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
-polars>=1.0.0
+# 版本锁定（==）：与 .venv 实测版本一致。升级需显式改版本 + 全量测试。
+tushare==1.4.21
+fastapi==0.136.1
+uvicorn[standard]==0.46.0
+polars==1.39.3
