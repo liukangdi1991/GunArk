@@ -155,6 +155,10 @@ tests/
 
 以下是贯穿所有 Task 的协议类型。每个 Task 的 `Interfaces` 块引用这里。
 
+> 本节是 2026-07-09 的设计草图，与现行代码已有出入（例如
+> `ExecutionConfig.max_sell_postpone_days` 已于 2026-09-03 随「顺延到底」改造删除）。
+> 现状以 `trendradar/domain/backtest/config.py` 为准。
+
 ```python
 # === domain/strategy/protocol.py ===
 

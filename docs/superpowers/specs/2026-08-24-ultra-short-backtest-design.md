@@ -14,7 +14,7 @@
 | 场景 | 处理 |
 |---|---|
 | 买入日**开盘涨停** | **放弃**该买入（沿用现有 `reject_if_limit_up_on_buy` 对 open 的检查） |
-| 卖出日**收盘跌停** | **顺延**到下一交易日收盘价卖出（沿用现有 `postpone_if_limit_down_on_sell` + `max_sell_postpone_days=10`） |
+| 卖出日**收盘跌停** | **顺延**到下一交易日收盘价卖出（`postpone_if_limit_down_on_sell`；2026-09-03 起改为**顺延到底**、无次数上限，见 `2026-09-03-limit-down-postpone-to-end-design.md`） |
 | 现有两个止损选项 | **不接线、不生效保持现状**——只给超短线开通道 |
 
 ## 3. 设计
