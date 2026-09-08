@@ -23,6 +23,9 @@ function selectedKey(pathname: string) {
   if (pathname.startsWith("/market-data")) {
     return "market-data";
   }
+  if (pathname.startsWith("/stocks")) {
+    return ""; // 个股K线页不归属任何菜单（N11），不高亮「选股」
+  }
   return "selections";
 }
 

@@ -1,5 +1,6 @@
 import { requestJson } from "./apiClient";
 import type { MarketDataStatus, TradingDatesResponse } from "../types/marketData";
+import type { AdjustMode, KlinePeriod, KlineResponse } from "../types/kline";
 
 let tradingDatesCache: TradingDatesResponse | null = null;
 let tradingDatesRequest: Promise<TradingDatesResponse> | null = null;
@@ -46,4 +47,16 @@ export function confirmDoubtfulDays(): Promise<{ status: string; confirmed: stri
     "/api/market-data/confirm-doubtful",
     { method: "POST" },
   );
+}
+
+export async function getKline(
+  code: string,
+  period: KlinePeriod,
+  adjust: AdjustMode,
+  options?: { signal?: AbortSignal },
+): Promise<KlineResponse> {
+  const params = new URLSearchParams({ period, adjust });
+  return requestJson<KlineResponse>(`/api/stocks/${code}/kline?${params.toString()}`, {
+    signal: options?.signal,
+  });
 }

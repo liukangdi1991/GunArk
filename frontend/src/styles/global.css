@@ -1857,3 +1857,24 @@ h1.ant-typography {
     flex: 0 0 64px !important;
   }
 }
+
+/* 个股K线页：图区占满剩余视口（父级无确定高度时 height:100% 解析为 0，N13） */
+.stock-kline-page {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - 96px);
+  min-height: 480px;
+  gap: 12px;
+}
+
+.stock-kline-page .kline-chart-container {
+  flex: 1;
+  min-height: 0;
+}
+
+@media (max-width: 720px) {
+  .stock-kline-page .kline-chart-container {
+    height: 420px;
+    flex: none;
+  }
+}

@@ -1,3 +1,5 @@
+import { lazy, Suspense } from "react";
+import { Spin } from "antd";
 import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
 import { AppShell } from "../layouts/AppShell";
 import { BacktestReportPage } from "../pages/Backtests/BacktestReportPage";
@@ -6,6 +8,8 @@ import { ExecutionConsolePage } from "../pages/ExecutionConsole/ExecutionConsole
 import { MarketDataPage } from "../pages/MarketData/MarketDataPage";
 import { SelectionResultPage } from "../pages/Selections/SelectionResultPage";
 import { SelectionWorkspacePage } from "../pages/Selections/SelectionWorkspacePage";
+
+const StockKlinePage = lazy(() => import("../pages/Stocks/StockKlinePage"));
 
 const router = createBrowserRouter([
   {
@@ -47,6 +51,14 @@ const router = createBrowserRouter([
       {
         path: "market-data",
         element: <MarketDataPage />,
+      },
+      {
+        path: "stocks/:code",
+        element: (
+          <Suspense fallback={<Spin style={{ display: "block", margin: "80px auto" }} />}>
+            <StockKlinePage />
+          </Suspense>
+        ),
       },
     ],
   },
