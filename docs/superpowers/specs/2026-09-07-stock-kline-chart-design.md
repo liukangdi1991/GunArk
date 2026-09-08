@@ -154,13 +154,15 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
    `date`/`timestamp`=组内最后交易日。整周/整月停牌（组内无 bar）不产出该周期 bar。
    **停牌判据 = bar 缺失**；`is_suspended` 恒 false 占位列，不消费、不补齐；
    列访问一律容错（N3：本地文件与空帧列集不一致）
-3. **zx 两线随行**：直接调用 `compute_zx_lines(df)`，参数用公式默认 (14/28/57/114)，
-   在返回周期对应（复权后）close 序列上计算。**预热语义**：沿用
-   `compute_zx_lines` 默认（`rolling_mean` min_samples=window，窗口不足为 null）——
-   这与部分策略侧 min_samples=1 的行为不同，是有意差异（N14/M2），
-   不称「TDX 语义」。输出映射 `short_term_trend_line → zx_short`、
-   `long_term_bull_bear_line → zx_long`。**ZX 参数 v1 不可调**（M17：后端算好下发，
-   前端改 calcParams 不改变像素；如需可调进 v2 走 `zx_params` query + URL 驱动重取）
+3. **zx 两线随行**：在返回周期对应（复权后）close 序列上计算——指标随周期重算。
+   - **多空线（zx_long）**：直接复用 `compute_zx_lines(df)` 的
+     `long_term_bull_bear_line`（窗口 14/28/57/114 的 MA 均值，与选股同源），
+     参数用公式默认。窗口不足为 null。
+   - **短期趋势线（zx_short）**：用户 TDX 原文公式 **EMA(EMA(C,10),10)**
+     （Y=(2X+9Y')/11 ⟺ polars `ewm_mean(alpha=2/11, adjust=False)` 双重平滑），
+     实证 300274@2026-09-07 = 101.9066 ≈ 通达信 101.91。**与策略侧
+     `short_term_trend_line`(MA14) 有意不同**（见 §4.4）。EMA 自首根收敛，
+     无 null 预热。**ZX 参数 v1 不可调**（M17）
 4. **涨跌幅（前端）**：qfq 档由序列相邻 close 比值计算（等价性来自因子比相消
    f_t/f_{t−1} = c_{t−1}/pre_close_t）。**none 档**优先 (close−pre_close)/pre_close
    （交易所口径，除权日正确）；pre_close 为 null（旧数据未落盘）时回退序列比，**仅该
@@ -185,11 +187,18 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
   的 fixture 上；kline 守卫**有意更严**（列内 null 整列退化 vs 参照逐行跳过），
   是已知且被测试钉住的差异
 - **已知不一致清单**（共用公式实现 ≠ 同一条线的完整保证）：
+  - **图表短期趋势线 ≠ 策略侧短期线（公式不同，2026-09-08 按用户 TDX 原文修正）**：
+    图表 zx_short = EMA(EMA(C,10),10)；策略侧 `compute_zx_lines` 的
+    `short_term_trend_line` = MA(C,14)（zxdkx_balance.py:16 等 5 个 selector
+    消费）。二者数值不同是**公式定义不同**，非实现错误；策略口径是否对齐
+    TDX 原公式属选股语义决策，记 §8
   - 5 个在册 selector 以**未复权** close 喂 `compute_zx_lines`：
     zxdkx_balance.py:16、brick_chart.py:38、ultimate_brick_chart.py:32、
     oversold_bottom_fishing.py:34、volume_spike_balance.py:14——因子重建落地后，
     图表线（qfq）与这些策略线（raw）会出现基准差；对齐属策略口径决策，记 §8
-  - 预热差异：图表 null（min_samples=window）vs b1.py:93 等 min_samples=1
+  - 预热差异：图表多空线 null（min_samples=window）vs b1.py:93 等 min_samples=1
+  - 多空线与通达信存在 ~0.04（0.035%）残差：TDX 前复权数据与 Tushare
+    adj_factor 的因子精度差异所致，属数据源精度差，不收敛
   - 回测 engine.py:504-511 是第三份手写重算，不在本 feature 收敛范围
 
 ## 5. 前端设计

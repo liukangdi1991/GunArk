@@ -209,7 +209,10 @@ def test_build_adjust_precedes_aggregate_literal_oracle():
     assert row["pre_close"] == pytest.approx(9.95 * 1.2 / 1.5)
 
 
-def test_build_attaches_zx_with_null_warmup():
+def test_build_zx_short_is_tdx_double_ema_and_long_is_ma_composite():
+    # 短期趋势线 = 用户 TDX 原文公式 EMA(EMA(C,10),10)（Y=(2X+9Y')/11 递推）——
+    # 与策略侧 short_term_trend_line(MA14) 有意不同（spec §4.4 已知不一致清单）；
+    # 多空线 = MA(14/28/57/114) 均值组合，窗口不足为 null。
     closes = [10.0 + 0.1 * i for i in range(20)]
     df = _daily(
         dates=[date(2025, 3, 3) + timedelta(days=i) for i in range(20)],
@@ -218,8 +221,18 @@ def test_build_attaches_zx_with_null_warmup():
     )
     bars, degraded = build_kline_series(df, KlinePeriod.DAILY, AdjustMode.QFQ)
     assert degraded is False
-    assert bars["zx_short"].head(13).null_count() == 13  # MA14 窗口不足为 null（N14）
-    assert bars["zx_short"][13] == pytest.approx(sum(closes[:14]) / 14)
+
+    # oracle：按 TDX 递推公式逐根独立重算（与实现的 polars ewm 互为印证）
+    e1 = closes[0]
+    e2 = closes[0]
+    expected_short: list[float] = [closes[0]]
+    for c in closes[1:]:
+        e1 = (2 * c + 9 * e1) / 11
+        e2 = (2 * e1 + 9 * e2) / 11
+        expected_short.append(e2)
+    assert bars["zx_short"].to_list() == pytest.approx(expected_short, abs=1e-4)  # round(4) 契约
+    assert bars["zx_long"].null_count() == 20  # MA114 窗口不足，组合恒 null
+    assert bars["zx_short"].to_list() != bars["zx_long"].to_list()  # 防两线交换
 
 
 def test_build_tolerates_missing_pre_close_column():
