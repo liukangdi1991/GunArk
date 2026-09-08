@@ -12,11 +12,12 @@
 选股/回测完成后，用户需要像同花顺/通达信那样点开单只股票看走势：主图蜡烛 + 均线 +
 自定义公式线，下方多个副图指标，支持日/周/月周期与前复权切换。
 
-**上线前置数据条件（B1，需用户拍板时机）**：盘上 5211 个 bars 文件 `adj_factor` 恒 1.0
-（存量落盘早于 fetch 层硬失败修复），「前复权」档当前是恒等变换。**以全量重建
-（`sync/spec.py` BASELINE_START=2015-01-01）或因子回填为 v1 上线前置条件**；未完成前
+**上线前置数据条件（B1，已拍板 2026-09-08：全量重建）**：盘上 5211 个 bars 文件
+`adj_factor` 恒 1.0（存量落盘早于 fetch 层硬失败修复），「前复权」档当前是恒等变换。
+**以全量重建（`sync/spec.py` BASELINE_START=2015-01-01）为 v1 上线前置条件**；未完成前
 qfq 与 none 逐值相同，**属故障非特性**，前端以 `adjust_degraded` 显式告警（见 4.2/5.2）。
-重建需要 `TUSHARE_TOKEN`。
+重建需要 `TUSHARE_TOKEN`。**重建完成判据**：抽验 `adj_factor` 非恒 1.0 且
+`pre_close` 列落盘（当前 fetch 侧 cols 已含该列，存量缺失属旧版本产物，M3 随重建消解）。
 
 ## 2. 需求定稿（用户确认项）
 
@@ -72,8 +73,8 @@ trendradar/interfaces/api/schemas/market.py   # 补 KlineResponse（response_mod
 GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
 → 200 裸对象（无 {"data":...} 包裹，仓库成文约定）:
   {code, name, industry, period, adjust, adjust_degraded, last_bar_date,
-   bars: [{timestamp, date, open, high, low, close, volume, amount,
-           zx_short, zx_long}]}
+   bars: [{timestamp, date, open, high, low, close, pre_close,
+           volume, amount, zx_short, zx_long}]}
 → 404 {detail: 中文} bars 文件不存在或存在但 0 行（真无数据）
 → 503 {detail: 中文} bars 目录缺失 / 读 IO 异常（疑似整目录换名窗口，可重试）
 → 422 code 不匹配 ^\d{6}$（str+Query regex，禁 int：000001→1）/ period|adjust
@@ -82,13 +83,14 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
 
 字段语义：
 - `timestamp`：毫秒，**后端按 Asia/Shanghai 午夜计算**（M11+N19：前端零转换、消时区歧义）；
-  `date`：`YYYY-MM-DD` 字符串（可读性）。bars 元素**键集合精确为上述 10 键**（§7 唯一闸门）
+  `date`：`YYYY-MM-DD` 字符串（可读性）。bars 元素**键集合精确为上述 11 键**（§7 唯一闸门）
 - `adjust_degraded`：仅 adjust=qfq 时有意义——守卫命中或因子恒 1.0 ⇒ true + 后端 warn
   （B1②：禁止把降级伪装成正常）；adjust=none 时恒 false
 - `last_bar_date`：返回序列最后一根日期（**命名避开** `MarketDataStore.latest_trade_date()`
   ——全库日历语义，同名不同义，禁用（N1））
 - `round(4)`：OHLC 与 zx 两线（N5，防 8.688888… 撑爆体积与 tooltip）
-- nullable：**仅 zx_short/zx_long**（窗口不足）；NaN/±Inf 一律归一为 null（N6）
+- nullable：**仅 zx_short/zx_long/pre_close**（前两者窗口不足；pre_close 为旧数据未
+  落盘时 null，前端按 4.3.4 回退）；NaN/±Inf 一律归一为 null（N6）
 - volume/amount 保持 Tushare 原始单位（手/千元），legend 必带单位（N8，§9 决策）
 - 成交额不在 klinecharts 数据映射内（M12：KLineData 约定字段是 `turnover`，
   千元直塞会让 AVP 恒低 10 倍且不报错；v1 成交额只走信息栏）
@@ -116,7 +118,8 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
      load_bars/get_rows 不保证序）+ 0 行短路抛 `BarsUnavailable`（M2）
 2. **周/月聚合（M16）**：周键 `dt.truncate('1w')`（已验证锚周一、跨年周不劈分）、
    月键 `dt.truncate('1mo')`；**明令禁止 `(year, week)` 分组**（跨年 ISO 周劈两根）。
-   open=组内首日 open、high=max、low=min、close=组内末日 close、volume/amount=sum、
+   open=组内首日 open、high=max、low=min、close=组内末日 close、
+   pre_close=组内首日 pre_close（可比昨收，供 none 档涨跌幅）、volume/amount=sum、
    `date`/`timestamp`=组内最后交易日。整周/整月停牌（组内无 bar）不产出该周期 bar。
    **停牌判据 = bar 缺失**；`is_suspended` 恒 false 占位列，不消费、不补齐；
    列访问一律容错（N3：本地文件与空帧列集不一致）
@@ -128,9 +131,9 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
    `long_term_bull_bear_line → zx_long`。**ZX 参数 v1 不可调**（M17：后端算好下发，
    前端改 calcParams 不改变像素；如需可调进 v2 走 `zx_params` query + URL 驱动重取）
 4. **涨跌幅（前端）**：qfq 档由序列相邻 close 比值计算（等价性来自因子比相消
-   f_t/f_{t−1} = c_{t−1}/pre_close_t，与 pre_close 列是否存在无关）。**已知偏差**：
-   adjust=none 档除权日涨跌幅非交易所口径（10 送 10 显约 −50%），v1 明写接受
-   （M3：盘上实测无 pre_close 列，回填属数据前置作业）；序列长度 <2 时涨跌幅为
+   f_t/f_{t−1} = c_{t−1}/pre_close_t）。**none 档**优先 (close−pre_close)/pre_close
+   （交易所口径，除权日正确）；pre_close 为 null（旧数据未落盘）时回退序列比，**仅该
+   回退路径存在已知偏差**（10 送 10 显约 −50%），回填后消解。序列长度 <2 时涨跌幅为
    null，前端显示「—」（N17）
 5. **known-limitation 双状态表（M15）**：
 
@@ -259,9 +262,10 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
     原价末根」（M1）；qfq 一致性限定在无 null 全 >0 等价域（4.4）
   - 混合列 `[1.0]*n+[1.5]` 期望：前段 × 1/1.5、后段不变（手写字面量，勿自比）
 - `tests/interfaces/test_kline_api.py`（模块内私有 helper，随现有目录惯例）：
-  200 形状 + **bars 键集合精确等于 10 键**（N21 唯一闸门）+ `type(close) is float`
+  200 形状 + **bars 键集合精确等于 11 键**（N21 唯一闸门）+ `type(close) is float`
   + 严格 JSON 可解析（NaN→null，N6）；404/503/422 分支（两 fixture 分别断言，N7）；
-  meta 缺文件/缺列降级（M9）；2 行极短历史（N17）；date 字符串化/timestamp 值钉在
+  meta 缺文件/缺列降级（M9）；2 行极短历史（N17）；pre_close 缺失（null）回退路径
+  （4.3.4 残余偏差仅限此路径）；date 字符串化/timestamp 值钉在
   HTTP 层（N15）
 - **前端**（不引 vitest，§9 决策）：`tsc -b && vite build` + 浏览器可判验收：
   StrictMode 双挂载无双画布（M14）；系统时区改 America/New_York 轴日期不偏移
@@ -271,10 +275,10 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
 
 ## 8. 上线前置与范围外
 
-**上线前置（B1，非范围外）**：行情数据全量重建（2015 基线）或因子回填，
-需要 `TUSHARE_TOKEN`；未完成前 `adjust_degraded=true` 常亮是**预期行为**。
-selector 的未复权输入口径对齐、4 份 `_qfq_scale` 副本收敛、pre_close 列回填
-——三者均为独立后续作业，不在本 feature。
+**上线前置（B1，已拍板：全量重建）**：行情数据 2015 基线全量重建，需要
+`TUSHARE_TOKEN`；未完成前 `adjust_degraded=true` 常亮是**预期行为**。重建同时验证
+pre_close 落盘。selector 的未复权输入口径对齐、4 份 `_qfq_scale` 副本收敛——
+两者为独立后续作业，不在本 feature。
 
 范围外：筹码分布（v2）、画线工具/截图、分钟级、后复权、MA 参数持久化、
 盘中刷新/实时推送、多股同栏、可见区间保留（anchor 仅初次定位）、vitest（§9）、
@@ -289,14 +293,11 @@ selector 的未复权输入口径对齐、4 份 `_qfq_scale` 副本收敛、pre_
 |---|---|
 | 响应包裹 | 裸对象（M6，仓库成文约定压倒直觉） |
 | 量纲 | 保留手/千元 + legend 带单位（归一元/股更干净但与行情软件习惯脱钩，N8） |
-| none 档除权日涨跌幅 | 已知偏差明写，v1 不回填 pre_close（M3） |
+| none 档除权日涨跌幅 | pre_close 随重建回填，none 档用交易所口径；null 回退序列比（M3，已拍板不接受偏差） |
 | vitest | v1 不引入，用可判验收项替代（N16） |
 | meta 读取 | service 容错自读，不复用 60s TTL 缓存（M9） |
 | skipColumns | 加链接（N11） |
 | ZX 参数 | v1 不可调（M17） |
 
-**待用户拍板**：
-
-1. **数据重建时机**（B1 前置）：现在提供 token 跑全量重建，还是先带
-   `adjust_degraded` Alert 上线、事后重建？
-2. none 档除权日涨跌幅偏差 v1 是否接受（重备 pre_close 需数据侧动作）？
+**待用户拍板**：（无——两项已于 2026-09-08 拍板：①B1 前置=全量重建（A 方案，
+用户提供 `TUSHARE_TOKEN` 后执行）；②M3 不接受偏差，pre_close 一并回填）
