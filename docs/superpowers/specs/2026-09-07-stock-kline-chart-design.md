@@ -1,8 +1,8 @@
 # 个股 K 线图页（日/周/月 + 多副图 + 前复权）
 
-> 状态：v2.4——v2 吸收外部评审 37 条；v2.1 烘焙两项拍板；v2.2 处置复核 R1-R6；
-> v2.3 处置二次复核 R7；v2.4 处置实现推演轮 F1-F5（KlineSeries 形状、404/503 判别
-> 机制落钉、Path 校验措辞、round 清单、枚举落点）。关键事实已独立复现（5211/5211
+> 状态：v2.5——v2 吸收外部评审 37 条；v2.1 烘焙两项拍板；v2.2 处置复核 R1-R6；
+> v2.3 处置二次复核 R7；v2.4 处置实现推演轮 F1-F5；v2.5 处置三核 F6（KlineSeries
+> 补 name/industry 交付通道，meta 容错读取留在 service）。关键事实已独立复现（5211/5211
 > 文件 `adj_factor` 恒 1.0；klinecharts 10.0.3 d.ts 中 `applyNewData` 0 命中；
 > presenters.py:3-4 与 test_api_contract.py:4-5 成文「bare, no data wrapper」；
 > app.py:87/95 已注入
@@ -64,8 +64,9 @@ trendradar/interfaces/api/schemas/market.py   # 补 KlineResponse（response_mod
   - `apply_qfq(df: pl.DataFrame) -> tuple[pl.DataFrame, bool]`——守卫命中整列退化
     原价；第二返回值 = degraded（F1：11 键闸门锁死 bars，标志必须走独立通道）
   - `aggregate_bars(df: pl.DataFrame, period: Literal["weekly","monthly"]) -> pl.DataFrame`
-  - `@dataclass KlineSeries(bars: pl.DataFrame, adjust_degraded: bool)`（F1：落实
-    「数据对象」形状）
+  - `@dataclass KlineSeries(bars: pl.DataFrame, adjust_degraded: bool, name: str,
+    industry: str | None)`（F1 落形 + F6：meta 容错读取在 service，name/industry
+    随对象交付，route 组装时不再二次查 meta）
   - `build_kline_series(df, period: KlinePeriod, adjust: AdjustMode) -> KlineSeries`——
     编排：`sort("date")` → 0 行短路抛 `BarsUnavailable` → qfq → 聚合 → 附 zx 两线 →
     `round(4)`
@@ -338,7 +339,7 @@ pre_close 落盘。selector 的未复权输入口径对齐、4 份 `_qfq_scale` 
 | meta 读取 | service 容错自读，不复用 60s TTL 缓存（M9） |
 | skipColumns | 加链接（N11） |
 | ZX 参数 | v1 不可调（M17） |
-| KlineSeries 形状 | dataclass(bars, adjust_degraded)（F1：11 键闸门锁死 bars，degraded 走顶层通道） |
+| KlineSeries 形状 | dataclass(bars, adjust_degraded, name, industry)（F1：11 键闸门锁死 bars，degraded 走顶层通道；F6：meta 结果随对象交付，service 职责不搬） |
 | 1.0 特征守卫门控 | 重建标志 = pre_close 列存在且 null_count ≤ 1；标志不成立才启用恒 1.0/混合守卫（R2 扩展 + R7 收紧：防增量同步 _align_columns 补 null 击穿门控） |
 
 **待用户拍板**：（无——两项已于 2026-09-08 拍板：①B1 前置=全量重建（A 方案，
