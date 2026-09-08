@@ -69,6 +69,8 @@ function applySymbolAndPeriod(chart: Chart, payload: KlineResponse) {
 
 export interface KlineChartProps {
   payload: KlineResponse | null;
+  /** 主图叠加指标（MA/ZX，选中的才叠加，用户可通过「主图指标」菜单增删）。 */
+  mainOverlays: string[];
   /** VOL/MACD 之外的副图内置指标（spec §5.3，可加可删）。 */
   subIndicators: string[];
 }
@@ -76,7 +78,7 @@ export interface KlineChartProps {
 /** v10 数据入口是 setDataLoader + setSymbol/setPeriod（无 applyNewData，B3）；
  *  请求由 useKline 发起，本组件同步 ref 数据并驱动 loader。所有指标创建均以
  *  chart.getIndicators() 为真相源做幂等检查（StrictMode/重挂载/热更皆不重复）。 */
-export function KlineChart({ payload, subIndicators }: KlineChartProps) {
+export function KlineChart({ payload, mainOverlays, subIndicators }: KlineChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<Chart | null>(null);
   const dataRef = useRef<KlineResponse | null>(payload);
@@ -110,19 +112,6 @@ export function KlineChart({ payload, subIndicators }: KlineChartProps) {
       },
       indicator: { bars: [{ upColor: "#ef232a", downColor: "#14b143" }] },
     });
-
-    // 主图叠加：MA(34/55/144/233) + ZX——v10 主图叠加用 paneId: 'candle_pane'
-    // （官方文档模式，放指标对象内）；幂等：已存在则跳过
-    const existing = chart.getIndicators().map((i) => i.name);
-    for (const overlay of MAIN_OVERLAYS) {
-      if (!existing.includes(overlay.name)) {
-        chart.createIndicator(
-          { name: overlay.name, calcParams: overlay.calcParams, paneId: overlay.paneId },
-          true,
-        );
-      }
-    }
-
     chart.setDataLoader({
       getBars: ({ type, callback: done }) => {
         // v10 callback 在 params 内（d.ts DataLoaderGetBarsParams）
@@ -145,24 +134,39 @@ export function KlineChart({ payload, subIndicators }: KlineChartProps) {
     };
   }, []);
 
-  // 副图指标（VOL/MACD 默认 + extras）：以图表实例为真相源幂等增删（N12）
+  // 指标同步（主图叠加 + 副图）：以图表实例为真相源幂等增删（N12）。
+  // 主图叠加只动 candle_pane 内实例；副图删除只作用于非 candle_pane 窗格，
+  // 避免误删主图 MA/ZX（浏览器验收发现的回归）。
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
-    const target = [...DEFAULT_SUB_INDICATORS, ...subIndicators];
+    const mainTarget = new Set(mainOverlays);
+    const subTarget = [...DEFAULT_SUB_INDICATORS, ...subIndicators];
+    const subTargetSet = new Set(subTarget);
+    for (const def of MAIN_OVERLAYS) {
+      const exists = chart.getIndicators().some((i) => i.name === def.name);
+      if (mainTarget.has(def.name) && !exists) {
+        chart.createIndicator(
+          { name: def.name, calcParams: def.calcParams, paneId: def.paneId },
+          true,
+        );
+      }
+      if (!mainTarget.has(def.name) && exists) {
+        chart.removeIndicator({ name: def.name });
+      }
+    }
     const indicators = chart.getIndicators();
     const existingNames = indicators.map((i) => i.name);
-    // 删除循环只作用于副图窗格（非 candle_pane）——否则会把主图叠加的 MA/ZX 一并移除
     for (const ind of indicators.filter((i) => i.paneId !== "candle_pane")) {
-      if (!target.includes(ind.name)) chart.removeIndicator({ name: ind.name });
+      if (!subTargetSet.has(ind.name)) chart.removeIndicator({ name: ind.name });
     }
-    for (const name of target) {
+    for (const name of subTarget) {
       if (!existingNames.includes(name)) {
         const paneId = chart.createIndicator(name, false);
         if (paneId != null) chart.setPaneOptions({ id: paneId, height: 90 });
       }
     }
-  }, [subIndicators, payload]);
+  }, [subIndicators, mainOverlays, payload]);
 
   return <div ref={containerRef} className="kline-chart-container" />;
 }

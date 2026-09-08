@@ -1858,13 +1858,14 @@ h1.ant-typography {
   }
 }
 
-/* 个股K线页：图区占满剩余视口（父级无确定高度时 height:100% 解析为 0，N13） */
+/* 个股K线页：图区占满剩余视口（父级无确定高度时 height:100% 解析为 0，N13）。
+ * 184px = AppShell 头部、内边距与页脚 author 栏实测占用（96px 会溢出 44px）。 */
 .stock-kline-page {
   display: flex;
   flex-direction: column;
-  height: calc(100dvh - 96px);
-  min-height: 480px;
-  gap: 12px;
+  height: calc(100dvh - 184px);
+  min-height: 460px;
+  gap: 8px;
 }
 
 .stock-kline-page .kline-chart-container {

@@ -18,6 +18,10 @@ const ADJUST_OPTIONS: { value: AdjustMode; label: string }[] = [
   { value: "qfq", label: "前复权" },
   { value: "none", label: "不复权" },
 ];
+const MAIN_OVERLAY_OPTIONS: { value: string; label: string }[] = [
+  { value: "MA", label: "均线 MA(34/55/144/233)" },
+  { value: "ZX", label: "多空线/短期趋势线" },
+];
 const EXTRA_SUB_INDICATORS = ["KDJ", "RSI", "BOLL", "WR", "BBI"];
 
 /** §4.3.4：qfq 档用序列比值（因子比相消，与真实涨幅等价）；
@@ -38,6 +42,7 @@ export default function StockKlinePage() {
   const navigate = useNavigate();
   const { code = "" } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [mainOverlays, setMainOverlays] = useState<string[]>(["MA", "ZX"]);
   const [subIndicators, setSubIndicators] = useState<string[]>([]);
   const [retryKey, setRetryKey] = useState(0);
 
@@ -143,6 +148,23 @@ export default function StockKlinePage() {
         <Dropdown
           disabled={loading}
           menu={{
+            items: MAIN_OVERLAY_OPTIONS.map((opt) => ({
+              key: opt.value,
+              label: (mainOverlays.includes(opt.value) ? "✓ " : "") + opt.label,
+            })),
+            onClick: ({ key }) =>
+              setMainOverlays((cur) =>
+                cur.includes(key) ? cur.filter((n) => n !== key) : [...cur, key],
+              ),
+          }}
+        >
+          <Button>
+            主图指标 <DownOutlined />
+          </Button>
+        </Dropdown>
+        <Dropdown
+          disabled={loading}
+          menu={{
             items: EXTRA_SUB_INDICATORS.map((name) => ({
               key: name,
               label: (subIndicators.includes(name) ? "✓ " : "") + name,
@@ -175,7 +197,7 @@ export default function StockKlinePage() {
       )}
 
       {!loading && !error && payload && (
-        <KlineChart payload={payload} subIndicators={subIndicators} />
+        <KlineChart payload={payload} mainOverlays={mainOverlays} subIndicators={subIndicators} />
       )}
     </div>
   );
