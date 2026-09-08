@@ -1,7 +1,9 @@
 # 个股 K 线图页（日/周/月 + 多副图 + 前复权）
 
-> 状态：v2——已吸收外部评审报告（`2026-09-07-stock-kline-chart-design-review.md`）37 条议题，
-> blocker 3 / major 18 / minor 16 全部处置；关键事实已独立复现（5211/5211 文件 `adj_factor`
+> 状态：v2.2——v2 吸收外部评审报告 37 条（blocker 3 / major 18 / minor 16），
+> v2.1 烘焙两项拍板（全量重建前置、pre_close 回填），v2.2 处置复核评审 R1-R6
+> （R1 测试互斥期望、R2 degraded 误报门控+扩展、R3 pre_close 缩放、R4 月线例外、
+> R5 setPeriod 瞬闪、R6 路由注册）。关键事实已独立复现（5211/5211 文件 `adj_factor`
 > 恒 1.0；klinecharts 10.0.3 d.ts 中 `applyNewData` 0 命中；presenters.py:3-4 与
 > test_api_contract.py:4-5 成文「bare, no data wrapper」；app.py:87/95 已注入
 > `app.state.market_store`；polars 1.39.3 `dt.truncate('1w')` 锚周一、跨年周不劈分）
@@ -16,7 +18,8 @@
 `adj_factor` 恒 1.0（存量落盘早于 fetch 层硬失败修复），「前复权」档当前是恒等变换。
 **以全量重建（`sync/spec.py` BASELINE_START=2015-01-01）为 v1 上线前置条件**；未完成前
 qfq 与 none 逐值相同，**属故障非特性**，前端以 `adjust_degraded` 显式告警（见 4.2/5.2）。
-重建需要 `TUSHARE_TOKEN`。**重建完成判据**：抽验 `adj_factor` 非恒 1.0 且
+重建需要 `TUSHARE_TOKEN`。**重建完成判据**：抽验**有除权历史的票**（如 000034）
+`adj_factor` 非恒 1.0——不得抽合法恒 1.0 的新股，会误判重建失败（R2）——且
 `pre_close` 列落盘（当前 fetch 侧 cols 已含该列，存量缺失属旧版本产物，M3 随重建消解）。
 
 ## 2. 需求定稿（用户确认项）
@@ -51,6 +54,7 @@ trendradar/domain/market/adjust.py            # 新增：qfq 守卫与缩放（k
 trendradar/domain/market/kline.py             # 新增，纯 polars 周期聚合与编排
 trendradar/app/services/kline_service.py      # 新增读服务
 trendradar/interfaces/api/routes/stocks.py    # 新增路由（身份用 path，见 N9）
+trendradar/interfaces/api/app.py              # create_app() include_router 注册（R6，漏注册=404）
 trendradar/interfaces/api/schemas/market.py   # 补 KlineResponse（response_model）
 ```
 
@@ -84,8 +88,9 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
 字段语义：
 - `timestamp`：毫秒，**后端按 Asia/Shanghai 午夜计算**（M11+N19：前端零转换、消时区歧义）；
   `date`：`YYYY-MM-DD` 字符串（可读性）。bars 元素**键集合精确为上述 11 键**（§7 唯一闸门）
-- `adjust_degraded`：仅 adjust=qfq 时有意义——守卫命中或因子恒 1.0 ⇒ true + 后端 warn
-  （B1②：禁止把降级伪装成正常）；adjust=none 时恒 false
+- `adjust_degraded`：仅 adjust=qfq 时有意义——守卫命中（含 1.0 特征守卫，仅未重建
+  数据启用，见 4.3.1/R2）⇒ true + 后端 warn（B1②：禁止把降级伪装成正常）；
+  adjust=none 时恒 false
 - `last_bar_date`：返回序列最后一根日期（**命名避开** `MarketDataStore.latest_trade_date()`
   ——全库日历语义，同名不同义，禁用（N1））
 - `round(4)`：OHLC 与 zx 两线（N5，防 8.688888… 撑爆体积与 tooltip）
@@ -103,15 +108,20 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
 
 ### 4.3 计算规则
 
-1. **复权（先于聚合）**：逐 bar `scale = adj_factor / 最新因子`，OHLC × scale；
-   volume/amount **永不缩放**。**守卫清单（整列语义，任一命中 → 整列退化原价，
-   禁止部分行缩放）**：
-   - 因子列缺失 / 列内含 null / 任一因子 ≤ 0 或 NaN（M1：NaN 的 null_count()==0，
-     「含 null」抓不住，须显式查）
-   - 列内同时含 1.0 与非 1.0（B2：增量 upsert 只写新日期行，历史行留 1.0、新行写真
-     因子 → 混合列；无 null 且最新因子 > 0，三条基本守卫全不拦）
-   - 相邻交易日因子比 > 3× 或 < 1/3×（B2：真因子单日变化是分红送转量级 ≤ 2×，
-     越带即混合列征兆；误判方向是退化为原价展示，安全）
+1. **复权（先于聚合）**：逐 bar `scale = adj_factor / 最新因子`，OHLC **与 pre_close**
+   × scale（qfq 档 pre_close 同步缩放保持行内量纲一致，R3；none 档原样，供交易所
+   口径涨跌幅）；volume/amount **永不缩放**。**守卫清单（整列语义，任一命中 → 整列
+   退化原价，禁止部分行缩放）分两组**：
+   - **基础守卫（已重建/未重建两态常开）**：因子列缺失 / 列内含 null / 任一因子
+     ≤ 0 或 NaN（M1：NaN 的 null_count()==0，「含 null」抓不住，须显式查）；
+     相邻交易日因子比 > 3× 或 < 1/3×（B2：真因子单日变化是分红送转量级 ≤ 2×，
+     越带即数据异常征兆；误判方向是退化为原价展示，安全）
+   - **1.0 特征守卫（仅未重建数据启用，R2）**：恒 1.0；列内同时含 1.0 与非 1.0。
+     **重建标志 = 文件含 pre_close 列**（复用 §1 判据，零额外成本）：已重建后
+     「恒 1.0」是合法形态（上市从未除权的新股）、「1.0→非 1.0」也是合法形态
+     （Tushare 因子为累计绝对值，上市即 1.0、除权后抬升）——两规则不门控会在
+     重建后把全市场除权股误降级；未重建的存量库（因子恒 1.0 或增量混合）仍由
+     这两条拦住
    - 守卫命中 ⇒ `adjust_degraded=true` + `logging.warning`
    - `adjust=none` 时不缩放
    - **入口不变量**：`build_kline_series` 先 `sort("date")`（「最新因子」=按日期末位，
@@ -119,7 +129,8 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
 2. **周/月聚合（M16）**：周键 `dt.truncate('1w')`（已验证锚周一、跨年周不劈分）、
    月键 `dt.truncate('1mo')`；**明令禁止 `(year, week)` 分组**（跨年 ISO 周劈两根）。
    open=组内首日 open、high=max、low=min、close=组内末日 close、
-   pre_close=组内首日 pre_close（可比昨收，供 none 档涨跌幅）、volume/amount=sum、
+   pre_close=组内首日 pre_close（qfq 档取缩放后值，可比昨收，供 none 档涨跌幅）、
+   volume/amount=sum、
    `date`/`timestamp`=组内最后交易日。整周/整月停牌（组内无 bar）不产出该周期 bar。
    **停牌判据 = bar 缺失**；`is_suspended` 恒 false 占位列，不消费、不补齐；
    列访问一律容错（N3：本地文件与空帧列集不一致）
@@ -140,8 +151,8 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
    | 周期 | 当前快照（397 日 / 85 周 / 20 月） | 2015 基线重建后 |
    |---|---|---|
    | 日线 | zx_long 需 ≥114 根、MA233 需 ≥233 根才有首值 | 基本全可见 |
-   | 周线 | zx_long 恒 null；MA144/233 恒 null | zx_short/long 可见 |
-   | 月线 | MA34/55/144/233 **全部** null；zx_short 仅 ~7 点；zx_long 恒 null | 逐步可见 |
+   | 周线 | zx_long 恒 null；MA144/233 恒 null | 全可见（~600 周） |
+   | 月线 | MA34/55/144/233 **全部** null；zx_short 仅 ~7 点；zx_long 恒 null | MA34/55、zx_short（~2016-03）、zx_long（~2024-07）可见；**MA144 自 ~2027-01、MA233 自 ~2034-06 恒 null（重建不改变，数据累积属性，R4）** |
 
    限制随重建**自动缓解**，前端不得写死 null 断言；「月线页不得为空白图」列入验收
 
@@ -201,8 +212,10 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
   })
   ```
   错误态（404/网络）由 React 持有并渲染，loader 不发请求、不进 loading 死循环；
-  切换周期用 setPeriod 映射（daily→{type:'day',span:1} 等）仅改轴显示，数据重取
-  一律走 useEffect 通路
+  切换周期顺序钉死：**取数写 ref → `resetData()` → `setPeriod()`**（v10 中
+  setSymbol/setPeriod 会触发 getBars——顺序反了会先画出「旧数据+新轴」瞬态，R5）；
+  实施时若实测 setPeriod 对后端聚合序列无轴增益（timestamp 已定轴位）可省略，
+  验收以「切周期无旧数据瞬闪」目测项为准
 - **timezone**：`init(el, { timezone: 'Asia/Shanghai' })` + timestamp 后端算好
   （裸 `Date.parse('2025-01-02')` 是 UTC 午夜，NY 时区实测渲染 01-01 整条错位一天）
 - **样式（涨红跌绿）**：两套样式路径都要覆盖——蜡烛（candle.bar：涨/跌色的实体、
@@ -257,10 +270,15 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
   - 聚合不变量 + 边界夹具（M16/N3）：跨年周（2025-12-29~2026-01-02 一根）、
     长假单日周棒、首/尾残周、`Σ周volume == Σ日volume` 守恒、停牌整周缺口、
     末根早于市场最新日的停牌股
-  - 复权守卫（B2/M1）：`[1.0]*n+[1.5]` 混合列 → 退化；`[1.0]*n` → degraded；
-    列内 null / ≤0 / NaN → 退化；相邻比越带 → 退化；不变量「qfq 末根 OHLC ==
-    原价末根」（M1）；qfq 一致性限定在无 null 全 >0 等价域（4.4）
-  - 混合列 `[1.0]*n+[1.5]` 期望：前段 × 1/1.5、后段不变（手写字面量，勿自比）
+  - 复权守卫分两组（B2/M1/R2）：基础守卫（两态常开）列内 null / ≤0 / NaN /
+    相邻比越带 → 退化；1.0 特征守卫（仅未重建——pre_close 列缺失）恒 1.0 →
+    degraded、`[1.0]*n+[1.5]` 混合 → 退化；**已重建（有 pre_close 列）时 1.0 特征
+    守卫不触发**：恒 1.0 → 正常、`[1.0]*k+[2.0]*m`（合法除权形态）→ 正常缩放
+    （前段 ×0.5、后段 ×1）；不变量「qfq 末根 OHLC == 原价末根」（M1）；qfq 一致性
+    限定在无 null 全 >0 等价域（4.4）
+  - 缩放数学 oracle（R1 修正——换非混合 fixture）：`[1.2]*n+[1.5]`（全 >0、无 1.0、
+    相邻比 1.25 不越带，守卫全过）→ 前段 ×1.2/1.5、末段 ×1（手写字面量，勿自比；
+    钉死「分母 = 最新因子」，拦取错基准的实现）
 - `tests/interfaces/test_kline_api.py`（模块内私有 helper，随现有目录惯例）：
   200 形状 + **bars 键集合精确等于 11 键**（N21 唯一闸门）+ `type(close) is float`
   + 严格 JSON 可解析（NaN→null，N6）；404/503/422 分支（两 fixture 分别断言，N7）；
@@ -270,7 +288,8 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
 - **前端**（不引 vitest，§9 决策）：`tsc -b && vite build` + 浏览器可判验收：
   StrictMode 双挂载无双画布（M14）；系统时区改 America/New_York 轴日期不偏移
   （M11）；**最右轴日期 == last_bar_date**；VOL 柱色与蜡烛一致（N12）；
-  周期/复权/副图增删/三处入口跳转（含 anchor 定位）/404·503 空态/Alert 告警态
+  周期/复权/副图增删/三处入口跳转（含 anchor 定位）/404·503 空态/Alert 告警态/
+  切周期无旧数据瞬闪（R5）
 - **回归**：`pytest -q` 全绿（基线 536 + 本次新增）
 
 ## 8. 上线前置与范围外
@@ -298,6 +317,7 @@ pre_close 落盘。selector 的未复权输入口径对齐、4 份 `_qfq_scale` 
 | meta 读取 | service 容错自读，不复用 60s TTL 缓存（M9） |
 | skipColumns | 加链接（N11） |
 | ZX 参数 | v1 不可调（M17） |
+| 1.0 特征守卫门控 | pre_close 列 = 重建标志；未重建才启用恒 1.0/混合守卫（R2+扩展：混合规则不门控则重建后误伤全部除权股） |
 
 **待用户拍板**：（无——两项已于 2026-09-08 拍板：①B1 前置=全量重建（A 方案，
 用户提供 `TUSHARE_TOKEN` 后执行）；②M3 不接受偏差，pre_close 一并回填）
