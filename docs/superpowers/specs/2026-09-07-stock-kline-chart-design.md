@@ -1,9 +1,9 @@
 # 个股 K 线图页（日/周/月 + 多副图 + 前复权）
 
-> 状态：v2.2——v2 吸收外部评审报告 37 条（blocker 3 / major 18 / minor 16），
-> v2.1 烘焙两项拍板（全量重建前置、pre_close 回填），v2.2 处置复核评审 R1-R6
-> （R1 测试互斥期望、R2 degraded 误报门控+扩展、R3 pre_close 缩放、R4 月线例外、
-> R5 setPeriod 瞬闪、R6 路由注册）。关键事实已独立复现（5211/5211 文件 `adj_factor`
+> 状态：v2.3——v2 吸收外部评审 37 条（blocker 3 / major 18 / minor 16）；v2.1 烘焙
+> 两项拍板（全量重建前置、pre_close 回填）；v2.2 处置复核 R1-R6；v2.3 处置二次
+> 复核 R7——重建标志收紧为「pre_close 列存在且 null_count ≤ 1」，防增量同步
+> _align_columns 补 null 击穿门控。关键事实已独立复现（5211/5211 文件 `adj_factor`
 > 恒 1.0；klinecharts 10.0.3 d.ts 中 `applyNewData` 0 命中；presenters.py:3-4 与
 > test_api_contract.py:4-5 成文「bare, no data wrapper」；app.py:87/95 已注入
 > `app.state.market_store`；polars 1.39.3 `dt.truncate('1w')` 锚周一、跨年周不劈分）
@@ -20,7 +20,8 @@
 qfq 与 none 逐值相同，**属故障非特性**，前端以 `adjust_degraded` 显式告警（见 4.2/5.2）。
 重建需要 `TUSHARE_TOKEN`。**重建完成判据**：抽验**有除权历史的票**（如 000034）
 `adj_factor` 非恒 1.0——不得抽合法恒 1.0 的新股，会误判重建失败（R2）——且
-`pre_close` 列落盘（当前 fetch 侧 cols 已含该列，存量缺失属旧版本产物，M3 随重建消解）。
+`pre_close` 列落盘且非空——判据同 4.3.1 重建标志（当前 fetch 侧 cols 已含该列，
+存量缺失属旧版本产物，M3 随重建消解；R7）。
 
 ## 2. 需求定稿（用户确认项）
 
@@ -88,8 +89,8 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
 字段语义：
 - `timestamp`：毫秒，**后端按 Asia/Shanghai 午夜计算**（M11+N19：前端零转换、消时区歧义）；
   `date`：`YYYY-MM-DD` 字符串（可读性）。bars 元素**键集合精确为上述 11 键**（§7 唯一闸门）
-- `adjust_degraded`：仅 adjust=qfq 时有意义——守卫命中（含 1.0 特征守卫，仅未重建
-  数据启用，见 4.3.1/R2）⇒ true + 后端 warn（B1②：禁止把降级伪装成正常）；
+- `adjust_degraded`：仅 adjust=qfq 时有意义——守卫命中（含 1.0 特征守卫，仅在重建
+  标志不成立时启用，判据见 4.3.1）⇒ true + 后端 warn（B1②：禁止把降级伪装成正常）；
   adjust=none 时恒 false
 - `last_bar_date`：返回序列最后一根日期（**命名避开** `MarketDataStore.latest_trade_date()`
   ——全库日历语义，同名不同义，禁用（N1））
@@ -116,12 +117,16 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
      ≤ 0 或 NaN（M1：NaN 的 null_count()==0，「含 null」抓不住，须显式查）；
      相邻交易日因子比 > 3× 或 < 1/3×（B2：真因子单日变化是分红送转量级 ≤ 2×，
      越带即数据异常征兆；误判方向是退化为原价展示，安全）
-   - **1.0 特征守卫（仅未重建数据启用，R2）**：恒 1.0；列内同时含 1.0 与非 1.0。
-     **重建标志 = 文件含 pre_close 列**（复用 §1 判据，零额外成本）：已重建后
-     「恒 1.0」是合法形态（上市从未除权的新股）、「1.0→非 1.0」也是合法形态
-     （Tushare 因子为累计绝对值，上市即 1.0、除权后抬升）——两规则不门控会在
-     重建后把全市场除权股误降级；未重建的存量库（因子恒 1.0 或增量混合）仍由
-     这两条拦住
+   - **1.0 特征守卫（仅重建标志不成立时启用，R2/R7）**：恒 1.0；列内同时含 1.0 与
+     非 1.0。**重建标志 = 文件含 pre_close 列且其 null_count ≤ 1**（R7：仅判「含列」
+     会被重建前的常规增量同步击穿——`_align_columns` 把旧行 pre_close 补 null、新行
+     带真值，合并文件从此「含列」且 adj_factor 恰成混合列，门控被击穿后 F ≤ 3 的
+     股票假跳空无告警；null_count ≤ 1 与「正常重建文件至多首行 1 个 null」干净
+     分离，对齐补 null 的旧行数以百计；阈值失效方向是误报 degraded（可见），
+     不是漏报）。已重建后「恒 1.0」是合法形态（上市从未除权的新股）、「1.0→非 1.0」
+     也是合法形态（Tushare 因子为累计绝对值，上市即 1.0、除权后抬升）——两规则
+     不门控会在重建后把全市场除权股误降级；未重建的存量库（因子恒 1.0 或增量
+     混合）仍由这两条拦住
    - 守卫命中 ⇒ `adjust_degraded=true` + `logging.warning`
    - `adjust=none` 时不缩放
    - **入口不变量**：`build_kline_series` 先 `sort("date")`（「最新因子」=按日期末位，
@@ -152,7 +157,7 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
    |---|---|---|
    | 日线 | zx_long 需 ≥114 根、MA233 需 ≥233 根才有首值 | 基本全可见 |
    | 周线 | zx_long 恒 null；MA144/233 恒 null | 全可见（~600 周） |
-   | 月线 | MA34/55/144/233 **全部** null；zx_short 仅 ~7 点；zx_long 恒 null | MA34/55、zx_short（~2016-03）、zx_long（~2024-07）可见；**MA144 自 ~2027-01、MA233 自 ~2034-06 恒 null（重建不改变，数据累积属性，R4）** |
+   | 月线 | MA34/55/144/233 **全部** null；zx_short 仅 ~7 点；zx_long 恒 null | MA34/55、zx_short（~2016-03）、zx_long（~2024-07）可见；**MA144 自 ~2026-12、MA233 自 ~2034-05 恒 null（重建不改变，数据累积属性，R4/R7-nit）** |
 
    限制随重建**自动缓解**，前端不得写死 null 断言；「月线页不得为空白图」列入验收
 
@@ -279,6 +284,9 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
   - 缩放数学 oracle（R1 修正——换非混合 fixture）：`[1.2]*n+[1.5]`（全 >0、无 1.0、
     相邻比 1.25 不越带，守卫全过）→ 前段 ×1.2/1.5、末段 ×1（手写字面量，勿自比；
     钉死「分母 = 最新因子」，拦取错基准的实现）
+  - 重建标志穿透用例（R7）：旧文件（无 pre_close 列）经一轮 `_align_columns` 式
+    增量合并（旧行 pre_close=null、新行真因子 F）→ 标志判「未重建」→ 1.0 特征
+    守卫仍触发、degraded=true（现有 fixture 是「列整体缺失」，此状态原清单未盖到）
 - `tests/interfaces/test_kline_api.py`（模块内私有 helper，随现有目录惯例）：
   200 形状 + **bars 键集合精确等于 11 键**（N21 唯一闸门）+ `type(close) is float`
   + 严格 JSON 可解析（NaN→null，N6）；404/503/422 分支（两 fixture 分别断言，N7）；
@@ -317,7 +325,7 @@ pre_close 落盘。selector 的未复权输入口径对齐、4 份 `_qfq_scale` 
 | meta 读取 | service 容错自读，不复用 60s TTL 缓存（M9） |
 | skipColumns | 加链接（N11） |
 | ZX 参数 | v1 不可调（M17） |
-| 1.0 特征守卫门控 | pre_close 列 = 重建标志；未重建才启用恒 1.0/混合守卫（R2+扩展：混合规则不门控则重建后误伤全部除权股） |
+| 1.0 特征守卫门控 | 重建标志 = pre_close 列存在且 null_count ≤ 1；标志不成立才启用恒 1.0/混合守卫（R2 扩展 + R7 收紧：防增量同步 _align_columns 补 null 击穿门控） |
 
 **待用户拍板**：（无——两项已于 2026-09-08 拍板：①B1 前置=全量重建（A 方案，
 用户提供 `TUSHARE_TOKEN` 后执行）；②M3 不接受偏差，pre_close 一并回填）
