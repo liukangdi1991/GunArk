@@ -88,15 +88,9 @@ def build_kline_series(
         out = df
     else:
         out = aggregate_bars(df, period.value)
-    # 多空线：复用策略公式 compute_zx_lines（窗口 14/28/57/114 的 MA 均值，与选股同源）
-    _, long_ = compute_zx_lines(out)
-    # 短期趋势线：用户 TDX 原文公式 EMA(EMA(C,10),10)（Y=(2X+9Y')/11 ⟺ alpha=2/11）——
-    # 与策略侧 short_term_trend_line(MA14) 有意不同（spec §4.4 已知不一致清单）
-    short = (
-        out["close"]
-        .ewm_mean(alpha=2 / 11, adjust=False)
-        .ewm_mean(alpha=2 / 11, adjust=False)
-    )
+    # 双线复用策略公式 compute_zx_lines（2026-09-08 起策略口径已对齐 TDX 原文：
+    # 短期趋势 = EMA(EMA(C,10),10)，多空 = MA(14/28/57/114) 均值）——单一实现源
+    short, long_ = compute_zx_lines(out)
     out = out.with_columns(
         short.alias("zx_short"),
         long_.alias("zx_long"),

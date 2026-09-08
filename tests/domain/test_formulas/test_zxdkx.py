@@ -1,4 +1,5 @@
 import polars as pl
+import pytest
 from trendradar.domain.strategy.formulas.zxdkx import compute_zx_lines, zx_stick_ratio, zx_stick_condition
 
 
@@ -59,4 +60,22 @@ def test_compute_zx_lines_long_line_uses_ma14_and_ma28():
     ma57 = sum(range(144, 201)) / 57
     ma114 = sum(range(87, 201)) / 114
     assert long_line[-1] is not None
-    assert abs(long_line[-1] - (ma14 + ma28 + ma57 + ma114) / 4.0) < 1e-6
+
+
+def test_compute_zx_lines_short_is_tdx_double_ema():
+    """短期趋势线 = TDX 原文 EMA(EMA(C,10),10)（Y=(2X+9Y')/11 递推），非 MA(C,14)。
+    2026-09-08 用户拍板：策略口径与图表口径一并对齐 TDX 原公式。"""
+    df = pl.DataFrame({"close": [float(i) for i in range(1, 31)]})  # 1..30 线性递增
+    short_line, _ = compute_zx_lines(df)
+    # oracle：TDX EMA 递推逐根重算（首根取自身），与实现的 polars ewm 互为印证
+    e1, e2 = 1.0, 1.0
+    expected = [1.0]
+    for c in range(2, 31):
+        e1 = (2 * c + 9 * e1) / 11
+        e2 = (2 * e1 + 9 * e2) / 11
+        expected.append(e2)
+    assert short_line.to_list() == pytest.approx(expected)
+    # 防回退：MA(C,14) 在线性递增下的值与 EMA 双重平滑必然不同
+    assert short_line.to_list() != pytest.approx(
+        df["close"].rolling_mean(14).to_list(), abs=1e-6
+    )

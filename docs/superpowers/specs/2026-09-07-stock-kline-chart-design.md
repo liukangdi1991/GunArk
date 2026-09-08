@@ -187,16 +187,18 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
   的 fixture 上；kline 守卫**有意更严**（列内 null 整列退化 vs 参照逐行跳过），
   是已知且被测试钉住的差异
 - **已知不一致清单**（共用公式实现 ≠ 同一条线的完整保证）：
-  - **图表短期趋势线 ≠ 策略侧短期线（公式不同，2026-09-08 按用户 TDX 原文修正）**：
-    图表 zx_short = EMA(EMA(C,10),10)；策略侧 `compute_zx_lines` 的
-    `short_term_trend_line` = MA(C,14)（zxdkx_balance.py:16 等 5 个 selector
-    消费）。二者数值不同是**公式定义不同**，非实现错误；策略口径是否对齐
-    TDX 原公式属选股语义决策，记 §8
+  - ~~图表短期趋势线 ≠ 策略侧短期线~~（**2026-09-08 已对齐**：用户拍板策略口径
+    对齐 TDX 原文公式——`compute_zx_lines` 短期线由 MA(C,14) 改为
+    EMA(EMA(C,10),10)，图表与 5 个 selector 消费同一实现；多空线公式本就一致。
+    影响面：zxdkx_balance / volume_spike_balance 两策略的 stick 信号语义更新，
+    确定性基线经复核未变（上升趋势 fixture 被 close≤多空线×0.95 门槛主导））
   - 5 个在册 selector 以**未复权** close 喂 `compute_zx_lines`：
     zxdkx_balance.py:16、brick_chart.py:38、ultimate_brick_chart.py:32、
-    oversold_bottom_fishing.py:34、volume_spike_balance.py:14——因子重建落地后，
-    图表线（qfq）与这些策略线（raw）会出现基准差；对齐属策略口径决策，记 §8
-  - 预热差异：图表多空线 null（min_samples=window）vs b1.py:93 等 min_samples=1
+    oversold_bottom_fishing.py:34、volume_spike_balance.py:14——图表线（qfq）
+    与这些策略线（raw）仍存在**输入口径差**（因子重建后除权日前价格不同），
+    对齐属选股语义决策，记 §8
+  - 预热差异：图表多空线 null（min_samples=window）、图表短期线 EMA 自首根
+    收敛无 null，vs b1.py:93 等 min_samples=1
   - 多空线与通达信存在 ~0.04（0.035%）残差：TDX 前复权数据与 Tushare
     adj_factor 的因子精度差异所致，属数据源精度差，不收敛
   - 回测 engine.py:504-511 是第三份手写重算，不在本 feature 收敛范围
@@ -325,12 +327,12 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
   切周期无旧数据瞬闪（R5）
 - **回归**：`pytest -q` 全绿（基线 536 + 本次新增）
 
-## 8. 上线前置与范围外
-
-**上线前置（B1，已拍板：全量重建）**：行情数据 2015 基线全量重建，需要
-`TUSHARE_TOKEN`；未完成前 `adjust_degraded=true` 常亮是**预期行为**。重建同时验证
-pre_close 落盘。selector 的未复权输入口径对齐、4 份 `_qfq_scale` 副本收敛——
-两者为独立后续作业，不在本 feature。
+**上线前置（B1，✅ 已完成 2026-09-08）**：行情数据 2015 基线全量重建已执行
+（5468 只，staging→swap_in_bars 原子换名），判据通过：000034 因子 13 个 distinct
+（非恒 1.0）+ pre_close 列零空值落盘；`adjust_degraded` 已回 false。过程中修复
+全量拉取限速缺陷（一票两次调用只扣 1 桶令牌，`cae0db2e`）并确认入账 7 个
+2015-07 股灾停牌周 doubtful 日。selector 的未复权输入口径对齐、4 份
+`_qfq_scale` 副本收敛——两者为独立后续作业，不在本 feature。
 
 范围外：筹码分布（v2）、画线工具/截图、分钟级、后复权、MA 参数持久化、
 盘中刷新/实时推送、多股同栏、可见区间保留（anchor 仅初次定位）、vitest（§9）、
