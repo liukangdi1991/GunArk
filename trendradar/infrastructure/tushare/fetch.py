@@ -205,6 +205,10 @@ def fetch_code_range(
         try:
             resp = pro.daily(ts_code=ts_code, start_date=start_s, end_date=end_s, freq="D")
             df = _response_to_df(resp, code)
+            # 每次真实 API 调用各耗 1 令牌：一票两次调用（daily+adj_factor），
+            # 只扣 1 个会使实际调用速率翻倍击穿 token 档上限（重建熔断根因）。
+            if bucket is not None and not bucket.acquire(timeout=60.0, cancel_check=cancel_check):
+                return FetchResult(None, FailureKind.ENV, "令牌桶超时或被取消")
             adj = pro.adj_factor(ts_code=ts_code, start_date=start_s, end_date=end_s)
             return FetchResult(_attach_adj_factor(df, adj), None)
         except AdjFactorUnavailable as e:

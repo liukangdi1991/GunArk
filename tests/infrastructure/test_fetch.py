@@ -1,4 +1,5 @@
 from datetime import date
+from unittest.mock import MagicMock
 
 import pandas as pd
 import polars as pl
@@ -239,3 +240,40 @@ def test_filter_excluded_boards_gem_star():
     assert sorted(out["code"].to_list()) == ["000001", "600519"]
     assert filter_excluded_boards(df, None).height == 4
     assert filter_excluded_boards(df, []).height == 4
+
+
+def _fake_pro():
+    """daily/adj_factor 各返回一行合法响应的 MagicMock pro。"""
+    daily_resp = pd.DataFrame({
+        "ts_code": ["000001.SZ"], "trade_date": ["20150105"],
+        "open": [10.0], "high": [10.2], "low": [9.8], "close": [10.0],
+        "vol": [100.0], "amount": [1000.0], "pre_close": [9.9],
+    })
+    adj_resp = pd.DataFrame({
+        "ts_code": ["000001.SZ"], "trade_date": ["20150105"], "adj_factor": [1.0],
+    })
+    pro = MagicMock()
+    pro.daily.return_value = daily_resp
+    pro.adj_factor.return_value = adj_resp
+    return pro
+
+
+class _CountingBucket:
+    """记录 acquire 次数、恒有令牌的假桶。"""
+
+    def __init__(self) -> None:
+        self.acquires = 0
+
+    def acquire(self, timeout: float = 60.0, cancel_check=None) -> bool:
+        self.acquires += 1
+        return True
+
+
+def test_each_tushare_call_consumes_one_token():
+    """重建熔断根因回归（spec 无涉，运行发现）：每次真实 API 调用各耗 1 令牌——
+    每票 2 个调用（daily+adj_factor），桶 270/分即 135 票/分，不击穿 300/分实测上限。"""
+    pro = _fake_pro()
+    bucket = _CountingBucket()
+    fr = fetch_code_range(pro, "000001", date(2015, 1, 1), date(2026, 8, 21), bucket=bucket)
+    assert fr.kind is None, fr.error
+    assert bucket.acquires == 2
