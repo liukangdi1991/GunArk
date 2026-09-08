@@ -1,183 +1,302 @@
 # 个股 K 线图页（日/周/月 + 多副图 + 前复权）
 
-> 状态：设计定稿，待实施
-> 日期：2026-09-07
-> 关联：选股工作台与回测报告的个股入口；复用 `compute_zx_lines`（`domain/strategy/formulas/zxdkx.py`）
+> 状态：v2——已吸收外部评审报告（`2026-09-07-stock-kline-chart-design-review.md`）37 条议题，
+> blocker 3 / major 18 / minor 16 全部处置；关键事实已独立复现（5211/5211 文件 `adj_factor`
+> 恒 1.0；klinecharts 10.0.3 d.ts 中 `applyNewData` 0 命中；presenters.py:3-4 与
+> test_api_contract.py:4-5 成文「bare, no data wrapper」；app.py:87/95 已注入
+> `app.state.market_store`；polars 1.39.3 `dt.truncate('1w')` 锚周一、跨年周不劈分）
+> 日期：2026-09-08
 
 ## 1. 场景与目标
 
 选股/回测完成后，用户需要像同花顺/通达信那样点开单只股票看走势：主图蜡烛 + 均线 +
-自定义公式线，下方多个副图指标，支持日/周/月周期与前复权切换。当前系统只有选股结果
-列表与回测报告表格，没有任何看图能力。
+自定义公式线，下方多个副图指标，支持日/周/月周期与前复权切换。
 
-第一版明确不做：筹码分布（v2 再议）、画线工具、分钟级周期、后复权、指标参数的持久化。
+**上线前置数据条件（B1，需用户拍板时机）**：盘上 5211 个 bars 文件 `adj_factor` 恒 1.0
+（存量落盘早于 fetch 层硬失败修复），「前复权」档当前是恒等变换。**以全量重建
+（`sync/spec.py` BASELINE_START=2015-01-01）或因子回填为 v1 上线前置条件**；未完成前
+qfq 与 none 逐值相同，**属故障非特性**，前端以 `adjust_degraded` 显式告警（见 4.2/5.2）。
+重建需要 `TUSHARE_TOKEN`。
 
 ## 2. 需求定稿（用户确认项）
 
-| 项 | 结论 |
-|---|---|
-| 主图指标 | 蜡烛图 + MA(34/55/144/233) 四条 + 多空线/短期趋势线（`compute_zx_lines` 两线） |
-| 副图指标 | VOL + MACD 默认，KDJ/RSI/BOLL 等库内置指标可加可删 |
-| 周期 | 日/周/月 |
-| 复权 | 前复权（默认）/ 不复权 两档 |
-| 页面形态 | 独立路由页 `/stocks/:code` |
-| 入口 | 选股结果页个股 + 回测报告（逐笔交易、期末持仓） |
-| 筹码分布 | v2，本次不做 |
+| 项 | 结论 | 落点 |
+|---|---|---|
+| 主图指标 | 蜡烛图 + MA(34/55/144/233) 四条 + 多空线/短期趋势线两线 | §5.3 / §4.3.3 |
+| 副图指标 | VOL + MACD 默认，库内置指标可加可删 | §5.3 |
+| 周期 | 日/周/月 | §4.3.2 |
+| 复权 | 前复权（默认）/ 不复权 两档 | §4.3.1 |
+| 页面形态 | 独立路由页 `/stocks/:code` | §5.1 |
+| 入口 | 选股结果页 + 回测报告（逐笔/持仓/skip 表） | §5.4 |
+| 筹码分布 | v2，本次不做 | §8 |
 
 ## 3. 方案选型
 
-**选定：klinecharts 10.0.3 + 后端计算。**
+**klinecharts 10.0.3 + 后端计算**（已核对 10.0.3 类型定义，v9 教程/API 不适用：
+数据入口为 `setDataLoader`/`resetData`，无 `applyNewData`）。选型理由不变：专业 K 线库
+交互零成本；对比 echarts（手搭联动）与 lightweight-charts（内置指标少）均劣；57KB gzip、
+零依赖、Apache-2.0；`React.lazy` 隔离。
 
-- klinecharts：专业 K 线库，蜡烛图/多副图 pane/十字光标/缩放拖拽/20+ 内置指标开箱即用，
-  `registerIndicator` 支持自定义线，涨红跌绿可配。通达信式交互零成本。
-- 对比 echarts 6.1.0：蜡烛图 + 多 grid + dataZoom + axisPointer 联动全要手搭，工作量数倍。
-- 对比 lightweight-charts 5.2.1（TradingView）：性能好但内置指标极少，中文盘习惯全 DIY。
-- **计算放后端**（而非前端 JS）：复权/聚合/自定义线与选股、回测同一份 polars 代码口径
-  （复用 `MarketDataStore` + `compute_zx_lines`），图表上的多空线与选股用的多空线是同一条线；
-  符合「业务层一律 polars」仓库约定。库内置副图指标由 klinecharts 前端计算——纯展示，
-  不构成业务决策，可接受。
-- recharts 保留给既有页面；新页面 `React.lazy` 懒加载，klinecharts 不进主 bundle。
+**计算放后端**（业务层 polars）。口径声明（M4 降级）：图表与选股**共用同一公式实现**
+（`compute_zx_lines` 与 qfq 语义），但存在 3 处已知输入口径差异，逐条见 §4.4
+「已知不一致清单」——不宣称「无漂移面」。
 
 ## 4. 后端设计
 
-### 4.1 分层落点
+### 4.1 分层落点与签名（N4/M7）
 
 ```text
-trendradar/domain/market/kline.py            # 新增，纯 polars：
-                                             #   qfq 缩放、周/月聚合、随行附 zx 两线
-trendradar/app/services/market_service.py    # 新增读函数 get_kline(code, period, adjust)：
-                                             #   建 LocalParquetMarketStore + stock_meta 取名 +
-                                             #   调 domain + 组装 payload
-trendradar/interfaces/api/routes/market.py   # 新增 GET /api/market-data/kline
+trendradar/domain/market/adjust.py            # 新增：qfq 守卫与缩放（kline 专用，策略 formulas 不动）
+trendradar/domain/market/kline.py             # 新增，纯 polars 周期聚合与编排
+trendradar/app/services/kline_service.py      # 新增读服务
+trendradar/interfaces/api/routes/stocks.py    # 新增路由（身份用 path，见 N9）
+trendradar/interfaces/api/schemas/market.py   # 补 KlineResponse（response_model）
 ```
 
-读取端点不落 `presenters.py`（已 41KB）；route→service 直调有 `submit_market_sync` 先例。
-domain 纯函数独立成模块，便于 TDD。
+- domain：
+  - `apply_qfq(df: pl.DataFrame) -> pl.DataFrame`——守卫命中整列退化原价
+  - `aggregate_bars(df: pl.DataFrame, period: Literal["weekly","monthly"]) -> pl.DataFrame`
+  - `build_kline_series(df, period: KlinePeriod, adjust: AdjustMode) -> pl.DataFrame`——
+    编排：`sort("date")` → 0 行短路 → qfq → 聚合 → 附 zx 两线 → `round(4)`
+  - `class BarsUnavailable(RuntimeError)`——detail 为中文字符串，route 显式 404
+- service：`get_kline(market_store, code, period, adjust) -> KlineSeries 数据对象`
+  （**store 由 route 注入 `request.app.state.market_store`**（app.py:95 已有单例），
+  返回域对象不带 JSON 形状；payload 组装在 route 层——与 presenters「bare, rich
+  response」职责一致）。stock_meta 读取**容错**：缺文件或列不全视同查无此股
+  （name=code、industry=null），**不得按列直接索引**（M9：降级分支仅回 code 列，
+  直接索引会 500）；不复用 presenters 的 60s TTL 缓存（避免失效不同步，自读三行）。
 
-### 4.2 API 契约
+### 4.2 API 契约（M6/M8/N1/N5/N6/N7/N10/N19/N21）
 
 ```text
-GET /api/market-data/kline?code=000001&period=daily|weekly|monthly&adjust=qfq|none
-→ 200 {data: {code, name, industry, period, adjust, latest_trade_date,
-              bars: [{date, open, high, low, close, volume, amount,
-                      zx_short, zx_long}]}}
-→ 404 无该股行情数据（bars parquet 不存在或 0 行）
-→ 422 参数非法（code 非 6 位数字、period/adjust 非枚举值，FastAPI Query 校验）
+GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
+→ 200 裸对象（无 {"data":...} 包裹，仓库成文约定）:
+  {code, name, industry, period, adjust, adjust_degraded, last_bar_date,
+   bars: [{timestamp, date, open, high, low, close, volume, amount,
+           zx_short, zx_long}]}
+→ 404 {detail: 中文} bars 文件不存在或存在但 0 行（真无数据）
+→ 503 {detail: 中文} bars 目录缺失 / 读 IO 异常（疑似整目录换名窗口，可重试）
+→ 422 code 不匹配 ^\d{6}$（str+Query regex，禁 int：000001→1）/ period|adjust
+      归一化后非法（后端收 str|None，小写归一，未知值 422）
 ```
 
-- `period` 默认 `daily`，`adjust` 默认 `qfq`
-- 全量返回：实测单股 parquet 13KB / ~400 根日线，无分页必要
-- `name`/`industry` 取自 `stock_meta`；查无此股时 `name` 回退为 `code`，`industry` 为 null
-- `date` 为 `YYYY-MM-DD` 字符串；数值一律 float；volume/amount 保持 Tushare 原始单位
-  （手/千元），展示格式化在前端
-- `latest_trade_date`：返回序列最后一根的日期（周期聚合后）
-- `pre_close` 不进入 v1 契约（前端涨跌幅按 4.3.4 由序列算，无需该列）
+字段语义：
+- `timestamp`：毫秒，**后端按 Asia/Shanghai 午夜计算**（M11+N19：前端零转换、消时区歧义）；
+  `date`：`YYYY-MM-DD` 字符串（可读性）。bars 元素**键集合精确为上述 10 键**（§7 唯一闸门）
+- `adjust_degraded`：仅 adjust=qfq 时有意义——守卫命中或因子恒 1.0 ⇒ true + 后端 warn
+  （B1②：禁止把降级伪装成正常）；adjust=none 时恒 false
+- `last_bar_date`：返回序列最后一根日期（**命名避开** `MarketDataStore.latest_trade_date()`
+  ——全库日历语义，同名不同义，禁用（N1））
+- `round(4)`：OHLC 与 zx 两线（N5，防 8.688888… 撑爆体积与 tooltip）
+- nullable：**仅 zx_short/zx_long**（窗口不足）；NaN/±Inf 一律归一为 null（N6）
+- volume/amount 保持 Tushare 原始单位（手/千元），legend 必带单位（N8，§9 决策）
+- 成交额不在 klinecharts 数据映射内（M12：KLineData 约定字段是 `turnover`，
+  千元直塞会让 AVP 恒低 10 倍且不报错；v1 成交额只走信息栏）
+- 体积：JSON 实测 64,726 B / 397 根（163 B/根，gzip 10,169 B）；2015 基线重建后
+  ~2,850 根 ≈ 470KB 未压缩。交付项：`GZipMiddleware(minimum_size=1024)`（M8，
+  现无任何压缩中间件）。分页触发判据（进 §8）：>3000 根或 >250KB 时再启用
+  forward/backward 拉取，v1 全量
+- 字段演进预案（N19）：v2 分钟线 `period=minute_5` 命名规范沿用；新增指标走
+  顶层键 overlays，不复用 bars 行结构（N21）；随行指标命名 `<ind>_<series>`、可空
 
 ### 4.3 计算规则
 
-1. **复权先于聚合**：逐 bar `scale = adj_factor / 最新因子`，OHLC × scale；
-   volume/amount **永不缩放**。守卫为**整列语义**：因子列缺失、列内含 null、
-   或最新因子 ≤ 0 时**整列**退化原价——禁止部分行缩放（部分缩放部分原价会造出假跳空；
-   占位 1.0 已被 fetch 层硬失败拦截，此处防旧数据/测试 fixture）。
-   `adjust=none` 时不缩放。
-2. **周/月聚合**：按 bar 日期自然周（周一为首日）/自然月分组；
-   open=组内首日 open、high=max、low=min、close=组内末日 close、
-   volume/amount=sum、`date`=组内最后交易日。整周/整月停牌（组内无任何 bar）则该
-   周期不产出 bar，不造平价棒。
-3. **zx 两线随行返回**：直接调用 `compute_zx_lines(df)`（不移植 JS、不复制公式），
-   参数用公式默认 (m1..m4 = 14/28/57/114)，在「返回周期对应的（复权后）close 序列」上
-   计算——TDX 语义：指标随周期重算。窗口不足为 null，前端跳过。输出列名映射：
-   `short_term_trend_line → zx_short`（短期趋势线）、`long_term_bull_bear_line → zx_long`（多空线）。
-   **当前数据量限制（known limitation）**：日线 zx_long 需 ≥114 根、MA233 需 ≥233 根
-   才有首个值；当前本地仅 397 个交易日，周线（~80 根）/月线下 zx_long 与 MA233 恒为
-   null——数据累积后自然出现，非缺陷，验收勿判为 bug。
-4. **涨跌幅口径**（前端）：复权序列相邻 bar 的 close 比值与真实涨幅数学等价（含除权日），
-   因 Tushare `pre_close` 已是可比昨收。前端直接由返回序列末两根计算。
+1. **复权（先于聚合）**：逐 bar `scale = adj_factor / 最新因子`，OHLC × scale；
+   volume/amount **永不缩放**。**守卫清单（整列语义，任一命中 → 整列退化原价，
+   禁止部分行缩放）**：
+   - 因子列缺失 / 列内含 null / 任一因子 ≤ 0 或 NaN（M1：NaN 的 null_count()==0，
+     「含 null」抓不住，须显式查）
+   - 列内同时含 1.0 与非 1.0（B2：增量 upsert 只写新日期行，历史行留 1.0、新行写真
+     因子 → 混合列；无 null 且最新因子 > 0，三条基本守卫全不拦）
+   - 相邻交易日因子比 > 3× 或 < 1/3×（B2：真因子单日变化是分红送转量级 ≤ 2×，
+     越带即混合列征兆；误判方向是退化为原价展示，安全）
+   - 守卫命中 ⇒ `adjust_degraded=true` + `logging.warning`
+   - `adjust=none` 时不缩放
+   - **入口不变量**：`build_kline_series` 先 `sort("date")`（「最新因子」=按日期末位，
+     load_bars/get_rows 不保证序）+ 0 行短路抛 `BarsUnavailable`（M2）
+2. **周/月聚合（M16）**：周键 `dt.truncate('1w')`（已验证锚周一、跨年周不劈分）、
+   月键 `dt.truncate('1mo')`；**明令禁止 `(year, week)` 分组**（跨年 ISO 周劈两根）。
+   open=组内首日 open、high=max、low=min、close=组内末日 close、volume/amount=sum、
+   `date`/`timestamp`=组内最后交易日。整周/整月停牌（组内无 bar）不产出该周期 bar。
+   **停牌判据 = bar 缺失**；`is_suspended` 恒 false 占位列，不消费、不补齐；
+   列访问一律容错（N3：本地文件与空帧列集不一致）
+3. **zx 两线随行**：直接调用 `compute_zx_lines(df)`，参数用公式默认 (14/28/57/114)，
+   在返回周期对应（复权后）close 序列上计算。**预热语义**：沿用
+   `compute_zx_lines` 默认（`rolling_mean` min_samples=window，窗口不足为 null）——
+   这与部分策略侧 min_samples=1 的行为不同，是有意差异（N14/M2），
+   不称「TDX 语义」。输出映射 `short_term_trend_line → zx_short`、
+   `long_term_bull_bear_line → zx_long`。**ZX 参数 v1 不可调**（M17：后端算好下发，
+   前端改 calcParams 不改变像素；如需可调进 v2 走 `zx_params` query + URL 驱动重取）
+4. **涨跌幅（前端）**：qfq 档由序列相邻 close 比值计算（等价性来自因子比相消
+   f_t/f_{t−1} = c_{t−1}/pre_close_t，与 pre_close 列是否存在无关）。**已知偏差**：
+   adjust=none 档除权日涨跌幅非交易所口径（10 送 10 显约 −50%），v1 明写接受
+   （M3：盘上实测无 pre_close 列，回填属数据前置作业）；序列长度 <2 时涨跌幅为
+   null，前端显示「—」（N17）
+5. **known-limitation 双状态表（M15）**：
 
-### 4.4 复权一致性测试（钉住口径）
+   | 周期 | 当前快照（397 日 / 85 周 / 20 月） | 2015 基线重建后 |
+   |---|---|---|
+   | 日线 | zx_long 需 ≥114 根、MA233 需 ≥233 根才有首值 | 基本全可见 |
+   | 周线 | zx_long 恒 null；MA144/233 恒 null | zx_short/long 可见 |
+   | 月线 | MA34/55/144/233 **全部** null；zx_short 仅 ~7 点；zx_long 恒 null | 逐步可见 |
 
-domain 单测断言：kline 模块的 qfq 输出与 `_qfq_scale` 同语义（同 fixture 上
-手工 `close × adj_factor/最新因子` 逐值相等），防止未来两处口径漂移。
-`compute_zx_lines` 为直接复用（同一函数引用），无漂移面。
+   限制随重建**自动缓解**，前端不得写死 null 断言；「月线页不得为空白图」列入验收
+
+### 4.4 口径参照与已知不一致清单（M2/M4）
+
+- **qfq 参照实现**：`domain/market/adjust.py` 新实现，语义**钉住 b1.py:58
+  `_qfq_scale`** 为参照副本（4 份副本函数体逐行相同但 docstring 有差，不宣称收敛）；
+  4 份策略内副本收敛为共享 helper 记入 §8（本次不动，有确定性基线的测试在）
+- **等价域**：§7 的「与参照同语义逐值相等」断言限定在**因子列无 null 且全 > 0**
+  的 fixture 上；kline 守卫**有意更严**（列内 null 整列退化 vs 参照逐行跳过），
+  是已知且被测试钉住的差异
+- **已知不一致清单**（共用公式实现 ≠ 同一条线的完整保证）：
+  - 5 个在册 selector 以**未复权** close 喂 `compute_zx_lines`：
+    zxdkx_balance.py:16、brick_chart.py:38、ultimate_brick_chart.py:32、
+    oversold_bottom_fishing.py:34、volume_spike_balance.py:14——因子重建落地后，
+    图表线（qfq）与这些策略线（raw）会出现基准差；对齐属策略口径决策，记 §8
+  - 预热差异：图表 null（min_samples=window）vs b1.py:93 等 min_samples=1
+  - 回测 engine.py:504-511 是第三份手写重算，不在本 feature 收敛范围
 
 ## 5. 前端设计
 
-### 5.1 路由与状态
+### 5.1 路由与状态（B3/M10/M13/M18/N10/N11/N18）
 
-- 新增 `/stocks/:code?period=&adjust=` → `StockKlinePage`（`frontend/src/pages/Stocks/`），
-  `React.lazy` + `Suspense` 懒加载，`AppRouter.tsx` 注册。
-- `period`/`adjust` 同步到 URL query：刷新/分享/回退状态不丢。
-- 页面加载前对路由参数 `code` 做 `^\d{6}$` 本地校验，非法直接渲染错误态，不发请求。
+- `/stocks/:code?period=&adjust=` → `StockKlinePage`；route element 内包 `<Suspense>`
+  （React.lazy）；URL `period/adjust` 白名单归一，非法值 replace 修正（不发必 422 的
+  请求）；加载前 `^\d{6}$` 本地校验 `code`
+- **URL schema 现在定全**：预留 `&anchor=YYYY-MM-DD`（初次定位到该日期，实现可后置；
+  §5.4 两处 Link 带当笔日期）；v1 不做可见区间保留，仅支持初次定位
+- 组件三层（N18）：`<KlineChart>` 纯展示 / `useKline(code, period, adjust)` 取数 +
+  abort + 序号守卫 / Page 只做 URL↔props。用户切换 `navigate(..., {replace:true})`
+  不刷历史栈；浏览器回退触发重取。不做内存缓存（本地毫秒级）
+- AppShell 菜单归属：`/stocks/*` 增加 selectedKey 分支，不高亮「选股」（N11）
 
-### 5.2 页面结构（自上而下）
+### 5.2 页面结构（N2/N13）
 
-1. **信息栏**：名称 / 代码 / 行业（接口返回）+ 最新价、涨跌幅（由复权序列末两根算，见
-   4.3.4；**跟随当前周期**——周线页显示周环比，月线页显示月环比）。
-2. **工具栏**：
-   - 周期 Segmented：日 / 周 / 月
-   - 复权 Segmented：前复权 / 不复权
-   - 副图指标 Dropdown：VOL、MACD 默认开启；KDJ/RSI/BOLL 等内置指标可添加/移除
-3. **图区**：klinecharts 容器（高度占满剩余视口）。
+1. **信息栏**：名称/代码/行业 + 最新价、涨跌幅（跟随当前周期，见 4.3.4）+
+   **固定「数据截至 {last_bar_date}」**（库止 2026-08-21，落后多日，「最新价」会被
+   当现价）；`adjust_degraded=true` 时显示 Alert「复权因子缺失，前复权退化为原价，
+   需重建行情数据」（禁止静默回显请求参数）
+2. **工具栏**：周期 Segmented（日/周/月）、复权 Segmented（前复权/不复权）、
+   副图指标 Dropdown（`createIndicator/removeIndicator`，勾选态反查 `getIndicators`；
+   无 addPane/removePane，空窗自动销毁）
+3. **图区 CSS**：页面 flex column，图区 `flex:1; min-height:0`（父级无确定高度时
+   height:100% 解析为 0）；≤720px 降级固定高（N13）
 
-### 5.3 图表配置
+### 5.3 图表配置（v10 真实机制，B3/M10/M11/M12/M14/N12）
 
-- 样式：涨红跌绿（A 股习惯，覆盖 klinecharts 默认涨绿配色）。
-- 主图叠加：
-  - 内置 MA，`calcParams=[34,55,144,233]`（4 参数 → 4 条线），用户可在指标设置里改参（会话内）。
-  - 自定义指标 `ZX`（`registerIndicator`）：`calc` 直接读每根 kLineData 上附带的
-    `zx_short`/`zx_long` 字段返回两线值，null 跳过；两线颜色区分（短期趋势线/多空线），
-    precision 2。
-- 副图：VOL、MACD 默认；每个副图独立 pane，十字光标跨 pane 联动（库默认）。
-- 数据映射：接口 `date` 字符串在前端转毫秒 `timestamp`，组装为 klinecharts KLineData
-  （`{timestamp, open, high, low, close, volume, zx_short, zx_long}`）；VOL 副图开
-  `shouldFormatBigNumber` 做万/亿缩写。
-- 切换周期/复权：重新请求后 `applyNewData` 整体刷新，视图回到最右端（v1 简化，
-  不做可见区间保留）。
+- **数据通路（单一）**：`useKline` 的 useEffect([code,period,adjust]) 发 GET
+  （AbortController：新请求 abort 上一个 + requestId 序号守卫，AbortError 静默）→
+  payload 写 ref → `chart.resetData()`。`setDataLoader` 只注册一次：
+  ```ts
+  chart.setDataLoader({
+    getBars: ({ type }, done) => {
+      if (type !== 'init') { done([], { forward: false, backward: false }); return }
+      done(toKlineData(dataRef.current), { forward: false, backward: false })  // 显式传 more
+    },
+  })
+  ```
+  错误态（404/网络）由 React 持有并渲染，loader 不发请求、不进 loading 死循环；
+  切换周期用 setPeriod 映射（daily→{type:'day',span:1} 等）仅改轴显示，数据重取
+  一律走 useEffect 通路
+- **timezone**：`init(el, { timezone: 'Asia/Shanghai' })` + timestamp 后端算好
+  （裸 `Date.parse('2025-01-02')` 是 UTC 午夜，NY 时区实测渲染 01-01 整条错位一天）
+- **样式（涨红跌绿）**：两套样式路径都要覆盖——蜡烛（candle.bar：涨/跌色的实体、
+  影线、边框）与指标量柱（indicator.bars），实施时对照 10.0.3 `Styles` 类型逐项
+  核对，验收含「VOL 柱色与蜡烛一致」目测项
+- **主图叠加**：内置 MA `calcParams=[34,55,144,233]`（会话内可改参，M17 拆行）；
+  自定义 `ZX`（registerIndicator，series:'price'，precision 2，figures 两线
+  `zx_short`/`zx_long` 直读 bar 附加字段，null 跳过，两线颜色区分）
+- **量纲/格式**：VOL/金额 legend 必带单位（手/千元）；`shouldFormatBigNumber`
+  默认缩写是 K/M/B，需自定义 formatter 为万/亿；locale 设 zh-CN
+- **生命周期（M14）**：`init` 在 effect 内，cleanup 调销毁 API（名字以 10.0.3 d.ts
+  为准），禁模块级缓存实例；resize v10 内置（ResizeObserver）免手工；
+  main.tsx 全站 StrictMode 双挂载——验收「dev 下不出现两张画布」
 
-### 5.4 入口改造
+### 5.4 入口改造（N11）
 
-- `SelectionResultPage.tsx`：个股表 code/name 格渲染为 `Link` → `/stocks/{code}`。
-- `BacktestReportPage.tsx` / `BacktestReportTables.tsx`：逐笔交易表、期末持仓表的 code 格
-  同样加链接。表格排序/筛选逻辑不动。
+- `SelectionResultPage.tsx`：code 列渲染 `Link`（name 列同步）；回测侧三张表全加：
+  逐笔交易、期末持仓（`BacktestReportTables.tsx`）、**skipColumns 跳过票表**
+  （跳过票恰是最想复盘的）；链接带 `&anchor={当笔日期}`（M18）；表格排序/筛选不动
 
 ### 5.5 数据服务
 
-- `services/marketData.ts`：`getKline(code, period, adjust)`。
-- `types/kline.ts`：响应类型。
+- `services/marketData.ts`：`getKline(code, period, adjust, {signal})`——复用
+  apiClient 的 ApiError.status 与 15s 超时（M13）
+- `types/kline.ts`：响应类型（文件头标 spec 版本，N21）
 
-## 6. 错误处理
+## 6. 错误处理（按 ApiError.status 分支，N7/N10/M13）
 
 | 场景 | 行为 |
 |---|---|
-| 404（无 parquet / 0 行） | 页面级 antd Result「无该股行情数据」+ 返回按钮 |
-| 网络错误 / 5xx | `message.error` + 重试按钮 |
-| 加载中 | 图表区 Spin |
-| 422 | 不应发生（入口均为合法 code）；发生时按错误态兜底 |
+| 404（文件缺失/0 行） | 页面级 Result「无该股行情数据」+ 返回 |
+| 503（目录缺失/IO） | 「行情数据正在更新，请稍后重试」+ 重试 |
+| 422 | 归一化失败兜底（正常操作不可达：URL 已白名单化） |
+| 超时 / 网络错误 | message.error + 重试按钮 |
+| Abort | 静默（新请求已接管） |
+| 重试/加载期间 | 工具栏切换禁用，防乱序覆盖 |
+| 极短历史（<2 根） | 正常渲染，涨跌幅显示「—」（N17） |
 
-## 7. 测试与验证
+## 7. 测试与验证（TDD，先 RED 后 GREEN）
 
-**后端（TDD，先 RED 后 GREEN）**：
+**验收前置数据条件（B1）**：测试 fixture 必须**非平凡因子**（至少一段因子阶跃，
+如 `[1.0]*n + [1.5]`）；现有 `test_api_contract.py` 的 `adj_factor=1.0` fixture
+测不出缩放分支，kline 测试不得沿用。`storage/` 不入 git，重建后基线口径在交付
+文档显式声明。
 
-- `tests/domain/market/test_kline.py`：
-  - 周/月聚合不变量（open=首、high=max、low=min、close=末、vol/amount=sum、date=组内末交易日）
-  - 复权缩放数学（多因子序列、因子列缺失/列内 null 整列退化原价、adjust=none 不缩放）
-  - 复权一致性（4.4：与 `_qfq_scale` 同语义逐值相等）
-  - zx 两线 = 对同一序列直接调 `compute_zx_lines` 的结果
-  - 复权先于聚合（先缩放再聚合 == 直接对缩放后序列聚合）
-- `tests/interfaces/api/test_kline_api.py`（沿用 API 契约测试写法）：
-  200 形状与取值、404 未知 code、422 非法参数、name 回退、默认参数。
+- `tests/domain/market/test_kline.py`（目录与 tests/domain 既有惯例对齐）：
+  - **判别式断言（M5）**：qfq 输出与 none 输出**不全等** + 末根 close 逐值相等
+    （拦「qfq≡none」与「取错缩放基准」两类实现错误）；「复权先于聚合」用
+    **组内含因子阶跃**的 fixture（跨除权日落在同一自然周）＋字面量 oracle + 负控
+    （反向实现必不通过）；zx 断言钉输入：同一序列喂 raw close 与 qfq close 的
+    结果**必须不同**、两线 fixture 互不相等（防交换）
+  - 聚合不变量 + 边界夹具（M16/N3）：跨年周（2025-12-29~2026-01-02 一根）、
+    长假单日周棒、首/尾残周、`Σ周volume == Σ日volume` 守恒、停牌整周缺口、
+    末根早于市场最新日的停牌股
+  - 复权守卫（B2/M1）：`[1.0]*n+[1.5]` 混合列 → 退化；`[1.0]*n` → degraded；
+    列内 null / ≤0 / NaN → 退化；相邻比越带 → 退化；不变量「qfq 末根 OHLC ==
+    原价末根」（M1）；qfq 一致性限定在无 null 全 >0 等价域（4.4）
+  - 混合列 `[1.0]*n+[1.5]` 期望：前段 × 1/1.5、后段不变（手写字面量，勿自比）
+- `tests/interfaces/test_kline_api.py`（模块内私有 helper，随现有目录惯例）：
+  200 形状 + **bars 键集合精确等于 10 键**（N21 唯一闸门）+ `type(close) is float`
+  + 严格 JSON 可解析（NaN→null，N6）；404/503/422 分支（两 fixture 分别断言，N7）；
+  meta 缺文件/缺列降级（M9）；2 行极短历史（N17）；date 字符串化/timestamp 值钉在
+  HTTP 层（N15）
+- **前端**（不引 vitest，§9 决策）：`tsc -b && vite build` + 浏览器可判验收：
+  StrictMode 双挂载无双画布（M14）；系统时区改 America/New_York 轴日期不偏移
+  （M11）；**最右轴日期 == last_bar_date**；VOL 柱色与蜡烛一致（N12）；
+  周期/复权/副图增删/三处入口跳转（含 anchor 定位）/404·503 空态/Alert 告警态
+- **回归**：`pytest -q` 全绿（基线 536 + 本次新增）
 
-**前端**：仓库无 JS 测试基建——`tsc -b && vite build` 通过 + 起真实页面浏览器可视验证
-（周期/复权切换、副图增删、入口跳转、404 空态），作为交付证据。
+## 8. 上线前置与范围外
 
-**回归**：`pytest -q` 全绿（当前基线 536）。
+**上线前置（B1，非范围外）**：行情数据全量重建（2015 基线）或因子回填，
+需要 `TUSHARE_TOKEN`；未完成前 `adjust_degraded=true` 常亮是**预期行为**。
+selector 的未复权输入口径对齐、4 份 `_qfq_scale` 副本收敛、pre_close 列回填
+——三者均为独立后续作业，不在本 feature。
 
-## 8. 范围外（本次不做）
+范围外：筹码分布（v2）、画线工具/截图、分钟级、后复权、MA 参数持久化、
+盘中刷新/实时推送、多股同栏、可见区间保留（anchor 仅初次定位）、vitest（§9）、
+非交易日坐标空洞（数据驱动，自然结果）。
+**分页触发判据**：>3000 根或 >250KB 启用 forward/backward（M8，当前不满足）。
 
-- 筹码分布（用户指定 v2）
-- 画线工具、截图导出
-- 分钟级周期（本地无数据）
-- 后复权
-- 指标参数持久化（MA/ZX 参数仅会话内生效）
-- 分页/增量加载（全量足够）
-- 入口：策略管理、行情数据页等其它页面的个股链接
+## 9. 歧义与待确认
+
+**已定决策**（默认值，用户可推翻）：
+
+| 议题 | 决策 |
+|---|---|
+| 响应包裹 | 裸对象（M6，仓库成文约定压倒直觉） |
+| 量纲 | 保留手/千元 + legend 带单位（归一元/股更干净但与行情软件习惯脱钩，N8） |
+| none 档除权日涨跌幅 | 已知偏差明写，v1 不回填 pre_close（M3） |
+| vitest | v1 不引入，用可判验收项替代（N16） |
+| meta 读取 | service 容错自读，不复用 60s TTL 缓存（M9） |
+| skipColumns | 加链接（N11） |
+| ZX 参数 | v1 不可调（M17） |
+
+**待用户拍板**：
+
+1. **数据重建时机**（B1 前置）：现在提供 token 跑全量重建，还是先带
+   `adjust_degraded` Alert 上线、事后重建？
+2. none 档除权日涨跌幅偏差 v1 是否接受（重备 pre_close 需数据侧动作）？
