@@ -26,3 +26,14 @@ export interface KlineResponse {
   last_bar_date: string;
   bars: KlineBar[];
 }
+
+/** #6 个股快照（daily_basic 最新交易日；无 token/异常时数值字段为 null）。 */
+export interface StockSnapshot {
+  code: string;
+  trade_date: string;
+  circ_mv: number | null;
+  total_mv: number | null;
+  turnover_rate: number | null;
+  pe_ttm: number | null;
+  pb: number | null;
+}

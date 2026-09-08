@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Path, Query, Request as FastAPIRequest
 
-from trendradar.app.services.kline_service import get_kline
+from trendradar.app.services.kline_service import get_kline, get_stock_snapshot
 from trendradar.domain.market.kline import (
     AdjustMode,
     BarsUnavailable,
@@ -37,6 +37,21 @@ def _timestamp(d: date) -> int:
     return int(
         datetime(d.year, d.month, d.day, tzinfo=timezone(timedelta(hours=8))).timestamp() * 1000
     )
+
+
+@router.get("/{code}/snapshot")
+def get_stock_snapshot_route(
+    request: FastAPIRequest,
+    code: str = Path(pattern=r"^\d{6}$"),
+) -> Any:
+    """最新交易日个股快照（流通市值/换手率等；无 token/接口异常时字段为 null）。"""
+    from trendradar.infrastructure.tushare.client import get_pro
+
+    try:
+        pro = get_pro()
+    except Exception:
+        pro = None
+    return get_stock_snapshot(request.app.state.market_store, code, pro)
 
 
 @router.get("/{code}/kline", response_model=KlineResponse)

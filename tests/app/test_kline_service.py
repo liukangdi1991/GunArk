@@ -6,7 +6,7 @@ from datetime import date
 import polars as pl
 import pytest
 
-from trendradar.app.services.kline_service import get_kline
+from trendradar.app.services.kline_service import get_kline, get_stock_snapshot
 from trendradar.domain.market.data_store import LocalParquetMarketStore
 from trendradar.domain.market.kline import (
     AdjustMode,
@@ -14,6 +14,17 @@ from trendradar.domain.market.kline import (
     KlinePeriod,
     MarketDataUnavailable,
 )
+from trendradar.infrastructure.tushare import market_cap
+
+
+@pytest.fixture(autouse=True)
+def _clear_daily_basic_cache():
+    """daily_basic 快照是进程级日缓存（日期不可变），测试间必须清空隔离。"""
+    market_cap._SNAPSHOT_CACHE.clear()
+    market_cap._MARKET_CAP_CACHE.clear()
+    yield
+    market_cap._SNAPSHOT_CACHE.clear()
+    market_cap._MARKET_CAP_CACHE.clear()
 
 
 def _store(tmp_path) -> LocalParquetMarketStore:
@@ -79,3 +90,47 @@ def test_get_kline_meta_without_name_column_falls_back(tmp_path):
     _write_meta(tmp_path, {"code": ["000001"]})
     series = get_kline(_store(tmp_path), "000001", KlinePeriod.DAILY, AdjustMode.QFQ)
     assert series.name == "000001" and series.industry is None
+
+
+def test_get_stock_snapshot_maps_daily_basic(tmp_path):
+    _write_bars(tmp_path)
+    import pandas as pd
+
+    class FakePro:
+        def daily_basic(self, trade_date, fields):
+            assert fields.startswith("ts_code")
+            return pd.DataFrame([
+                {"ts_code": "000001.SZ", "circ_mv": 2.214e6, "total_mv": 2.5e6,
+                 "turnover_rate": 0.85, "pe_ttm": 5.2, "pb": 0.6},
+                {"ts_code": "600519.SH", "circ_mv": 9e6, "total_mv": 9e6,
+                 "turnover_rate": 0.3, "pe_ttm": 30.0, "pb": 9.0},
+            ])
+
+    store = _store(tmp_path)
+    snap = get_stock_snapshot(store, "000001", FakePro())
+    assert snap["circ_mv"] == pytest.approx(2.214e6)
+    assert snap["turnover_rate"] == pytest.approx(0.85)
+    assert snap["trade_date"] == "2026-08-18"
+
+
+def test_get_stock_snapshot_unknown_code_yields_nulls(tmp_path):
+    _write_bars(tmp_path)
+
+    class FakePro:
+        def daily_basic(self, trade_date, fields):
+            return pd.DataFrame(columns=["ts_code", "circ_mv", "total_mv",
+                                         "turnover_rate", "pe_ttm", "pb"])
+
+    snap = get_stock_snapshot(_store(tmp_path), "999999", FakePro())
+    assert snap["circ_mv"] is None and snap["code"] == "999999"
+
+
+def test_get_stock_snapshot_pro_failure_is_graceful(tmp_path):
+    _write_bars(tmp_path)
+
+    class BadPro:
+        def daily_basic(self, trade_date, fields):
+            raise RuntimeError("no token")
+
+    snap = get_stock_snapshot(_store(tmp_path), "000001", BadPro())
+    assert snap["circ_mv"] is None and snap["code"] == "000001"

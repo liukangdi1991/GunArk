@@ -3,7 +3,8 @@ import { Alert, Button, Dropdown, Result, Segmented, Space, Spin, Typography } f
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { formatNumber } from "../../utils/format";
-import type { AdjustMode, KlineBar, KlinePeriod } from "../../types/kline";
+import type { AdjustMode, KlineBar, KlinePeriod, StockSnapshot } from "../../types/kline";
+import { getStockSnapshot } from "../../services/marketData";
 import { KlineChart } from "./KlineChart";
 import { useKline } from "./useKline";
 
@@ -24,9 +25,28 @@ const MAIN_OVERLAY_OPTIONS: { value: string; label: string }[] = [
 ];
 const EXTRA_SUB_INDICATORS = ["KDJ", "RSI", "BOLL", "WR", "BBI"];
 
+const PREF_KEY = "kline.indicators.v1";
+
+interface IndicatorPrefs {
+  mainOverlays?: string[];
+  subIndicators?: string[];
+}
+
+function loadIndicatorPrefs(): IndicatorPrefs {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PREF_KEY) ?? "{}") as IndicatorPrefs;
+    return {
+      mainOverlays: Array.isArray(saved.mainOverlays) ? saved.mainOverlays : ["MA", "ZX"],
+      subIndicators: Array.isArray(saved.subIndicators) ? saved.subIndicators : [],
+    };
+  } catch {
+    return { mainOverlays: ["MA", "ZX"], subIndicators: [] };
+  }
+}
+
 /** §4.3.4：qfq 档用序列比值（因子比相消，与真实涨幅等价）；
  *  none 档优先 (close−pre_close)/pre_close（交易所口径），null 回退序列比。 */
-export function pctChange(bars: KlineBar[], adjust: AdjustMode): number | null {
+function pctChange(bars: KlineBar[], adjust: AdjustMode): number | null {
   if (bars.length < 2) return null;
   const last = bars[bars.length - 1];
   if (last.close == null) return null;
@@ -42,9 +62,11 @@ export default function StockKlinePage() {
   const navigate = useNavigate();
   const { code = "" } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [mainOverlays, setMainOverlays] = useState<string[]>(["MA", "ZX"]);
-  const [subIndicators, setSubIndicators] = useState<string[]>([]);
+  const initialPrefs = useMemo(loadIndicatorPrefs, []);
+  const [mainOverlays, setMainOverlays] = useState<string[]>(initialPrefs.mainOverlays ?? ["MA", "ZX"]);
+  const [subIndicators, setSubIndicators] = useState<string[]>(initialPrefs.subIndicators ?? []);
   const [retryKey, setRetryKey] = useState(0);
+  const [snapshot, setSnapshot] = useState<StockSnapshot | null>(null);
 
   const rawPeriod = searchParams.get("period");
   const rawAdjust = searchParams.get("adjust");
@@ -69,10 +91,48 @@ export default function StockKlinePage() {
     [payload, adjust],
   );
 
+  // #1 个性化持久化（localStorage，单用户本地工具）：指标选择跨会话记忆
+  useEffect(() => {
+    localStorage.setItem(
+      PREF_KEY,
+      JSON.stringify({ mainOverlays, subIndicators } satisfies IndicatorPrefs),
+    );
+  }, [mainOverlays, subIndicators]);
+
+  // #6 个股快照（流通市值/换手率等；无 token/异常时字段为 null，界面显示「—」）
+  useEffect(() => {
+    if (!codeValid) {
+      setSnapshot(null);
+      return;
+    }
+    let cancelled = false;
+    getStockSnapshot(code)
+      .then((snap) => {
+        if (!cancelled) setSnapshot(snap);
+      })
+      .catch(() => {
+        if (!cancelled) setSnapshot(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [codeValid, code]);
+
   const setParam = (key: "period" | "adjust", value: string) => {
     const next = new URLSearchParams(searchParams);
     next.set(key, value);
     setSearchParams(next, { replace: true }); // N18：replace 不刷历史栈，回退由浏览器驱动
+  };
+
+  const toggleOverlay = (key: string) => {
+    setMainOverlays((cur) =>
+      cur.includes(key) ? cur.filter((n) => n !== key) : [...cur, key],
+    );
+  };
+  const toggleSub = (key: string) => {
+    setSubIndicators((cur) =>
+      cur.includes(key) ? cur.filter((n) => n !== key) : [...cur, key],
+    );
   };
 
   if (!codeValid) {
@@ -99,6 +159,8 @@ export default function StockKlinePage() {
 
   const lastBar = payload?.bars.length ? payload.bars[payload.bars.length - 1] : null;
   const up = pct != null && pct >= 0;
+  const circYi =
+    snapshot?.circ_mv != null ? (snapshot.circ_mv / 1e4).toFixed(0) : null; // 万元 → 亿元
 
   return (
     <div className="stock-kline-page">
@@ -121,6 +183,7 @@ export default function StockKlinePage() {
         )}
         {pct == null && <Text type="secondary">—</Text>}
         <Text type="secondary">数据截至 {payload?.last_bar_date ?? "-"}</Text>
+        {circYi != null && <Text type="secondary">流通市值 {circYi}亿</Text>}
       </Space>
 
       {payload?.adjust_degraded && (
@@ -152,10 +215,7 @@ export default function StockKlinePage() {
               key: opt.value,
               label: (mainOverlays.includes(opt.value) ? "✓ " : "") + opt.label,
             })),
-            onClick: ({ key }) =>
-              setMainOverlays((cur) =>
-                cur.includes(key) ? cur.filter((n) => n !== key) : [...cur, key],
-              ),
+            onClick: ({ key }) => toggleOverlay(key),
           }}
         >
           <Button>
@@ -169,10 +229,7 @@ export default function StockKlinePage() {
               key: name,
               label: (subIndicators.includes(name) ? "✓ " : "") + name,
             })),
-            onClick: ({ key }) =>
-              setSubIndicators((cur) =>
-                cur.includes(key) ? cur.filter((n) => n !== key) : [...cur, key],
-              ),
+            onClick: ({ key }) => toggleSub(key),
           }}
         >
           <Button>

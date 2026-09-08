@@ -1,11 +1,21 @@
 import { useEffect, useRef } from "react";
-import { dispose, init, registerIndicator } from "klinecharts";
-import type { Chart, KLineData, Period } from "klinecharts";
+import {
+  dispose,
+  init,
+  registerIndicator,
+  type Chart,
+  type KLineData,
+  type Period,
+  type TooltipLegend,
+} from "klinecharts";
 import type { KlineBar, KlineResponse } from "../../types/kline";
 
+const UP_COLOR = "#ef232a";
+const DOWN_COLOR = "#14b143";
 const ZX_SHORT_COLOR = "#f5a623"; // 短期趋势线
 const ZX_LONG_COLOR = "#b45fd9"; // 多空线
-const DEFAULT_SUB_INDICATORS = ["VOL", "MACD"];
+const NEUTRAL = "#606a78"; // 弹框中性文字色（TooltipLegendChild.color 必填）
+const DEFAULT_SUB_INDICATORS = ["VOL"]; // #3：默认仅成交量，其余走「副图指标」菜单扩展
 const MAIN_OVERLAYS: { name: string; paneId: string; calcParams?: number[] }[] = [
   { name: "MA", paneId: "candle_pane", calcParams: [34, 55, 144, 233] },
   { name: "ZX", paneId: "candle_pane" },
@@ -41,7 +51,7 @@ function ensureZxRegistered() {
 }
 
 function toKlineData(bars: KlineBar[]): KLineData[] {
-  // M12：千元 amount 不映射 turnover（KLineData 约定字段），成交额只走信息栏
+  // M12：千元 amount 不映射 turnover（KLineData 约定字段），成交额走十字光标弹框
   return bars.map((b) => ({
     timestamp: b.timestamp,
     open: b.open,
@@ -52,6 +62,49 @@ function toKlineData(bars: KlineBar[]): KLineData[] {
     zx_short: b.zx_short,
     zx_long: b.zx_long,
   })) as unknown as KLineData[]; // d.ts: KLineData.open 等为必填 number，可空值仅能经 unknown 断言
+}
+
+/** #5：万/亿 大数格式化（VOL legend 与坐标轴通用；单位「手」标注在 legend 标题）。 */
+function formatWanYi(value: string | number): string {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value);
+  const abs = Math.abs(n);
+  if (abs >= 1e8) return `${(n / 1e8).toFixed(2)}亿`;
+  if (abs >= 1e4) return `${(n / 1e4).toFixed(2)}万`;
+  return `${n}`;
+}
+
+function fmtPrice(value: number | null | undefined): string {
+  return value == null ? "—" : value.toFixed(2);
+}
+
+/** #4 中文十字光标弹框内容：收盘按对昨涨跌着色，涨跌幅优先用 pre_close（交易所口径，
+ *  none 档除权日正确）；pre_close 缺失回退序列比（图表序列本身是复权口径，等价）。 */
+function candleTooltipLegends(data: {
+  prev: unknown;
+  current: unknown;
+}): TooltipLegend[] {
+  const cur = data.current as unknown as KlineBar | null;
+  if (!cur || cur.close == null) return [];
+  const prev = data.prev as unknown as KlineBar | null;
+  let pct: number | null = null;
+  if (cur.pre_close != null && cur.pre_close > 0) {
+    pct = (cur.close - cur.pre_close) / cur.pre_close;
+  } else if (prev && prev.close != null && prev.close > 0) {
+    pct = (cur.close - prev.close) / prev.close; // 旧数据无 pre_close：回退序列比
+  }
+  const pctColor = pct == null ? undefined : pct >= 0 ? UP_COLOR : DOWN_COLOR;
+  const pctText = pct == null ? "—" : `${pct >= 0 ? "+" : ""}${(pct * 100).toFixed(2)}%`;
+  const closeColor = pct == null ? undefined : pct >= 0 ? UP_COLOR : DOWN_COLOR;
+  return [
+    { title: { text: "开盘", color: NEUTRAL }, value: { text: fmtPrice(cur.open), color: NEUTRAL } },
+    { title: { text: "最高", color: NEUTRAL }, value: { text: fmtPrice(cur.high), color: NEUTRAL } },
+    { title: { text: "最低", color: NEUTRAL }, value: { text: fmtPrice(cur.low), color: NEUTRAL } },
+    { title: { text: "收盘", color: closeColor ?? NEUTRAL }, value: { text: fmtPrice(cur.close), color: closeColor ?? NEUTRAL } },
+    { title: { text: "涨跌幅", color: NEUTRAL }, value: { text: pctText, color: pctColor ?? NEUTRAL } },
+    { title: { text: "成交量(手)", color: NEUTRAL }, value: { text: formatWanYi(cur.volume ?? 0), color: NEUTRAL } },
+    { title: { text: "成交额(千元)", color: NEUTRAL }, value: { text: formatWanYi(cur.amount ?? 0), color: NEUTRAL } },
+  ];
 }
 
 /** v10 门控（dist/index.esm.js _processDataLoad）：_symbol 与 _period 双双有效
@@ -71,7 +124,7 @@ export interface KlineChartProps {
   payload: KlineResponse | null;
   /** 主图叠加指标（MA/ZX，选中的才叠加，用户可通过「主图指标」菜单增删）。 */
   mainOverlays: string[];
-  /** VOL/MACD 之外的副图内置指标（spec §5.3，可加可删）。 */
+  /** VOL 之外的副图内置指标（spec §5.3，可加可删）。 */
   subIndicators: string[];
 }
 
@@ -101,17 +154,44 @@ export function KlineChart({ payload, mainOverlays, subIndicators }: KlineChartP
     const chart = init(container, { timezone: "Asia/Shanghai" }); // M11
     if (!chart) return;
     chartRef.current = chart;
-    // 涨红跌绿（N12）：蜡烛实体/影线/边框与指标量柱两套样式路径，键名以 10.0.3 Styles 为准
+
+    // 涨红跌绿（N12）：蜡烛实体/影线/边框与指标量柱两套样式路径；
+    // #4：十字光标跟随弹框（follow_cross + rect）——指到才显示，离开即隐藏；
+    // #5：万/亿大数格式化（VOL legend）+ 坐标轴 decimalFold
     chart.setStyles({
       candle: {
         bar: {
-          upColor: "#ef232a", downColor: "#14b143",
-          upBorderColor: "#ef232a", downBorderColor: "#14b143",
-          upWickColor: "#ef232a", downWickColor: "#14b143",
+          upColor: UP_COLOR, downColor: DOWN_COLOR,
+          upBorderColor: UP_COLOR, downBorderColor: DOWN_COLOR,
+          upWickColor: UP_COLOR, downWickColor: DOWN_COLOR,
+        },
+        tooltip: {
+          showRule: "follow_cross", // #4：不指不显示
+          showType: "rect", // 同花顺式弹框
+          legend: { template: candleTooltipLegends },
         },
       },
-      indicator: { bars: [{ upColor: "#ef232a", downColor: "#14b143" }] },
+      indicator: {
+        bars: [{ upColor: UP_COLOR, downColor: DOWN_COLOR }],
+        tooltip: { showRule: "follow_cross", showType: "rect" },
+      },
     });
+    // #5：VOL legend 万/亿（默认 K/M/B）；坐标轴 decimalFold 折叠
+    chart.setFormatter({ formatBigNumber: formatWanYi });
+    chart.setDecimalFold({ threshold: 10000, format: formatWanYi });
+
+    // 主图叠加：MA(34/55/144/233) + ZX——v10 主图叠加用 paneId: 'candle_pane'
+    // （官方文档模式，放指标对象内）；实际增删由下方 sync 效应按用户选择管理
+    const existing = chart.getIndicators().map((i) => i.name);
+    for (const overlay of MAIN_OVERLAYS) {
+      if (!existing.includes(overlay.name)) {
+        chart.createIndicator(
+          { name: overlay.name, calcParams: overlay.calcParams, paneId: overlay.paneId },
+          true,
+        );
+      }
+    }
+
     chart.setDataLoader({
       getBars: ({ type, callback: done }) => {
         // v10 callback 在 params 内（d.ts DataLoaderGetBarsParams）

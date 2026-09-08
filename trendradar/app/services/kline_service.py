@@ -56,3 +56,35 @@ def get_kline(
     bars, degraded = build_kline_series(raw, period, adjust)
     name, industry = _lookup_meta(market_store, code)
     return KlineSeries(bars=bars, adjust_degraded=degraded, name=name, industry=industry)
+
+
+def get_stock_snapshot(market_store, code: str, pro) -> dict:
+    """最新交易日个股快照（流通市值/换手率/PE/PB，daily_basic）。
+
+    无 token 或接口异常时字段为 null（前端显示「—」），不阻塞 K线主数据。
+    """
+    try:
+        calendar = market_store.get_calendar()
+    except Exception:
+        calendar = []
+    trade_date = calendar[-1] if calendar else date.today()
+    snapshot: dict = {
+        "code": code,
+        "trade_date": trade_date.isoformat(),
+        "circ_mv": None,
+        "total_mv": None,
+        "turnover_rate": None,
+        "pe_ttm": None,
+        "pb": None,
+    }
+    if pro is None:
+        return snapshot
+    try:
+        from trendradar.infrastructure.tushare.market_cap import daily_basic_snapshot
+
+        entry = daily_basic_snapshot(pro, trade_date).get(code)
+    except Exception:
+        return snapshot
+    if entry:
+        snapshot.update(entry)
+    return snapshot

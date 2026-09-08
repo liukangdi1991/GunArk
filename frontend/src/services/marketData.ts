@@ -1,5 +1,6 @@
 import { requestJson } from "./apiClient";
 import type { MarketDataStatus, TradingDatesResponse } from "../types/marketData";
+import type { StockSnapshot } from "../types/kline";
 import type { AdjustMode, KlinePeriod, KlineResponse } from "../types/kline";
 
 let tradingDatesCache: TradingDatesResponse | null = null;
@@ -59,4 +60,8 @@ export async function getKline(
   return requestJson<KlineResponse>(`/api/stocks/${code}/kline?${params.toString()}`, {
     signal: options?.signal,
   });
+}
+
+export async function getStockSnapshot(code: string): Promise<StockSnapshot> {
+  return requestJson<StockSnapshot>(`/api/stocks/${code}/snapshot`);
 }
