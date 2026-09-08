@@ -1,6 +1,11 @@
 import polars as pl
 import pytest
-from trendradar.domain.strategy.formulas.zxdkx import compute_zx_lines, zx_stick_ratio, zx_stick_condition
+from trendradar.domain.strategy.formulas.zxdkx import (
+    compute_zx_lines,
+    compute_zx_lines_adjusted,
+    zx_stick_ratio,
+    zx_stick_condition,
+)
 
 
 def test_compute_zx_lines():
@@ -79,3 +84,36 @@ def test_compute_zx_lines_short_is_tdx_double_ema():
     assert short_line.to_list() != pytest.approx(
         df["close"].rolling_mean(14).to_list(), abs=1e-6
     )
+
+
+def test_compute_zx_lines_adjusted_applies_qfq():
+    """前复权包装：adj_factor 存在且守卫通过时，双线算在前复权 close 上；
+    因子 1.0→2.0（10送10）close 同步腰斩的除权形态，qfq 序列应连续无假缺口。"""
+    rows = []
+    for i in range(120):
+        if i < 60:
+            rows.append({"close": 100.0 + i * 0.1, "adj_factor": 1.0,
+                         "pre_close": 99.95 + i * 0.1})
+        else:
+            rows.append({"close": (100.0 + (i - 60) * 0.1) / 2, "adj_factor": 2.0,
+                         "pre_close": (100.0 + (i - 61) * 0.1) / 2})
+    df = pl.DataFrame(rows)
+
+    short_adj, long_adj = compute_zx_lines_adjusted(df)
+    # oracle：手工缩放（×adj_factor/最新因子=前段 ×0.5）后直接调未复权公式
+    scaled = df.with_columns((pl.col("close") * pl.col("adj_factor") / 2.0).alias("c"))
+    exp_short, exp_long = compute_zx_lines(pl.DataFrame({"close": scaled["c"]}))
+    assert short_adj.to_list() == pytest.approx(exp_short.to_list())
+    assert long_adj.to_list() == pytest.approx(exp_long.to_list())
+    # 除权缺口被前复权修复：与未复权结果必然不同
+    _, long_raw = compute_zx_lines(df)
+    assert long_adj.to_list() != pytest.approx(long_raw.to_list())
+
+
+def test_compute_zx_lines_adjusted_falls_back_without_factor():
+    """存量形态（无 adj_factor 列）：守卫整列退化原价，结果与未复权一致。"""
+    df = pl.DataFrame({"close": [float(i) for i in range(1, 121)]})
+    short_adj, long_adj = compute_zx_lines_adjusted(df)
+    short_raw, long_raw = compute_zx_lines(df)
+    assert short_adj.to_list() == pytest.approx(short_raw.to_list())
+    assert long_adj.to_list() == pytest.approx(long_raw.to_list())

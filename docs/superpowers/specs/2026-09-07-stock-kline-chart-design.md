@@ -43,9 +43,10 @@ qfq 与 none 逐值相同，**属故障非特性**，前端以 `adjust_degraded`
 交互零成本；对比 echarts（手搭联动）与 lightweight-charts（内置指标少）均劣；57KB gzip、
 零依赖、Apache-2.0；`React.lazy` 隔离。
 
-**计算放后端**（业务层 polars）。口径声明（M4 降级）：图表与选股**共用同一公式实现**
-（`compute_zx_lines` 与 qfq 语义），但存在 3 处已知输入口径差异，逐条见 §4.4
-「已知不一致清单」——不宣称「无漂移面」。
+**计算放后端**（业务层 polars）。口径声明（M4，2026-09-08 更新）：图表与选股
+**共用同一公式实现与同一前复权口径**——`compute_zx_lines_adjusted`（选股侧）
+与 kline 路径（图表侧）均为 `apply_qfq` 缩放 + `compute_zx_lines`；剩余已知
+差异逐条见 §4.4「已知不一致清单」。
 
 ## 4. 后端设计
 
@@ -191,12 +192,10 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
     对齐 TDX 原文公式——`compute_zx_lines` 短期线由 MA(C,14) 改为
     EMA(EMA(C,10),10)，图表与 5 个 selector 消费同一实现；多空线公式本就一致。
     影响面：zxdkx_balance / volume_spike_balance 两策略的 stick 信号语义更新，
-    确定性基线经复核未变（上升趋势 fixture 被 close≤多空线×0.95 门槛主导））
-  - 5 个在册 selector 以**未复权** close 喂 `compute_zx_lines`：
-    zxdkx_balance.py:16、brick_chart.py:38、ultimate_brick_chart.py:32、
-    oversold_bottom_fishing.py:34、volume_spike_balance.py:14——图表线（qfq）
-    与这些策略线（raw）仍存在**输入口径差**（因子重建后除权日前价格不同），
-    对齐属选股语义决策，记 §8
+  - ~~5 个在册 selector 以未复权 close 喂 `compute_zx_lines`~~（**2026-09-08 已对齐**：
+    5 个 selector 全部切换 `compute_zx_lines_adjusted`（apply_qfq 缩放 +
+    compute_zx_lines，与图表路径同一公式同一口径）；确定性基线经复核未变
+    （fixtures 无 adj_factor 列 → 守卫退化原价路径，历史行为不变））
   - 预热差异：图表多空线 null（min_samples=window）、图表短期线 EMA 自首根
     收敛无 null，vs b1.py:93 等 min_samples=1
   - 多空线与通达信存在 ~0.04（0.035%）残差：TDX 前复权数据与 Tushare
@@ -331,9 +330,9 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
 （5468 只，staging→swap_in_bars 原子换名），判据通过：000034 因子 13 个 distinct
 （非恒 1.0）+ pre_close 列零空值落盘；`adjust_degraded` 已回 false。过程中修复
 全量拉取限速缺陷（一票两次调用只扣 1 桶令牌，`cae0db2e`）并确认入账 7 个
-2015-07 股灾停牌周 doubtful 日。selector 的未复权输入口径对齐、4 份
-`_qfq_scale` 副本收敛——两者为独立后续作业，不在本 feature。
-
+2015-07 股灾停牌周 doubtful 日。**selector 未复权输入口径对齐亦已完成**
+（5 个 zx 系 selector 切换 `compute_zx_lines_adjusted`，见 §4.4）；4 份
+`_qfq_scale` 副本收敛仍为独立后续作业。
 范围外：筹码分布（v2）、画线工具/截图、分钟级、后复权、MA 参数持久化、
 盘中刷新/实时推送、多股同栏、可见区间保留（anchor 仅初次定位）、vitest（§9）、
 非交易日坐标空洞（数据驱动，自然结果）。

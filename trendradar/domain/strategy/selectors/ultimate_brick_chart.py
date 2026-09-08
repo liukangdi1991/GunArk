@@ -27,9 +27,9 @@ class UltimateBrickChartSelector(SelectionStrategy):
         self.definition = definition
 
     def warmup(self, market_data: pl.DataFrame) -> WarmupResult:
-        from trendradar.domain.strategy.formulas.zxdkx import compute_zx_lines
+        from trendradar.domain.strategy.formulas.zxdkx import compute_zx_lines_adjusted
         p = self.definition.default_params
-        _, dkk = compute_zx_lines(
+        _, dkk = compute_zx_lines_adjusted(
             market_data,
             m1=p.get("m1", 14), m2=p.get("m2", 28),
             m3=p.get("m3", 57), m4=p.get("m4", 114),

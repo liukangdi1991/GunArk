@@ -4,7 +4,7 @@ from trendradar.domain.strategy.protocol import (
     SelectionStrategy, SelectionContext, SelectionResult, WarmupResult,
 )
 from trendradar.domain.strategy.formulas.zxdkx import (
-    compute_zx_lines, zx_stick_condition,
+    compute_zx_lines_adjusted, zx_stick_condition,
 )
 
 
@@ -13,7 +13,7 @@ class ZXDKXBalanceSelector(SelectionStrategy):
         self.definition = definition
 
     def warmup(self, market_data: pl.DataFrame) -> WarmupResult:
-        short_line, long_line = compute_zx_lines(market_data)
+        short_line, long_line = compute_zx_lines_adjusted(market_data)
         df = market_data.with_columns([
             short_line.alias("short_term_trend_line"),
             long_line.alias("long_term_bull_bear_line"),
