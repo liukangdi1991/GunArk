@@ -1,8 +1,9 @@
 # 个股 K 线图页（日/周/月 + 多副图 + 前复权）
 
-> 状态：v2.5——v2 吸收外部评审 37 条；v2.1 烘焙两项拍板；v2.2 处置复核 R1-R6；
-> v2.3 处置二次复核 R7；v2.4 处置实现推演轮 F1-F5；v2.5 处置三核 F6（KlineSeries
-> 补 name/industry 交付通道，meta 容错读取留在 service）。关键事实已独立复现（5211/5211
+> 状态：v2.6——v2 吸收外部评审 37 条；v2.1 烘焙两项拍板；v2.2 处置复核 R1-R6；
+> v2.3 处置二次复核 R7；v2.4 处置实现推演轮 F1-F5；v2.5 处置三核 F6；v2.6 处置
+> 四核 G1——KlineSeries 构造权归 service（domain 只产 (bars, degraded)，不造占位
+> 值）。关键事实已独立复现（5211/5211
 > 文件 `adj_factor` 恒 1.0；klinecharts 10.0.3 d.ts 中 `applyNewData` 0 命中；
 > presenters.py:3-4 与 test_api_contract.py:4-5 成文「bare, no data wrapper」；
 > app.py:87/95 已注入
@@ -64,16 +65,17 @@ trendradar/interfaces/api/schemas/market.py   # 补 KlineResponse（response_mod
   - `apply_qfq(df: pl.DataFrame) -> tuple[pl.DataFrame, bool]`——守卫命中整列退化
     原价；第二返回值 = degraded（F1：11 键闸门锁死 bars，标志必须走独立通道）
   - `aggregate_bars(df: pl.DataFrame, period: Literal["weekly","monthly"]) -> pl.DataFrame`
-  - `@dataclass KlineSeries(bars: pl.DataFrame, adjust_degraded: bool, name: str,
-    industry: str | None)`（F1 落形 + F6：meta 容错读取在 service，name/industry
-    随对象交付，route 组装时不再二次查 meta）
-  - `build_kline_series(df, period: KlinePeriod, adjust: AdjustMode) -> KlineSeries`——
-    编排：`sort("date")` → 0 行短路抛 `BarsUnavailable` → qfq → 聚合 → 附 zx 两线 →
-    `round(4)`
+  - `build_kline_series(df, period: KlinePeriod, adjust: AdjustMode)
+    -> tuple[pl.DataFrame, bool]`（bars, degraded）——编排：`sort("date")` → 0 行
+    短路抛 `BarsUnavailable` → qfq → 聚合 → 附 zx 两线 → `round(4)`。
+    **不返回 KlineSeries**（G1：domain 无 meta，构造含 name/industry 的对象必造
+    占位值；KlineSeries 由 service 独家构造，domain 测试对 tuple 写期望，TDD 期望
+    确定）
   - `class BarsUnavailable(RuntimeError)`——detail 中文，route 显式 404；
     `class MarketDataUnavailable(RuntimeError)`——detail 中文，route 显式 503（F2）
-- service：`get_kline(market_store, code, period, adjust) -> KlineSeries`
-  （**store 由 route 注入 `request.app.state.market_store`**（app.py:95 已有单例），
+- service：`get_kline(market_store, code, period, adjust) -> KlineSeries`——
+  调 `build_kline_series` 得 `(bars, degraded)` 后**独家构造**
+  `KlineSeries(bars=..., adjust_degraded=..., name=..., industry=...)`（G1；
   返回域对象不带 JSON 形状；payload 组装在 route 层——与 presenters「bare, rich
   response」职责一致）。**404/503 判别机制（F2：get_rows 对缺失文件静默返空帧
   ——data_store.py:186-187 实证——不钉机制则 503 不可达）**：
@@ -339,7 +341,7 @@ pre_close 落盘。selector 的未复权输入口径对齐、4 份 `_qfq_scale` 
 | meta 读取 | service 容错自读，不复用 60s TTL 缓存（M9） |
 | skipColumns | 加链接（N11） |
 | ZX 参数 | v1 不可调（M17） |
-| KlineSeries 形状 | dataclass(bars, adjust_degraded, name, industry)（F1：11 键闸门锁死 bars，degraded 走顶层通道；F6：meta 结果随对象交付，service 职责不搬） |
+| KlineSeries 形状 | dataclass(bars, adjust_degraded, name, industry)，**由 service 独家构造**；domain 只产 (bars, degraded) 元组（F1 通道 + F6 交付 + G1 构造权，不造占位值） |
 | 1.0 特征守卫门控 | 重建标志 = pre_close 列存在且 null_count ≤ 1；标志不成立才启用恒 1.0/混合守卫（R2 扩展 + R7 收紧：防增量同步 _align_columns 补 null 击穿门控） |
 
 **待用户拍板**：（无——两项已于 2026-09-08 拍板：①B1 前置=全量重建（A 方案，
