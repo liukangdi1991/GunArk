@@ -1,11 +1,21 @@
 import { useEffect, useRef } from "react";
 import { dispose, init, registerIndicator } from "klinecharts";
-import type { Chart, KLineData } from "klinecharts";
+import type { Chart, KLineData, Period } from "klinecharts";
 import type { KlineBar, KlineResponse } from "../../types/kline";
 
 const ZX_SHORT_COLOR = "#f5a623"; // 短期趋势线
 const ZX_LONG_COLOR = "#b45fd9"; // 多空线
 const DEFAULT_SUB_INDICATORS = ["VOL", "MACD"];
+const MAIN_OVERLAYS: { name: string; paneId: string; calcParams?: number[] }[] = [
+  { name: "MA", paneId: "candle_pane", calcParams: [34, 55, 144, 233] },
+  { name: "ZX", paneId: "candle_pane" },
+];
+/** 后端已按周期聚合完毕；此处 Period 仅作 v10 loader 门控与轴刻度形态。 */
+const PERIOD_SETTINGS: Record<KlineResponse["period"], Period> = {
+  daily: { type: "day", span: 1 },
+  weekly: { type: "week", span: 1 },
+  monthly: { type: "month", span: 1 },
+};
 
 let zxRegistered = false;
 
@@ -23,7 +33,7 @@ function ensureZxRegistered() {
     ],
     calc: (dataList) =>
       dataList.map((k) => {
-        const bar = k as unknown as KlineBar; // d.ts: KLineData 与 KlineBar 无充分重叠，经 unknown 断言
+        const bar = k as unknown as KlineBar;
         return { zx_short: bar.zx_short ?? null, zx_long: bar.zx_long ?? null };
       }),
   });
@@ -44,23 +54,42 @@ function toKlineData(bars: KlineBar[]): KLineData[] {
   })) as unknown as KLineData[]; // d.ts: KLineData.open 等为必填 number，可空值仅能经 unknown 断言
 }
 
+/** v10 门控（dist/index.esm.js _processDataLoad）：_symbol 与 _period 双双有效
+ *  才触发 getBars('init')。后调者触发加载；对象每次新建恒过 ChartImp 的 !== 守卫，
+ *  故重复调用即整体重载（覆盖复权/周期/换股切换，R5：写 ref → setSymbol → setPeriod）。 */
+function applySymbolAndPeriod(chart: Chart, payload: KlineResponse) {
+  chart.setSymbol({
+    ticker: payload.code,
+    symbol: payload.code,
+    pricePrecision: 2,
+    volumePrecision: 0,
+  });
+  chart.setPeriod(PERIOD_SETTINGS[payload.period]);
+}
+
 export interface KlineChartProps {
   payload: KlineResponse | null;
   /** VOL/MACD 之外的副图内置指标（spec §5.3，可加可删）。 */
   subIndicators: string[];
 }
 
-/** v10 数据入口是 setDataLoader/resetData（无 applyNewData，B3）；
- *  请求由 useKline 发起，本组件只注册一次 loader 同步 ref 数据。 */
+/** v10 数据入口是 setDataLoader + setSymbol/setPeriod（无 applyNewData，B3）；
+ *  请求由 useKline 发起，本组件同步 ref 数据并驱动 loader。所有指标创建均以
+ *  chart.getIndicators() 为真相源做幂等检查（StrictMode/重挂载/热更皆不重复）。 */
 export function KlineChart({ payload, subIndicators }: KlineChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<Chart | null>(null);
   const dataRef = useRef<KlineResponse | null>(payload);
-  const createdSubsRef = useRef<string[]>([]);
 
+  // 挂载后 payload 变更（周期/复权/换股）→ 整体重载。
+  // 挂载首 render 时 chart 尚未创建（init 效应在后），此处早退；
+  // 挂载路径的首次驱动在 init 效应末尾（G1 时序修复：页面条件渲染使挂载时
+  // payload 已就绪且不再变化，本效应不会因数据到达而重跑）。
   useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !payload) return;
     dataRef.current = payload;
-    chartRef.current?.resetData(); // 触发 loader 'init' 重取 ref 数据
+    applySymbolAndPeriod(chart, payload);
   }, [payload]);
 
   useEffect(() => {
@@ -70,7 +99,6 @@ export function KlineChart({ payload, subIndicators }: KlineChartProps) {
     const chart = init(container, { timezone: "Asia/Shanghai" }); // M11
     if (!chart) return;
     chartRef.current = chart;
-
     // 涨红跌绿（N12）：蜡烛实体/影线/边框与指标量柱两套样式路径，键名以 10.0.3 Styles 为准
     chart.setStyles({
       candle: {
@@ -83,18 +111,21 @@ export function KlineChart({ payload, subIndicators }: KlineChartProps) {
       indicator: { bars: [{ upColor: "#ef232a", downColor: "#14b143" }] },
     });
 
-    // 主图叠加：MA(34/55/144/233) + ZX（isStack=true 即落在蜡烛主图，v10 无第三参 paneOptions）
-    chart.createIndicator({ name: "MA", calcParams: [34, 55, 144, 233] }, true);
-    chart.createIndicator("ZX", true);
-    // 副图默认 VOL + MACD（v10 高度经 setPaneOptions 设置）
-    const volPaneId = chart.createIndicator("VOL", false);
-    if (volPaneId != null) chart.setPaneOptions({ id: volPaneId, height: 90 });
-    const macdPaneId = chart.createIndicator("MACD", false);
-    if (macdPaneId != null) chart.setPaneOptions({ id: macdPaneId, height: 90 });
-    createdSubsRef.current = [...DEFAULT_SUB_INDICATORS];
+    // 主图叠加：MA(34/55/144/233) + ZX——v10 主图叠加用 paneId: 'candle_pane'
+    // （官方文档模式，放指标对象内）；幂等：已存在则跳过
+    const existing = chart.getIndicators().map((i) => i.name);
+    for (const overlay of MAIN_OVERLAYS) {
+      if (!existing.includes(overlay.name)) {
+        chart.createIndicator(
+          { name: overlay.name, calcParams: overlay.calcParams, paneId: overlay.paneId },
+          true,
+        );
+      }
+    }
 
     chart.setDataLoader({
-      getBars: ({ type, callback: done }) => { // v10 callback 在 params 内（d.ts DataLoaderGetBarsParams）
+      getBars: ({ type, callback: done }) => {
+        // v10 callback 在 params 内（d.ts DataLoaderGetBarsParams）
         if (type !== "init") {
           done([], { forward: false, backward: false }); // 全量数据，无分页（M8）
           return;
@@ -104,29 +135,34 @@ export function KlineChart({ payload, subIndicators }: KlineChartProps) {
       },
     });
 
+    // 挂载路径首次驱动（G1 时序修复：页面条件渲染使挂载时 payload 已就绪且
+    // 不再变化，[payload] 效应不会重跑——必须在此直接驱动一次 loader）
+    if (dataRef.current) applySymbolAndPeriod(chart, dataRef.current);
+
     return () => {
       dispose(container); // M14：StrictMode 双挂载不残留画布
       chartRef.current = null;
-      createdSubsRef.current = [];
     };
   }, []);
 
-  // 副图指标增删（N12）：createIndicator/removeIndicator，空窗自动销毁
+  // 副图指标（VOL/MACD 默认 + extras）：以图表实例为真相源幂等增删（N12）
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
     const target = [...DEFAULT_SUB_INDICATORS, ...subIndicators];
-    for (const name of createdSubsRef.current) {
-      if (!target.includes(name)) chart.removeIndicator({ name });
+    const indicators = chart.getIndicators();
+    const existingNames = indicators.map((i) => i.name);
+    // 删除循环只作用于副图窗格（非 candle_pane）——否则会把主图叠加的 MA/ZX 一并移除
+    for (const ind of indicators.filter((i) => i.paneId !== "candle_pane")) {
+      if (!target.includes(ind.name)) chart.removeIndicator({ name: ind.name });
     }
     for (const name of target) {
-      if (!createdSubsRef.current.includes(name)) {
+      if (!existingNames.includes(name)) {
         const paneId = chart.createIndicator(name, false);
         if (paneId != null) chart.setPaneOptions({ id: paneId, height: 90 });
       }
     }
-    createdSubsRef.current = target;
-  }, [subIndicators]);
+  }, [subIndicators, payload]);
 
   return <div ref={containerRef} className="kline-chart-container" />;
 }

@@ -119,7 +119,7 @@ GET    /api/backtest-results/{key}/report # 回测报告
 DELETE /api/backtest-results/{key}
 GET    /api/market-data/status            # 行情状态
 POST   /api/market-data/sync              # 触发行情同步
-GET    /api/market-data/trading-dates
+GET    /api/stocks/{code}/kline           # 个股K线（日/周/月，前复权/不复权，含多空线）
 ```
 
 ## Web 页面
