@@ -2,7 +2,7 @@ import { ArrowLeftOutlined } from "@ant-design/icons";
 import { Alert, Button, Card, Col, Row, Space, Statistic, Table, Tag, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { StrategySnapshots } from "../../components/StrategySnapshots";
 import { getSelectionResult } from "../../services/selections";
 import type { SelectionPick, SelectionResultDetailResponse, SelectionSummary } from "../../types/selection";
@@ -66,8 +66,24 @@ const summaryColumns: ColumnsType<SelectionSummary> = [
 const pickColumns: ColumnsType<SelectionPick> = [
   { title: "策略", dataIndex: "strategy", key: "strategy", width: 180 },
   { title: "日期", dataIndex: "date", key: "date", width: 120 },
-  { title: "代码", dataIndex: "code", key: "code", width: 110 },
-  { title: "名称", dataIndex: "name", key: "name", width: 140 },
+  {
+    title: "代码",
+    dataIndex: "code",
+    key: "code",
+    width: 110,
+    render: (_, record) => (
+      <Link to={`/stocks/${record.code}?anchor=${record.date}`}>{record.code}</Link>
+    ),
+  },
+  {
+    title: "名称",
+    dataIndex: "name",
+    key: "name",
+    width: 140,
+    render: (_, record) => (
+      <Link to={`/stocks/${record.code}?anchor=${record.date}`}>{record.name}</Link>
+    ),
+  },
   {
     title: "所属板块",
     dataIndex: "industry",

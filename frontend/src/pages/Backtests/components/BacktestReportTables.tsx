@@ -1,4 +1,5 @@
 import { Typography } from "antd";
+import { Link } from "react-router-dom";
 import type { ColumnsType } from "antd/es/table";
 import type {
   BacktestOpenPosition,
@@ -101,7 +102,15 @@ export function buildSummaryColumns(capitalMode?: string): ColumnsType<BacktestS
 
 export const tradeColumns: ColumnsType<BacktestTrade> = [
   { title: "策略", dataIndex: "strategy", key: "strategy", width: 170, render: (_, record) => strategyLabel(record) },
-  { title: "代码", dataIndex: "code", key: "code", width: 100 },
+  {
+    title: "代码",
+    dataIndex: "code",
+    key: "code",
+    width: 100,
+    render: (_, record) => (
+      <Link to={`/stocks/${record.code}?anchor=${record.buy_date}`}>{record.code}</Link>
+    ),
+  },
   { title: "名称", dataIndex: "name", key: "name", width: 110, render: (value) => value || "-" },
   {
     title: "所属板块",
@@ -138,7 +147,15 @@ export const tradeColumns: ColumnsType<BacktestTrade> = [
 
 export const skipColumns: ColumnsType<BacktestSkip> = [
   { title: "策略", dataIndex: "strategy", key: "strategy", width: 170, render: (_, record) => strategyLabel(record) },
-  { title: "代码", dataIndex: "code", key: "code", width: 100 },
+  {
+    title: "代码",
+    dataIndex: "code",
+    key: "code",
+    width: 100,
+    render: (_, record) => (
+      <Link to={`/stocks/${record.code}?anchor=${record.signal_date}`}>{record.code}</Link>
+    ),
+  },
   { title: "名称", dataIndex: "name", key: "name", width: 110, render: (value) => value || "-" },
   {
     title: "所属板块",
@@ -156,7 +173,15 @@ export const skipColumns: ColumnsType<BacktestSkip> = [
 
 export const openPositionColumns: ColumnsType<BacktestOpenPosition> = [
   { title: "策略", dataIndex: "strategy", key: "strategy", width: 170, render: (_, record) => strategyLabel(record) },
-  { title: "代码", dataIndex: "code", key: "code", width: 100 },
+  {
+    title: "代码",
+    dataIndex: "code",
+    key: "code",
+    width: 100,
+    render: (_, record) => (
+      <Link to={`/stocks/${record.code}?anchor=${record.buy_date}`}>{record.code}</Link>
+    ),
+  },
   { title: "名称", dataIndex: "name", key: "name", width: 110, render: (value) => value || "-" },
   {
     title: "所属板块",
