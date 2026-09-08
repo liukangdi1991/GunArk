@@ -1,11 +1,11 @@
 # 个股 K 线图页（日/周/月 + 多副图 + 前复权）
 
-> 状态：v2.3——v2 吸收外部评审 37 条（blocker 3 / major 18 / minor 16）；v2.1 烘焙
-> 两项拍板（全量重建前置、pre_close 回填）；v2.2 处置复核 R1-R6；v2.3 处置二次
-> 复核 R7——重建标志收紧为「pre_close 列存在且 null_count ≤ 1」，防增量同步
-> _align_columns 补 null 击穿门控。关键事实已独立复现（5211/5211 文件 `adj_factor`
-> 恒 1.0；klinecharts 10.0.3 d.ts 中 `applyNewData` 0 命中；presenters.py:3-4 与
-> test_api_contract.py:4-5 成文「bare, no data wrapper」；app.py:87/95 已注入
+> 状态：v2.4——v2 吸收外部评审 37 条；v2.1 烘焙两项拍板；v2.2 处置复核 R1-R6；
+> v2.3 处置二次复核 R7；v2.4 处置实现推演轮 F1-F5（KlineSeries 形状、404/503 判别
+> 机制落钉、Path 校验措辞、round 清单、枚举落点）。关键事实已独立复现（5211/5211
+> 文件 `adj_factor` 恒 1.0；klinecharts 10.0.3 d.ts 中 `applyNewData` 0 命中；
+> presenters.py:3-4 与 test_api_contract.py:4-5 成文「bare, no data wrapper」；
+> app.py:87/95 已注入
 > `app.state.market_store`；polars 1.39.3 `dt.truncate('1w')` 锚周一、跨年周不劈分）
 > 日期：2026-09-08
 
@@ -59,18 +59,30 @@ trendradar/interfaces/api/app.py              # create_app() include_router 注�
 trendradar/interfaces/api/schemas/market.py   # 补 KlineResponse（response_model）
 ```
 
-- domain：
-  - `apply_qfq(df: pl.DataFrame) -> pl.DataFrame`——守卫命中整列退化原价
+- domain（`KlinePeriod`/`AdjustMode` 为 str Enum，定义于 `domain/market/kline.py`；
+  前端 types 以 API 契约为镜像，F5）：
+  - `apply_qfq(df: pl.DataFrame) -> tuple[pl.DataFrame, bool]`——守卫命中整列退化
+    原价；第二返回值 = degraded（F1：11 键闸门锁死 bars，标志必须走独立通道）
   - `aggregate_bars(df: pl.DataFrame, period: Literal["weekly","monthly"]) -> pl.DataFrame`
-  - `build_kline_series(df, period: KlinePeriod, adjust: AdjustMode) -> pl.DataFrame`——
-    编排：`sort("date")` → 0 行短路 → qfq → 聚合 → 附 zx 两线 → `round(4)`
-  - `class BarsUnavailable(RuntimeError)`——detail 为中文字符串，route 显式 404
-- service：`get_kline(market_store, code, period, adjust) -> KlineSeries 数据对象`
+  - `@dataclass KlineSeries(bars: pl.DataFrame, adjust_degraded: bool)`（F1：落实
+    「数据对象」形状）
+  - `build_kline_series(df, period: KlinePeriod, adjust: AdjustMode) -> KlineSeries`——
+    编排：`sort("date")` → 0 行短路抛 `BarsUnavailable` → qfq → 聚合 → 附 zx 两线 →
+    `round(4)`
+  - `class BarsUnavailable(RuntimeError)`——detail 中文，route 显式 404；
+    `class MarketDataUnavailable(RuntimeError)`——detail 中文，route 显式 503（F2）
+- service：`get_kline(market_store, code, period, adjust) -> KlineSeries`
   （**store 由 route 注入 `request.app.state.market_store`**（app.py:95 已有单例），
   返回域对象不带 JSON 形状；payload 组装在 route 层——与 presenters「bare, rich
-  response」职责一致）。stock_meta 读取**容错**：缺文件或列不全视同查无此股
-  （name=code、industry=null），**不得按列直接索引**（M9：降级分支仅回 code 列，
-  直接索引会 500）；不复用 presenters 的 60s TTL 缓存（避免失效不同步，自读三行）。
+  response」职责一致）。**404/503 判别机制（F2：get_rows 对缺失文件静默返空帧
+  ——data_store.py:186-187 实证——不钉机制则 503 不可达）**：
+  ① 先判 `market_store.bars_dir` 存在性，缺失 → 抛 `MarketDataUnavailable`（503）；
+  ② 取数 `market_store.get_rows(code, date(1990,1,1), date.today())` 包 try/except，
+  OSError 及 parquet 解析错误 → 抛 `MarketDataUnavailable`（503）；
+  ③ 空帧 → 抛 `BarsUnavailable`（404，文件缺失与 0 行同语义）。
+  stock_meta 读取**容错**：缺文件或列不全视同查无此股（name=code、industry=null），
+  **不得按列直接索引**（M9：降级分支仅回 code 列，直接索引会 500）；不复用
+  presenters 的 60s TTL 缓存（避免失效不同步，自读三行）。
 
 ### 4.2 API 契约（M6/M8/N1/N5/N6/N7/N10/N19/N21）
 
@@ -82,7 +94,7 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
            volume, amount, zx_short, zx_long}]}
 → 404 {detail: 中文} bars 文件不存在或存在但 0 行（真无数据）
 → 503 {detail: 中文} bars 目录缺失 / 读 IO 异常（疑似整目录换名窗口，可重试）
-→ 422 code 不匹配 ^\d{6}$（str+Query regex，禁 int：000001→1）/ period|adjust
+→ 422 code 不匹配 ^\d{6}$（str + Path(pattern=...)，禁 int：000001→1）/ period|adjust
       归一化后非法（后端收 str|None，小写归一，未知值 422）
 ```
 
@@ -94,7 +106,7 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
   adjust=none 时恒 false
 - `last_bar_date`：返回序列最后一根日期（**命名避开** `MarketDataStore.latest_trade_date()`
   ——全库日历语义，同名不同义，禁用（N1））
-- `round(4)`：OHLC 与 zx 两线（N5，防 8.688888… 撑爆体积与 tooltip）
+- `round(4)`：OHLC、pre_close 与 zx 两线（N5+F4，防 8.688888… 撑爆体积与 tooltip）
 - nullable：**仅 zx_short/zx_long/pre_close**（前两者窗口不足；pre_close 为旧数据未
   落盘时 null，前端按 4.3.4 回退）；NaN/±Inf 一律归一为 null（N6）
 - volume/amount 保持 Tushare 原始单位（手/千元），legend 必带单位（N8，§9 决策）
@@ -289,10 +301,11 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
     守卫仍触发、degraded=true（现有 fixture 是「列整体缺失」，此状态原清单未盖到）
 - `tests/interfaces/test_kline_api.py`（模块内私有 helper，随现有目录惯例）：
   200 形状 + **bars 键集合精确等于 11 键**（N21 唯一闸门）+ `type(close) is float`
-  + 严格 JSON 可解析（NaN→null，N6）；404/503/422 分支（两 fixture 分别断言，N7）；
-  meta 缺文件/缺列降级（M9）；2 行极短历史（N17）；pre_close 缺失（null）回退路径
-  （4.3.4 残余偏差仅限此路径）；date 字符串化/timestamp 值钉在
-  HTTP 层（N15）
+  + 严格 JSON 可解析（NaN→null，N6）；404（空帧）/503（目录缺失、读异常两 fixture，
+  F2 机制）/422（Path 校验，F3）分支；adjust_degraded 顶层字段断言（degraded
+  fixture vs 正常 fixture，F1 落钉后可写）；meta 缺文件/缺列降级（M9）；2 行极短
+  历史（N17）；pre_close 缺失（null）回退路径（4.3.4 残余偏差仅限此路径）；
+  date 字符串化/timestamp 值钉在 HTTP 层（N15）
 - **前端**（不引 vitest，§9 决策）：`tsc -b && vite build` + 浏览器可判验收：
   StrictMode 双挂载无双画布（M14）；系统时区改 America/New_York 轴日期不偏移
   （M11）；**最右轴日期 == last_bar_date**；VOL 柱色与蜡烛一致（N12）；
@@ -325,6 +338,7 @@ pre_close 落盘。selector 的未复权输入口径对齐、4 份 `_qfq_scale` 
 | meta 读取 | service 容错自读，不复用 60s TTL 缓存（M9） |
 | skipColumns | 加链接（N11） |
 | ZX 参数 | v1 不可调（M17） |
+| KlineSeries 形状 | dataclass(bars, adjust_degraded)（F1：11 键闸门锁死 bars，degraded 走顶层通道） |
 | 1.0 特征守卫门控 | 重建标志 = pre_close 列存在且 null_count ≤ 1；标志不成立才启用恒 1.0/混合守卫（R2 扩展 + R7 收紧：防增量同步 _align_columns 补 null 击穿门控） |
 
 **待用户拍板**：（无——两项已于 2026-09-08 拍板：①B1 前置=全量重建（A 方案，
