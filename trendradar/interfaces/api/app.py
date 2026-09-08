@@ -115,16 +115,22 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # M8：全站无压缩中间件；重建后单股 JSON ~470KB，GZip 为交付项
+    from fastapi.middleware.gzip import GZipMiddleware
+
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
 
     from trendradar.interfaces.api.routes.strategies import router as strategies_router
     from trendradar.interfaces.api.routes.executions import router as executions_router
     from trendradar.interfaces.api.routes.market import router as market_router
     from trendradar.interfaces.api.routes.backtest import router as backtest_router
+    from trendradar.interfaces.api.routes.stocks import router as stocks_router  # R6
 
     app.include_router(strategies_router)
     app.include_router(executions_router)
     app.include_router(market_router)
     app.include_router(backtest_router)
+    app.include_router(stocks_router)
 
     _mount_frontend(app)
 
