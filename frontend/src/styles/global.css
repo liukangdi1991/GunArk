@@ -45,9 +45,10 @@ body,
 }
 
 .main-layout {
-  min-height: 100vh;
+  height: 100dvh;
   width: 100%;
   background: transparent;
+  overflow: hidden;
 }
 
 .main-sider {
@@ -60,6 +61,22 @@ body,
     linear-gradient(180deg, rgba(35, 48, 75, 0.98), rgba(25, 36, 58, 0.98)),
     var(--bg) !important;
   box-shadow: 18px 0 48px rgba(0, 0, 0, 0.18);
+}
+
+.main-content-layout {
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: transparent;
+}
+
+.main-content {
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  overflow-y: auto; /* 长页面在内容区滚动：侧栏与作者栏固定，任意缩放不挤压布局 */
+  padding: 28px;
 }
 
 .brand-block {
@@ -1863,14 +1880,14 @@ h1.ant-typography {
 .stock-kline-page {
   display: flex;
   flex-direction: column;
-  height: calc(100dvh - 184px);
-  min-height: 460px;
+  height: 100%; /* 继承 .main-content 内容盒：任意缩放/视口自适应，无固定常数 */
+  min-height: 0;
   gap: 8px;
 }
 
 .stock-kline-page .kline-chart-container {
   flex: 1;
-  min-height: 0;
+  min-height: 280px; /* 极端缩放下保底，超出部分随内容区滚动 */
 }
 
 @media (max-width: 720px) {
