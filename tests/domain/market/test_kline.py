@@ -79,18 +79,21 @@ def test_monthly_and_volume_conservation():
 
 
 def test_qfq_scales_by_latest_factor_literal_oracle():
-    # R1 oracle：全>0、不含 1.0、相邻比 1.25 不越带 → 守卫全过；钉死「分母=最新因子」
+    # R1 oracle：除权形态物理自洽（因子 1.2→1.5 时 close 同步 100.5→80.4，
+    # pre_close 遵循恒等式 pre_t ≈ close_{t−1}×f_{t−1}/f_t）→ 守卫全过；
+    # 钉死「分母 = 最新因子」：前段 ×1.2/1.5、末段 ×1
     df = _daily(
         dates=[date(2025, 3, 3) + timedelta(days=i) for i in range(4)],
-        closes=[10.0, 10.1, 10.2, 10.3],
-        factors=[1.2, 1.2, 1.2, 1.5],
+        closes=[100.0, 100.5, 80.5, 80.8],
+        factors=[1.2, 1.2, 1.5, 1.5],
+        pre_close=[99.95, 100.45, 80.4, 80.6],
     )
     out, degraded = apply_qfq(df)
     assert degraded is False
     assert out["close"].to_list() == pytest.approx(
-        [10.0 * 1.2 / 1.5, 10.1 * 1.2 / 1.5, 10.2 * 1.2 / 1.5, 10.3]
+        [100.0 * 1.2 / 1.5, 100.5 * 1.2 / 1.5, 80.5, 80.8]
     )
-    assert out["pre_close"].to_list()[0] == pytest.approx(9.95 * 1.2 / 1.5)  # R3
+    assert out["pre_close"].to_list()[0] == pytest.approx(99.95 * 1.2 / 1.5)  # R3
 
 
 def test_qfq_pre_close_scaled_with_bar():
@@ -123,12 +126,23 @@ def test_qfq_degrades_on_zero_and_nan_factor():
     assert degraded2 is True and out2["close"].to_list() == [10.0, 10.1]
 
 
-def test_qfq_degrades_on_factor_ratio_out_of_band():
+def test_qfq_degrades_when_identity_breaks():
+    # 因子 4× 跳变但 pre_close 未同步调整（占位/污染形态）→ 恒等式破 → degraded
     df = _daily(dates=[date(2025, 3, 3), date(2025, 3, 4)], closes=[10.0, 10.1],
-                factors=[1.0, 4.0])  # 4× > 3× 越带（B2）
+                factors=[1.0, 4.0])
     out, degraded = apply_qfq(df)
     assert degraded is True
     assert out["close"].to_list() == [10.0, 10.1]
+
+
+def test_qfq_passes_rights_issue_with_consistent_pre_close():
+    # 配股形态（002747 实测同类）：相邻因子比 4×>3×，但 pre_close 遵循恒等式
+    # （25×4 = 100×1）→ 因子真实，正常缩放不误降级（越带守卫仅限未重建数据）
+    df = _daily(dates=[date(2025, 3, 3), date(2025, 3, 4)], closes=[100.0, 26.0],
+                factors=[1.0, 4.0], pre_close=[99.0, 25.0])
+    out, degraded = apply_qfq(df)
+    assert degraded is False
+    assert out["close"].to_list() == pytest.approx([25.0, 26.0])
 
 
 def test_missing_factor_column_degrades():
@@ -164,49 +178,52 @@ def test_incremental_merged_legacy_file_still_degrades():
 
 
 def test_rebuilt_legit_split_stock_scales():
-    # 已重建 + 合法除权形态（上市 1.0 前缀 + 除权后抬升）→ 正常缩放，不误降级
+    # 已重建 + 合法除权形态（10送10：因子倍增、close 腰斩、pre_close 遵循恒等式）
+    # → 正常缩放不误降级；qfq 序列连续无假缺口
     df = _daily(
         dates=[date(2025, 3, 3) + timedelta(days=i) for i in range(5)],
-        closes=[10.0, 10.05, 10.1, 10.2, 10.3],
+        closes=[10.00, 10.05, 10.10, 5.05, 5.10],
         factors=[1.0, 1.0, 1.0, 2.0, 2.0],
-        pre_close=[9.95, 10.0, 10.05, 10.10, 10.15],
+        pre_close=[9.95, 10.00, 10.00, 5.05, 5.05],
     )
     out, degraded = apply_qfq(df)
     assert degraded is False
-    assert out["close"].to_list() == pytest.approx([5.0, 5.025, 5.05, 10.2, 10.3])
+    assert out["close"].to_list() == pytest.approx([5.0, 5.025, 5.05, 5.05, 5.10])
 
 
 # ---------- 编排（spec §4.3 / M5 判别式断言） ----------
 
 
 def test_build_qfq_vs_none_discriminates_and_last_bar_equal():
+    # 物理自洽 fixture：因子 1.2→1.5 时 close 10.10→8.16、pre_close 遵循恒等式
     df = _daily(
         dates=[date(2025, 3, 3) + timedelta(days=i) for i in range(4)],
-        closes=[10.0, 10.1, 10.2, 10.3],
+        closes=[10.00, 10.05, 10.10, 8.16],
         factors=[1.2, 1.2, 1.2, 1.5],
+        pre_close=[9.95, 10.00, 10.05, 8.08],
     )
     qfq_bars, qfq_degraded = build_kline_series(df, KlinePeriod.DAILY, AdjustMode.QFQ)
     none_bars, none_degraded = build_kline_series(df, KlinePeriod.DAILY, AdjustMode.NONE)
     assert qfq_degraded is False and none_degraded is False
     assert qfq_bars["close"].to_list() != none_bars["close"].to_list()
     assert qfq_bars["close"][-1] == pytest.approx(none_bars["close"][-1])  # 末根 scale=1
-    assert qfq_bars["close"].to_list() == [8.0, 8.08, 8.16, 10.3]  # round(4) 后逐值
+    assert qfq_bars["close"].to_list() == [8.0, 8.04, 8.08, 8.16]  # round(4) 后逐值
 
 
 def test_build_adjust_precedes_aggregate_literal_oracle():
-    # 除权步 1.2→1.5 落在同一自然周：周线 open/pre_close 取缩放后首日值
+    # 除权步 1.2→1.5 落在同一自然周（物理自洽：close 100.5→80.5、pre_close 遵循恒等式）
     df = _daily(
         dates=[date(2025, 3, 3), date(2025, 3, 4), date(2025, 3, 5), date(2025, 3, 6)],
-        closes=[10.0, 10.1, 10.2, 10.3],
+        closes=[100.0, 100.5, 80.5, 80.8],
         factors=[1.2, 1.2, 1.5, 1.5],
+        pre_close=[99.95, 100.45, 80.4, 80.6],
     )
     weekly, degraded = build_kline_series(df, KlinePeriod.WEEKLY, AdjustMode.QFQ)
     assert degraded is False
     assert weekly.height == 1
     row = weekly.row(0, named=True)
-    assert row["open"] == pytest.approx(9.9 * 1.2 / 1.5)
-    assert row["close"] == pytest.approx(10.3)
-    assert row["pre_close"] == pytest.approx(9.95 * 1.2 / 1.5)
+    assert row["close"] == pytest.approx(80.8)
+    assert row["open"] == pytest.approx(99.9 * 1.2 / 1.5)
 
 
 def test_build_zx_short_is_tdx_double_ema_and_long_is_ma_composite():

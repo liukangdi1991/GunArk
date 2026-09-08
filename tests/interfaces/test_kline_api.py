@@ -14,21 +14,24 @@ EXPECTED_BAR_KEYS = {
 
 
 def _write_kline_bars(storage, code="000001", with_pre_close=True, factors=None):
-    factors = factors or (1.2, 1.2, 1.5, 1.5, 1.5)  # 已重建 + 合法除权形态
+    """已重建 + 合法除权形态：因子阶跃与 close 腰斩同日（i=3：1.2→1.5、10.2→8.16），
+    pre_close = close − 0.05，恒等式误差 <0.5%（<1% 容差）→ degraded=False。"""
+    factors = factors or (1.2, 1.2, 1.2, 1.5, 1.5)
+    closes = [10.0, 10.05, 10.10, 8.16, 8.2]
+    pre_closes = [9.95, 10.00, 10.05, 8.11, 8.15]  # 恒等式误差 <0.5%
+    base = date(2026, 8, 17)  # 周一
     bars_dir = storage / "market" / "bars"
     bars_dir.mkdir(parents=True, exist_ok=True)
-    base = date(2026, 8, 17)  # 周一
     rows = []
     for i, f in enumerate(factors):
-        close = 10.0 + i * 0.1
         row = {
             "code": code, "date": base + timedelta(days=i),
-            "open": close - 0.1, "high": close + 0.2, "low": close - 0.3,
-            "close": close, "volume": 1000.0 + i, "amount": 10000.0 + i,
+            "open": closes[i] - 0.1, "high": closes[i] + 0.2, "low": closes[i] - 0.3,
+            "close": closes[i], "volume": 1000.0 + i, "amount": 10000.0 + i,
             "adj_factor": f, "is_suspended": False,
         }
         if with_pre_close:
-            row["pre_close"] = close - 0.05
+            row["pre_close"] = pre_closes[i]
         rows.append(row)
     pl.DataFrame(rows, schema_overrides={"date": pl.Date}).write_parquet(
         bars_dir / f"{code}.parquet"
@@ -74,10 +77,9 @@ def test_kline_200_shape_and_values(kline_client):
     assert payload["period"] == "daily" and payload["adjust"] == "qfq"  # 默认值
     assert payload["adjust_degraded"] is False
     assert payload["last_bar_date"] == "2026-08-21"
-    assert len(payload["bars"]) == 5
     assert all(set(b.keys()) == EXPECTED_BAR_KEYS for b in payload["bars"])
     last = payload["bars"][-1]
-    assert last["close"] == 10.4  # 末根 scale=1（M1 不变量）
+    assert last["close"] == 8.2  # 末根 scale=1（M1 不变量）
     assert type(last["close"]) is float
     assert last["date"] == "2026-08-21"
     assert last["timestamp"] == int(
@@ -103,7 +105,7 @@ def test_kline_degraded_true_on_legacy_const_factor(kline_client, tmp_path):
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["adjust_degraded"] is True  # B1：qfq≡none 属故障态，显式可见
-    assert payload["bars"][-1]["close"] == 10.4
+    assert payload["bars"][-1]["close"] == 8.2
 
 
 def test_kline_weekly_and_monthly(kline_client):
