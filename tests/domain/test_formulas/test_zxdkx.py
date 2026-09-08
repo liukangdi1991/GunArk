@@ -87,22 +87,26 @@ def test_compute_zx_lines_short_is_tdx_double_ema():
 
 
 def test_compute_zx_lines_adjusted_applies_qfq():
-    """前复权包装：adj_factor 存在且守卫通过时，双线算在前复权 close 上；
-    因子 1.0→2.0（10送10）close 同步腰斩的除权形态，qfq 序列应连续无假缺口。"""
-    rows = []
+    """前复权包装：pre_close 遵循除权恒等式（pre_i = close_{i−1}×f_{i−1}/f_i）→
+    因子真实，双线算在前复权 close 上、序列连续无假缺口。"""
+    closes: list[float] = []
+    factors: list[float] = []
     for i in range(120):
         if i < 60:
-            rows.append({"close": 100.0 + i * 0.1, "adj_factor": 1.0,
-                         "pre_close": 99.95 + i * 0.1})
+            closes.append(100.0 + i * 0.1)          # 除权前：100 → 105.9
+            factors.append(1.0)
         else:
-            rows.append({"close": (100.0 + (i - 60) * 0.1) / 2, "adj_factor": 2.0,
-                         "pre_close": (100.0 + (i - 61) * 0.1) / 2})
-    df = pl.DataFrame(rows)
+            closes.append((100.0 + (i - 60) * 0.1) / 2)  # 10送10：raw 腰斩
+            factors.append(2.0)
+    pres = [closes[0] - 0.05]
+    for i in range(1, 120):
+        pres.append(closes[i - 1] * factors[i - 1] / factors[i])  # 恒等式
+    df = pl.DataFrame({"close": closes, "adj_factor": factors, "pre_close": pres})
 
     short_adj, long_adj = compute_zx_lines_adjusted(df)
     # oracle：手工缩放（×adj_factor/最新因子=前段 ×0.5）后直接调未复权公式
-    scaled = df.with_columns((pl.col("close") * pl.col("adj_factor") / 2.0).alias("c"))
-    exp_short, exp_long = compute_zx_lines(pl.DataFrame({"close": scaled["c"]}))
+    scaled = pl.DataFrame({"close": [c * f / 2.0 for c, f in zip(closes, factors)]})
+    exp_short, exp_long = compute_zx_lines(scaled)
     assert short_adj.to_list() == pytest.approx(exp_short.to_list())
     assert long_adj.to_list() == pytest.approx(exp_long.to_list())
     # 除权缺口被前复权修复：与未复权结果必然不同
