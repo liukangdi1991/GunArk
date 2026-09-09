@@ -48,17 +48,13 @@ def test_rise_fall_rise_yields_expected_colors():
         assert not (fields["mt_color"][i] == "red" and fields["mt_color"][i] == "green")
 
 
-def test_every_green_to_red_turn_is_orange():
-    """2026-09-09 二次回归：橙 = 绿→红转折（TDX 0→MT 整柱口径，柱高比较恒真）。
-
-    用户以 000807@2026-09-03 反例纠正：回升弱于前跌（Δ+4.73 < Δ-9.49）仍为橙，
-    力度过滤不成立。
-    """
+def test_orange_requires_red_longer_than_preceding_green():
+    """2026-09-09 回归：橙柱条件 `红柱长 > 前根绿柱长`（原式符号反致全部绿转红误标橙）。"""
     closes = (
         [10.0] * 12  # 中位稳态 MT ≈ 86
         + [12.0] * 6  # 冲顶（红）
-        + [6.0] * 10  # 深回落（绿）
-        + [10.0] * 8  # 回升（首个转折红候选 → 应为橙）
+        + [6.0] * 10  # 深回落（绿，跌得深）
+        + [10.0] * 8  # 回升第一根（红候选：幅度浅于前绿 → red；随后可能超回 → orange）
     )
     df = _frame_from_close(closes)
     fields = compute_mt_brick(df["high"], df["low"], df["close"])
@@ -67,13 +63,17 @@ def test_every_green_to_red_turn_is_orange():
 
     transitions = 0
     for i in range(2, len(mt)):
-        if mt[i] is None or mt[i - 1] is None or mt[i - 2] is None:
-            continue  # 预热期
-        if mt[i - 1] < mt[i - 2] and mt[i] > mt[i - 1]:
-            transitions += 1  # 值域判转折（颜色上转折日已涂橙，不存在绿红相邻）
-            assert color[i] == "orange", f"i={i} 绿→红转折必须橙"
+        if color[i - 1] == "green" and color[i] == "red":
+            transitions += 1
+            green_len = mt[i - 2] - mt[i - 1]  # 前根绿柱长度（正）
+            red_len = mt[i] - mt[i - 1]  # 当根红柱长度（正）
+            expect = "orange" if red_len > green_len else "red"
+            assert color[i] == expect, (
+                f"i={i} red_len={red_len:.2f} green_len={green_len:.2f} "
+                f"expect={expect} actual={color[i]}"
+            )
         if color[i] == "orange":
-            assert mt[i - 1] < mt[i - 2] and mt[i] > mt[i - 1], f"i={i} 橙必须是绿→红转折"
-        if color[i] == "red":
-            assert not (mt[i - 1] < mt[i - 2]), f"i={i} 绿后红必须是橙而非红"
-    assert transitions >= 1  # 形态健全：阶梯产生绿→红转折
+            # 橙必紧跟绿柱且严格更强
+            assert color[i - 1] == "green"
+            assert mt[i] - mt[i - 1] > mt[i - 2] - mt[i - 1]
+    assert transitions >= 1  # 形态健全：阶梯产生绿→红转换
