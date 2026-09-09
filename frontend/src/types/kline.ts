@@ -15,9 +15,8 @@ export interface KlineBar {
   zx_short: number | null;
   zx_long: number | null;
   mt: number | null;
-  mt_red: number | null;
-  mt_green: number | null;
-  mt_orange: number | null;
+  mt_prev: number | null;
+  mt_color: string | null;
   xpsd_short: number | null;
   xpsd_mid: number | null;
   xpsd_midlong: number | null;
