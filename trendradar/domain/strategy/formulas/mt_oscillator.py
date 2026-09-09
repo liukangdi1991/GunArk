@@ -4,19 +4,26 @@ from __future__ import annotations
 
 import polars as pl
 
+def _safe_ratio(num: pl.Series, span: pl.Series) -> pl.Series:
+    """num/span，span==0 处取 0（极扁窗口 HHV==LLV 时 num 亦为 0，0/0 → 0）。"""
+    raw = num / span  # 浮点除不抛错：span==0 → ±inf / NaN
+    return raw.zip_with(span != 0, pl.Series("zero", [0.0] * span.len()))
+
 
 def compute_mt(high: pl.Series, low: pl.Series, close: pl.Series,
                n: int = 4, m: int = 6, t: int = 4) -> pl.Series:
     """TDX MT 振荡器: max(SMA链差值 - t, 0)。
 
     SMA(X,N,M) 为通达信中国式递归平滑，M=1 时等价 ewm(alpha=1/N, adjust=False)。
+    HHV/LLV 首根即有值（窗口按可用根数收缩，TDX 行为，2026-09-09 对齐；
+    与 kdj_wash._rsv 同口径）。
     """
-    hh = high.rolling_max(n)
-    ll = low.rolling_min(n)
+    hh = high.rolling_max(n, min_samples=1)
+    ll = low.rolling_min(n, min_samples=1)
     span = hh - ll
-    var1 = (hh - close) / span * 100 - 90
+    var1 = _safe_ratio(hh - close, span) * 100 - 90
     var2 = var1.ewm_mean(alpha=1.0 / n, adjust=False) + 100
-    var3 = (close - ll) / span * 100
+    var3 = _safe_ratio(close - ll, span) * 100
     var4 = var3.ewm_mean(alpha=1.0 / m, adjust=False)
     var5 = var4.ewm_mean(alpha=1.0 / m, adjust=False) + 100
     var6 = var5 - var2

@@ -42,12 +42,12 @@ def _ewma_ref(xs, alpha):
 
 def _ref(highs, lows, closes, n=4, m=6, t=4):
     """返回 (mt, zxk, diff, dd2) 参考序列（含 None 语义）。"""
-    hh = [None if i < n - 1 else max(highs[i - n + 1:i + 1]) for i in range(len(highs))]
-    ll = [None if i < n - 1 else min(lows[i - n + 1:i + 1]) for i in range(len(lows))]
-    var1 = [None if hh[i] is None or hh[i] == ll[i] else (hh[i] - closes[i]) / (hh[i] - ll[i]) * 100 - 90
+    hh = [max(highs[max(0, i - n + 1):i + 1]) for i in range(len(highs))]
+    ll = [min(lows[max(0, i - n + 1):i + 1]) for i in range(len(lows))]
+    var1 = [-90.0 if hh[i] == ll[i] else (hh[i] - closes[i]) / (hh[i] - ll[i]) * 100 - 90
             for i in range(len(closes))]
-    var2 = [v + 100 if v is not None else None for v in _sma_ref(var1, n, 1)]
-    var3 = [None if hh[i] is None or hh[i] == ll[i] else (closes[i] - ll[i]) / (hh[i] - ll[i]) * 100
+    var2 = [v + 100 for v in _sma_ref(var1, n, 1)]
+    var3 = [0.0 if hh[i] == ll[i] else (closes[i] - ll[i]) / (hh[i] - ll[i]) * 100
             for i in range(len(closes))]
     var4 = _sma_ref(var3, m, 1)
     var5 = [v + 100 if v is not None else None for v in _sma_ref(var4, m, 1)]

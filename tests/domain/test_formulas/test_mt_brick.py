@@ -77,3 +77,43 @@ def test_orange_requires_red_longer_than_preceding_green():
             assert color[i - 1] == "green"
             assert mt[i] - mt[i - 1] > mt[i - 2] - mt[i - 1]
     assert transitions >= 1  # 形态健全：阶梯产生绿→红转换
+
+
+def _mt_reference(highs: list[float], lows: list[float], closes: list[float],
+                  n: int = 4, m: int = 6, t: int = 4) -> list[float]:
+    """纯 Python 独立重算 TDX 公式（HHV/LLV 窗口收缩 + SMA(X,N,1) 递归），验证锚。"""
+    def hhv(i: int) -> float:
+        return max(highs[max(0, i - n + 1): i + 1])
+    def llv(i: int) -> float:
+        return min(lows[max(0, i - n + 1): i + 1])
+    def sma(xs: list[float], p: int) -> list[float]:
+        out, y = [], None
+        for x in xs:
+            y = x if y is None else (x + (p - 1) * y) / p
+            out.append(y)
+        return out
+    var1 = [(hhv(i) - closes[i]) / (hhv(i) - llv(i)) * 100 - 90 for i in range(len(closes))]
+    var2 = [v + 100 for v in sma(var1, n)]
+    var3 = [(closes[i] - llv(i)) / (hhv(i) - llv(i)) * 100 for i in range(len(closes))]
+    var5 = [v + 100 for v in sma(sma(var3, m), m)]
+    return [max(var5[i] - var2[i] - t, 0.0) for i in range(len(closes))]
+
+
+def test_matches_tdx_reference_including_warmup():
+    """2026-09-09：HHV/LLV 窗口首根收缩（TDX 行为）——首根即有值，全序列与独立
+    重算一致（此前 rolling 默认 min_samples=N，预热期 null 且 SMA 种子漂移）。"""
+    import random
+    rng = random.Random(42)
+    closes = [100.0]
+    for _ in range(120):
+        closes.append(round(closes[-1] * (1 + rng.uniform(-0.03, 0.03)), 2))
+    highs = [c + abs(c) * 0.01 + 0.05 for c in closes]
+    lows = [c - abs(c) * 0.01 - 0.05 for c in closes]
+    df = pl.DataFrame({"close": closes, "high": highs, "low": lows})
+
+    mt = compute_mt(df["high"], df["low"], df["close"]).to_list()
+    ref = _mt_reference(highs, lows, closes)
+    assert mt[0] is not None  # 首根即有值（TDX 窗口收缩）
+    assert len(mt) == len(ref)
+    for i, (a, b) in enumerate(zip(mt, ref)):
+        assert a == pytest.approx(b, abs=1e-9), f"i={i} mt={a} ref={b}"

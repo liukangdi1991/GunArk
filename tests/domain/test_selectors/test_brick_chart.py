@@ -36,23 +36,22 @@ def _sma_ref(xs, n, m=1):
 
 
 def _mt_ref(highs, lows, closes, n=4, m=6, t=4):
-    # rolling 窗口：前 n-1 行为 None（对齐 polars min_samples=n）
-    hh = [None if i < n - 1 else max(highs[i - n + 1:i + 1]) for i in range(len(highs))]
-    ll = [None if i < n - 1 else min(lows[i - n + 1:i + 1]) for i in range(len(lows))]
+    # 2026-09-09 对齐 TDX：HHV/LLV 窗口按可用根数收缩，首根即有值；
+    # 极扁窗口（HHV==LLV）比值取 0（同 _safe_ratio）
+    hh = [max(highs[max(0, i - n + 1):i + 1]) for i in range(len(highs))]
+    ll = [min(lows[max(0, i - n + 1):i + 1]) for i in range(len(lows))]
     var1 = [
-        None if hh[i] is None or hh[i] == ll[i] else (hh[i] - closes[i]) / (hh[i] - ll[i]) * 100 - 90
+        -90.0 if hh[i] == ll[i] else (hh[i] - closes[i]) / (hh[i] - ll[i]) * 100 - 90
         for i in range(len(closes))
     ]
-    var2 = [v + 100 if v is not None else None for v in _sma_ref(var1, n, 1)]
+    var2 = [v + 100 for v in _sma_ref(var1, n, 1)]
     var3 = [
-        None if hh[i] is None or hh[i] == ll[i] else (closes[i] - ll[i]) / (hh[i] - ll[i]) * 100
+        0.0 if hh[i] == ll[i] else (closes[i] - ll[i]) / (hh[i] - ll[i]) * 100
         for i in range(len(closes))
     ]
     var4 = _sma_ref(var3, m, 1)
-    var5 = [v + 100 if v is not None else None for v in _sma_ref(var4, m, 1)]
-    var6 = [var5[i] - var2[i] if var5[i] is not None and var2[i] is not None else None
-            for i in range(len(closes))]
-    return [None if v6 is None else max(v6 - t, 0.0) for v6 in var6]
+    var5 = [v + 100 for v in _sma_ref(var4, m, 1)]
+    return [max(var5[i] - var2[i] - t, 0.0) for i in range(len(closes))]
 
 
 def test_compute_mt_matches_reference():
