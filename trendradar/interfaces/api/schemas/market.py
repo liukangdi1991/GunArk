@@ -28,6 +28,18 @@ class KlineBar(BaseModel):
     amount: float
     zx_short: float | None = None
     zx_long: float | None = None
+    mt: float | None = None
+    mt_red: float | None = None
+    mt_green: float | None = None
+    mt_orange: float | None = None
+    xpsd_short: float | None = None
+    xpsd_mid: float | None = None
+    xpsd_midlong: float | None = None
+    xpsd_long: float | None = None
+    xpsig_zero: float | None = None
+    xpsig_w20: float | None = None
+    xpsig_xlong: float | None = None
+    xpsig_xmid: float | None = None
 
 
 class KlineResponse(BaseModel):

@@ -7,6 +7,8 @@ from enum import Enum
 import polars as pl
 
 from trendradar.domain.market.adjust import apply_qfq
+from trendradar.domain.strategy.formulas.kdj_wash import compute_wash_lines
+from trendradar.domain.strategy.formulas.mt_oscillator import compute_mt_brick
 from trendradar.domain.strategy.formulas.zxdkx import compute_zx_lines
 
 
@@ -91,17 +93,36 @@ def build_kline_series(
     # 双线复用策略公式 compute_zx_lines（2026-09-08 起策略口径已对齐 TDX 原文：
     # 短期趋势 = EMA(EMA(C,10),10)，多空 = MA(14/28/57/114) 均值）——单一实现源
     short, long_ = compute_zx_lines(out)
+    out = out.with_columns(short.alias("zx_short"), long_.alias("zx_long"))
+    # 砖形图 MT 色柱 + 知行洗盘线（用户 TDX 公式，副图指标）
+    mt_fields = compute_mt_brick(out["high"], out["low"], out["close"])
+    wash = compute_wash_lines(out)
     out = out.with_columns(
-        short.alias("zx_short"),
-        long_.alias("zx_long"),
+        [
+            mt_fields[name] for name in
+            ("mt", "mt_red", "mt_green", "mt_orange")
+        ]
+        + [
+            wash[name] for name in
+            ("xpsd_short", "xpsd_mid", "xpsd_midlong", "xpsd_long",
+             "xpsig_zero", "xpsig_w20", "xpsig_xlong", "xpsig_xmid")
+        ]
     )
     out = out.with_columns(
         pl.col(c).round(4)
-        for c in ("open", "high", "low", "close", "pre_close", "zx_short", "zx_long")
+        for c in (
+            "open", "high", "low", "close", "pre_close", "zx_short", "zx_long",
+            "mt", "mt_red", "mt_green", "mt_orange",
+            "xpsd_short", "xpsd_mid", "xpsd_midlong", "xpsd_long",
+            "xpsig_zero", "xpsig_w20", "xpsig_xlong", "xpsig_xmid",
+        )
         if c in out.columns
     )
     out = out.select(
         "date", "open", "high", "low", "close", "pre_close",
         "volume", "amount", "zx_short", "zx_long",
+        "mt", "mt_red", "mt_green", "mt_orange",
+        "xpsd_short", "xpsd_mid", "xpsd_midlong", "xpsd_long",
+        "xpsig_zero", "xpsig_w20", "xpsig_xlong", "xpsig_xmid",
     )
     return out, degraded
