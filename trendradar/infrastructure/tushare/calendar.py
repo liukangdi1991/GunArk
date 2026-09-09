@@ -7,8 +7,9 @@ INSERT OR IGNORE 只增不减，spec §3.3）；parquet 缓存方案已废弃。
 from __future__ import annotations
 
 from datetime import date
-
 import polars as pl
+
+from trendradar.infrastructure.tushare.client import response_lists
 
 
 def fetch_trade_calendar(pro, start: date, end: date) -> list[date]:
@@ -27,11 +28,12 @@ def fetch_trade_calendar(pro, start: date, end: date) -> list[date]:
             start_date=seg_start.strftime("%Y%m%d"),
             end_date=seg_end.strftime("%Y%m%d"),
         )
-        if resp is not None and resp.to_dict(orient="list"):
-            # pl.DataFrame(dict-of-lists) avoids pl.from_pandas, which can
-            # require pyarrow for some object columns (e.g. sparse early-year
-            # trade_cal responses).
-            frames.append(pl.DataFrame(resp.to_dict(orient="list")))
+        # pl.DataFrame(dict-of-lists) avoids pl.from_pandas, which can
+        # require pyarrow for some object columns (e.g. sparse early-year
+        # trade_cal responses).
+        lists = response_lists(resp)
+        if lists:
+            frames.append(pl.DataFrame(lists))
         year += 1
 
     if not frames:

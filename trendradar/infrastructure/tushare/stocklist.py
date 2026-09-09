@@ -12,7 +12,7 @@ import polars as pl
 
 from trendradar.domain.market.sync.spec import BASELINE_START
 from trendradar.infrastructure.filesystem.atomic import atomic_write_parquet
-from trendradar.infrastructure.tushare.client import get_pro
+from trendradar.infrastructure.tushare.client import get_pro, response_lists
 from trendradar.infrastructure.tushare.fetch import EXCLUDE_BOARD_PREFIXES
 
 logger = logging.getLogger(__name__)
@@ -24,9 +24,10 @@ def normalize_stock_meta(frames: list) -> pl.DataFrame:
     """合并 L/D 两次响应为统一 schema（code/ts_code/list_date/delist_date…）。"""
     dfs = []
     for data in frames:
-        if data is None or not data.to_dict(orient="list"):
+        lists = response_lists(data)
+        if not lists:
             continue
-        f = pl.DataFrame(data.to_dict(orient="list"))
+        f = pl.DataFrame(lists)
         # L 帧的 delist_date 全空会推断成 Null 类型，与 D 帧的 Utf8 无法直接
         # concat —— 统一先转字符串，日期解析放到合并之后
         for col in ("list_date", "delist_date"):

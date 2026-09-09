@@ -59,6 +59,31 @@ def test_normalize_meta_parses_dates_and_empty_delist():
     row0 = df.filter(pl.col("code") == "000001").row(named=True)
     assert row0["delist_date"] is None
 
+def test_normalize_meta_nan_missing_values_infer_as_string():
+    """缺失值以 float nan 混在字符串列里时不得让 polars 推断炸掉。
+
+    生产事故（2026-09-09 全量重建）：D 帧 area 列开头连续 nan，polars 按
+    列首样本把整列推断成 Float64，撞上后续 "吉林" 直接 TypeError。缺失值
+    必须先归一为 None，让推断稳定落在 Utf8。
+    """
+    nan = float("nan")
+    raw = pd.DataFrame({
+        "ts_code": ["000003.SZ", "000024.SZ"],
+        "symbol": ["000003", "000024"],
+        "name": ["PT金田A(退)", "XX退"],
+        "area": [nan, "吉林"],
+        "industry": [nan, nan],
+        "market": ["主板", "主板"],
+        "list_date": ["19910703", "19920101"],
+        "delist_date": ["20020614", None],
+    })
+    df = normalize_stock_meta([raw])
+    assert df.height == 2
+    assert df.schema["area"] == pl.Utf8
+    assert df.filter(pl.col("code") == "000024").row(named=True)["area"] == "吉林"
+    assert df.filter(pl.col("code") == "000003").row(named=True)["area"] is None
+    assert df.schema["delist_date"] == pl.Date
+
 
 def test_sync_stock_list_calls_l_and_d(tmp_path, monkeypatch):
     """R12：stock_basic 调用 L 与 D 两次并合并。"""

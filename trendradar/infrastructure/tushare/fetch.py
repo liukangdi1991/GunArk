@@ -10,6 +10,7 @@ from datetime import date, timedelta
 import polars as pl
 
 from trendradar.domain.market.sync.spec import FailureKind, is_bse_code
+from trendradar.infrastructure.tushare.client import response_lists
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +62,11 @@ def _to_ts_code(code: str) -> str:
 
 
 def _response_to_df(resp, code: str) -> pl.DataFrame:
-    if resp is None or not resp.to_dict(orient="list"):
+    lists = response_lists(resp)
+    if not lists:
         return pl.DataFrame()
 
-    df = pl.DataFrame(resp.to_dict(orient="list"))
+    df = pl.DataFrame(lists)
 
     column_map = {"trade_date": "date", "vol": "volume"}
     df = df.rename({k: v for k, v in column_map.items() if k in df.columns})
@@ -109,9 +111,10 @@ def _attach_adj_factor(df: pl.DataFrame, adj_df) -> pl.DataFrame:
     if isinstance(adj_df, pl.DataFrame):
         adj = adj_df
     else:
-        if not adj_df.to_dict(orient="list"):
+        lists = response_lists(adj_df)
+        if not lists:
             raise AdjFactorUnavailable("adj_factor 响应为空")
-        adj = pl.DataFrame(adj_df.to_dict(orient="list"))
+        adj = pl.DataFrame(lists)
     if adj.is_empty() or "adj_factor" not in adj.columns:
         raise AdjFactorUnavailable("adj_factor 响应为空")
     if "trade_date" in adj.columns:
@@ -232,7 +235,7 @@ def _normalize_day_df(resp) -> pl.DataFrame:
     if isinstance(resp, pl.DataFrame):
         df = resp
     else:
-        df = pl.DataFrame(resp.to_dict(orient="list"))
+        df = pl.DataFrame(response_lists(resp))
     column_map = {"trade_date": "date", "vol": "volume"}
     df = df.rename({k: v for k, v in column_map.items() if k in df.columns})
     if df.is_empty():
