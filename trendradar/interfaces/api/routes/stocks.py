@@ -92,6 +92,18 @@ def get_stock_kline(
             "amount": _num(row["amount"]),
             "zx_short": _num(row["zx_short"]),
             "zx_long": _num(row["zx_long"]),
+            "mt": _num(row.get("mt")),
+            "mt_red": _num(row.get("mt_red")),
+            "mt_green": _num(row.get("mt_green")),
+            "mt_orange": _num(row.get("mt_orange")),
+            "xpsd_short": _num(row.get("xpsd_short")),
+            "xpsd_mid": _num(row.get("xpsd_mid")),
+            "xpsd_midlong": _num(row.get("xpsd_midlong")),
+            "xpsd_long": _num(row.get("xpsd_long")),
+            "xpsig_zero": _num(row.get("xpsig_zero")),
+            "xpsig_w20": _num(row.get("xpsig_w20")),
+            "xpsig_xlong": _num(row.get("xpsig_xlong")),
+            "xpsig_xmid": _num(row.get("xpsig_xmid")),
         }
         for row in bars_df.iter_rows(named=True)
     ]
