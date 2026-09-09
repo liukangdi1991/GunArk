@@ -23,7 +23,7 @@ const MAIN_OVERLAY_OPTIONS: { value: string; label: string }[] = [
   { value: "MA", label: "均线 MA(34/55/144/233)" },
   { value: "ZX", label: "多空线/短期趋势线" },
 ];
-const EXTRA_SUB_INDICATORS = ["KDJ", "RSI", "BOLL", "WR", "BBI"];
+const EXTRA_SUB_INDICATORS = ["MACD", "KDJ", "RSI", "BOLL", "WR", "BBI"];
 
 const PREF_KEY = "kline.indicators.v1";
 
