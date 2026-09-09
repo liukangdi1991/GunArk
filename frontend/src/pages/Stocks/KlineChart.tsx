@@ -59,6 +59,7 @@ function toKlineData(bars: KlineBar[]): KLineData[] {
     low: b.low,
     close: b.close,
     volume: b.volume,
+    amount: b.amount, // 自定义字段：十字光标弹框用（M12 仅约束不映射 turnover）
     zx_short: b.zx_short,
     zx_long: b.zx_long,
   })) as unknown as KLineData[]; // d.ts: KLineData.open 等为必填 number，可空值仅能经 unknown 断言
