@@ -23,7 +23,16 @@ const MAIN_OVERLAY_OPTIONS: { value: string; label: string }[] = [
   { value: "MA", label: "均线 MA(34/55/144/233)" },
   { value: "ZX", label: "多空线/短期趋势线" },
 ];
-const EXTRA_SUB_INDICATORS = ["MACD", "KDJ", "RSI", "BOLL", "WR", "BBI"];
+const EXTRA_SUB_INDICATORS: { value: string; label: string }[] = [
+  { value: "MACD", label: "MACD" },
+  { value: "KDJ", label: "KDJ" },
+  { value: "RSI", label: "RSI" },
+  { value: "BOLL", label: "BOLL" },
+  { value: "WR", label: "WR" },
+  { value: "BBI", label: "BBI" },
+  { value: "MTBRICK", label: "砖形图(MT)" },
+  { value: "XPSD", label: "知行洗盘线" },
+];
 
 const PREF_KEY = "kline.indicators.v1";
 
@@ -225,9 +234,9 @@ export default function StockKlinePage() {
         <Dropdown
           disabled={loading}
           menu={{
-            items: EXTRA_SUB_INDICATORS.map((name) => ({
-              key: name,
-              label: (subIndicators.includes(name) ? "✓ " : "") + name,
+            items: EXTRA_SUB_INDICATORS.map((opt) => ({
+              key: opt.value,
+              label: (subIndicators.includes(opt.value) ? "✓ " : "") + opt.label,
             })),
             onClick: ({ key }) => toggleSub(key),
           }}

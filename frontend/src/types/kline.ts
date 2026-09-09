@@ -14,6 +14,18 @@ export interface KlineBar {
   amount: number;
   zx_short: number | null;
   zx_long: number | null;
+  mt: number | null;
+  mt_red: number | null;
+  mt_green: number | null;
+  mt_orange: number | null;
+  xpsd_short: number | null;
+  xpsd_mid: number | null;
+  xpsd_midlong: number | null;
+  xpsd_long: number | null;
+  xpsig_zero: number | null;
+  xpsig_w20: number | null;
+  xpsig_xlong: number | null;
+  xpsig_xmid: number | null;
 }
 
 export interface KlineResponse {

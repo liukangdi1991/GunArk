@@ -50,6 +50,70 @@ function ensureZxRegistered() {
   zxRegistered = true;
 }
 
+let brickRegistered = false;
+
+/** 砖形图 MT：红=上行、绿=下行、橙=回踩后再上行且力度不弱（后端派生三组色柱）。 */
+function ensureBrickRegistered() {
+  if (brickRegistered) return;
+  registerIndicator({
+    name: "MTBRICK",
+    shortName: "砖形图MT",
+    precision: 2,
+    figures: [
+      { key: "mt_red", title: "MT: ", type: "bar", baseValue: 0, styles: () => ({ color: UP_COLOR }) },
+      { key: "mt_green", title: "MT: ", type: "bar", baseValue: 0, styles: () => ({ color: DOWN_COLOR }) },
+      { key: "mt_orange", title: "MT: ", type: "bar", baseValue: 0, styles: () => ({ color: "#ff8000" }) },
+    ],
+    calc: (dataList) =>
+      dataList.map((k) => {
+        const bar = k as unknown as KlineBar;
+        return {
+          mt_red: bar.mt_red ?? null,
+          mt_green: bar.mt_green ?? null,
+          mt_orange: bar.mt_orange ?? null,
+        };
+      }),
+  });
+  brickRegistered = true;
+}
+
+let xpsdRegistered = false;
+
+/** 知行洗盘线：四周期强弱线 + 四类买入信号柱（−30，堆 0 轴下方）。 */
+function ensureXpsdRegistered() {
+  if (xpsdRegistered) return;
+  registerIndicator({
+    name: "XPSD",
+    shortName: "知行洗盘线",
+    precision: 2,
+    figures: [
+      { key: "xpsd_short", title: "短期: ", type: "line", styles: () => ({ color: "#00c0c0" }) },
+      { key: "xpsd_mid", title: "中期: ", type: "line", styles: () => ({ color: "#8b4513" }) },
+      { key: "xpsd_midlong", title: "中长期: ", type: "line", styles: () => ({ color: "#ff00ff" }) },
+      { key: "xpsd_long", title: "长期: ", type: "line", styles: () => ({ color: "#ef232a" }) },
+      { key: "xpsig_zero", title: "四线归零: ", type: "bar", baseValue: 0, styles: () => ({ color: "#0000ff" }) },
+      { key: "xpsig_w20", title: "线下20: ", type: "bar", baseValue: 0, styles: () => ({ color: "#00ffff" }) },
+      { key: "xpsig_xlong", title: "穿红线: ", type: "bar", baseValue: 0, styles: () => ({ color: "#00ff00" }) },
+      { key: "xpsig_xmid", title: "穿黄线: ", type: "bar", baseValue: 0, styles: () => ({ color: "#ff9150" }) },
+    ],
+    calc: (dataList) =>
+      dataList.map((k) => {
+        const bar = k as unknown as KlineBar;
+        return {
+          xpsd_short: bar.xpsd_short ?? null,
+          xpsd_mid: bar.xpsd_mid ?? null,
+          xpsd_midlong: bar.xpsd_midlong ?? null,
+          xpsd_long: bar.xpsd_long ?? null,
+          xpsig_zero: bar.xpsig_zero ?? null,
+          xpsig_w20: bar.xpsig_w20 ?? null,
+          xpsig_xlong: bar.xpsig_xlong ?? null,
+          xpsig_xmid: bar.xpsig_xmid ?? null,
+        };
+      }),
+  });
+  xpsdRegistered = true;
+}
+
 function toKlineData(bars: KlineBar[]): KLineData[] {
   // M12：千元 amount 不映射 turnover（KLineData 约定字段），成交额走十字光标弹框
   return bars.map((b) => ({
@@ -60,17 +124,31 @@ function toKlineData(bars: KlineBar[]): KLineData[] {
     close: b.close,
     volume: b.volume,
     amount: b.amount, // 自定义字段：十字光标弹框用（M12 仅约束不映射 turnover）
+    mt: b.mt,
+    mt_red: b.mt_red,
+    mt_green: b.mt_green,
+    mt_orange: b.mt_orange,
+    xpsd_short: b.xpsd_short,
+    xpsd_mid: b.xpsd_mid,
+    xpsd_midlong: b.xpsd_midlong,
+    xpsd_long: b.xpsd_long,
+    xpsig_zero: b.xpsig_zero,
+    xpsig_w20: b.xpsig_w20,
+    xpsig_xlong: b.xpsig_xlong,
+    xpsig_xmid: b.xpsig_xmid,
     zx_short: b.zx_short,
     zx_long: b.zx_long,
   })) as unknown as KLineData[]; // d.ts: KLineData.open 等为必填 number，可空值仅能经 unknown 断言
 }
 
-/** #5：万/亿 大数格式化（VOL legend 与坐标轴通用；单位「手」标注在 legend 标题）。 */
-function formatWanYi(value: string | number): string {
+/** 成交量大数格式化（用户规则 2026-09-08）：≥1亿 → 亿；≥1千万 → 千万；≥1万 → 万。
+ *  适用于 VOL legend 与坐标轴（单位「手」标注在 legend 标题）。 */
+function formatBigCn(value: string | number): string {
   const n = Number(value);
   if (!Number.isFinite(n)) return String(value);
   const abs = Math.abs(n);
   if (abs >= 1e8) return `${(n / 1e8).toFixed(2)}亿`;
+  if (abs >= 1e7) return `${(n / 1e7).toFixed(2)}千万`;
   if (abs >= 1e4) return `${(n / 1e4).toFixed(2)}万`;
   return `${n}`;
 }
@@ -103,8 +181,8 @@ function candleTooltipLegends(data: {
     { title: { text: "最低", color: NEUTRAL }, value: { text: fmtPrice(cur.low), color: NEUTRAL } },
     { title: { text: "收盘", color: closeColor ?? NEUTRAL }, value: { text: fmtPrice(cur.close), color: closeColor ?? NEUTRAL } },
     { title: { text: "涨跌幅", color: NEUTRAL }, value: { text: pctText, color: pctColor ?? NEUTRAL } },
-    { title: { text: "成交量(手)", color: NEUTRAL }, value: { text: formatWanYi(cur.volume ?? 0), color: NEUTRAL } },
-    { title: { text: "成交额(千元)", color: NEUTRAL }, value: { text: formatWanYi(cur.amount ?? 0), color: NEUTRAL } },
+    { title: { text: "成交量(手)", color: NEUTRAL }, value: { text: formatBigCn(cur.volume ?? 0), color: NEUTRAL } },
+    { title: { text: "成交额(千元)", color: NEUTRAL }, value: { text: formatBigCn(cur.amount ?? 0), color: NEUTRAL } },
   ];
 }
 
@@ -152,6 +230,8 @@ export function KlineChart({ payload, mainOverlays, subIndicators }: KlineChartP
     const container = containerRef.current;
     if (!container) return;
     ensureZxRegistered();
+    ensureBrickRegistered();
+    ensureXpsdRegistered();
     const chart = init(container, { timezone: "Asia/Shanghai" }); // M11
     if (!chart) return;
     chartRef.current = chart;
@@ -178,8 +258,8 @@ export function KlineChart({ payload, mainOverlays, subIndicators }: KlineChartP
       },
     });
     // #5：VOL legend 万/亿（默认 K/M/B）；坐标轴 decimalFold 折叠
-    chart.setFormatter({ formatBigNumber: formatWanYi });
-    chart.setDecimalFold({ threshold: 10000, format: formatWanYi });
+    chart.setFormatter({ formatBigNumber: formatBigCn });
+    chart.setDecimalFold({ threshold: 10000, format: formatBigCn });
 
     // 主图叠加：MA(34/55/144/233) + ZX——v10 主图叠加用 paneId: 'candle_pane'
     // （官方文档模式，放指标对象内）；实际增删由下方 sync 效应按用户选择管理
