@@ -16,9 +16,10 @@ const ZX_SHORT = "#f5a623"; // 短期趋势线（用户 TDX 白黄紫绿之黄�
 const ZX_LONG = "#b45fd9"; // 多空线
 const NEUTRAL = "#606a78"; // 弹框中性文字色（TooltipLegendChild.color 必填）
 const CROSS_UP = "#2196f3"; // 知行MACD DIFF 上穿零轴（TDX COLOR0000FF）
-const CROSS_DOWN = "#8bc34a"; // DIFF 下穿零轴（COLORLIGREEN）
 const XPSD_SHORT = "#00c0c0"; // 洗盘线短期（青）
 const XPSD_LONG = "#ef232a"; // 洗盘线长期（红）
+const REF_LINE = "#8a93a3"; // 洗盘线 20/80 参考线（灰虚线）
+const CROSS_DOWN = "#8bc34a"; // DIFF 下穿零轴（COLORLIGREEN）
 
 /** 后端已按周期聚合完毕；此处 Period 仅作 v10 loader 门控与轴刻度形态。 */
 const PERIOD_SETTINGS: Record<KlineResponse["period"], Period> = {
@@ -108,16 +109,15 @@ function ensureBrickRegistered() {
 
 let xpsdRegistered = false;
 
-/** 知行洗盘线：短/长两线 + 四类买点信号柱（后端已算好）。 */
+/** 知行洗盘线：短/长两线 + 常驻 20/80 参考线（用户 TDX 原文；
+ *  四类买点信号柱仅后端保留供策略消费，图上不画；无 title 的 figure 不进图例）。 */
 function ensureXpsdRegistered() {
   if (xpsdRegistered) return;
   registerIndicator<{
     xpsd_short: number | null;
     xpsd_long: number | null;
-    xpsig_zero: number | null;
-    xpsig_w20: number | null;
-    xpsig_xlong: number | null;
-    xpsig_xmid: number | null;
+    ref20: number;
+    ref80: number;
   }>({
     name: "XPSD",
     shortName: "知行洗盘线",
@@ -125,22 +125,13 @@ function ensureXpsdRegistered() {
     figures: [
       { key: "xpsd_short", title: "短期: ", type: "line", styles: () => ({ color: XPSD_SHORT }) },
       { key: "xpsd_long", title: "长期: ", type: "line", styles: () => ({ color: XPSD_LONG }) },
-      { key: "xpsig_zero", title: "四线归零: ", type: "bar", baseValue: 0, styles: () => ({ color: "#0000ff" }) },
-      { key: "xpsig_w20", title: "线下20: ", type: "bar", baseValue: 0, styles: () => ({ color: "#00ffff" }) },
-      { key: "xpsig_xlong", title: "穿红线: ", type: "bar", baseValue: 0, styles: () => ({ color: "#00ff00" }) },
-      { key: "xpsig_xmid", title: "穿黄线: ", type: "bar", baseValue: 0, styles: () => ({ color: "#ff9150" }) },
+      { key: "ref20", type: "line", styles: () => ({ color: REF_LINE, style: "dashed", lineWidth: 1 }) },
+      { key: "ref80", type: "line", styles: () => ({ color: REF_LINE, style: "dashed", lineWidth: 1 }) },
     ],
     calc: (dataList) =>
       dataList.map((k) => {
         const bar = k as unknown as KlineBar;
-        return {
-          xpsd_short: bar.xpsd_short ?? null,
-          xpsd_long: bar.xpsd_long ?? null,
-          xpsig_zero: bar.xpsig_zero ?? null,
-          xpsig_w20: bar.xpsig_w20 ?? null,
-          xpsig_xlong: bar.xpsig_xlong ?? null,
-          xpsig_xmid: bar.xpsig_xmid ?? null,
-        };
+        return { xpsd_short: bar.xpsd_short ?? null, xpsd_long: bar.xpsd_long ?? null, ref20: 20, ref80: 80 };
       }),
   });
   xpsdRegistered = true;
@@ -151,13 +142,12 @@ let ztMacdRegistered = false;
 interface ZtMacdResult {
   dif: number;
   dea: number;
-  macd_red: number | null;
-  macd_green: number | null;
-  macd_cross: string | null;
   macd: number;
+  macd_cross: number | null;
 }
 
-/** 知行MACD：标准 DIF/DEA + 红绿柱分离 + 零轴穿越加粗高亮（用户 TDX 原文）。 */
+/** 知行MACD：DIF/DEA + MACD 柱（STICKLINE 实心，无内置空心约定）+
+ *  零轴穿越加粗高亮（用户 TDX 原文：金叉/死叉零轴当日柱加粗）。 */
 function ensureZtMacdRegistered() {
   if (ztMacdRegistered) return;
   registerIndicator<ZtMacdResult>({
@@ -167,17 +157,15 @@ function ensureZtMacdRegistered() {
     figures: [
       { key: "dif", title: "DIF: ", type: "line" },
       { key: "dea", title: "DEA: ", type: "line" },
-      { key: "macd_red", title: "MACD: ", type: "bar", baseValue: 0, styles: () => ({ color: UP }) },
-      { key: "macd_green", title: "MACD: ", type: "bar", baseValue: 0, styles: () => ({ color: DOWN }) },
+      { key: "macd", title: "MACD: ", type: "bar", baseValue: 0, styles: (p) => ({ color: (p.data?.current?.macd ?? 0) >= 0 ? UP : DOWN, style: "fill" }) },
       {
+        // 零轴穿越加粗：值=当日 MACD（字符串无法作 bar 坐标，2026-09-09 修复）；
+        // 无 title → 不进图例；方向由前根 DIFF 正负定色
         key: "macd_cross",
-        title: "零轴穿越: ",
         type: "bar",
         baseValue: 0,
-        attrs: (p) => (p.data?.current?.macd_cross ? { width: Math.max(1, p.barSpace.gapBar * 1.6) } : { width: 0 }),
-        styles: (p) => ({
-          color: p.data?.current?.macd_cross === "up" ? CROSS_UP : CROSS_DOWN,
-        }),
+        attrs: (p) => (p.data?.current?.macd_cross != null ? { width: Math.max(1, p.barSpace.gapBar * 1.6) } : { width: 0 }),
+        styles: (p) => ({ color: (p.data?.prev?.dif ?? 0) <= 0 ? CROSS_UP : CROSS_DOWN }),
       },
     ],
     calc: (dataList): ZtMacdResult[] => {
@@ -198,14 +186,11 @@ function ensureZtMacdRegistered() {
       return dif.map((v, i): ZtMacdResult => {
         const macd = 2 * (v - dea[i]);
         const prevDif = i > 0 ? dif[i - 1] : 0;
-        const cross =
-          prevDif <= 0 && v > 0 ? "up" : prevDif >= 0 && v < 0 ? "down" : "";
+        const crossD = prevDif <= 0 && v > 0 ? "up" : prevDif >= 0 && v < 0 ? "down" : "";
         return {
           dif: v,
           dea: dea[i],
-          macd_red: macd >= 0 ? macd : null,
-          macd_green: macd < 0 ? macd : null,
-          macd_cross: cross || null,
+          macd_cross: crossD ? macd : null,
           macd,
         };
       });
@@ -229,6 +214,7 @@ function toKlineData(bars: KlineBar[]): KLineData[] {
     (b) =>
       ({
         timestamp: b.timestamp,
+        date: b.date,
         open: b.open,
         high: b.high,
         low: b.low,
@@ -289,6 +275,7 @@ function candleLegends(data: { prev: unknown; current: unknown }): TooltipLegend
   const dirColor = pct == null ? NEUTRAL : pct >= 0 ? UP : DOWN;
   const pctText = pct == null ? "—" : `${pct >= 0 ? "+" : ""}${(pct * 100).toFixed(2)}%`;
   return [
+    { title: { text: "日期", color: NEUTRAL }, value: { text: cur.date ?? "—", color: NEUTRAL } },
     { title: { text: "开盘", color: NEUTRAL }, value: { text: fmtP(cur.open), color: NEUTRAL } },
     { title: { text: "最高", color: NEUTRAL }, value: { text: fmtP(cur.high), color: NEUTRAL } },
     { title: { text: "最低", color: NEUTRAL }, value: { text: fmtP(cur.low), color: NEUTRAL } },

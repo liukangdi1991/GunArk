@@ -46,3 +46,34 @@ def test_rise_fall_rise_yields_expected_colors():
     # 红/绿互斥：任一根不得同时着红与绿
     for i in range(len(closes)):
         assert not (fields["mt_color"][i] == "red" and fields["mt_color"][i] == "green")
+
+
+def test_orange_requires_red_longer_than_preceding_green():
+    """2026-09-09 回归：橙柱条件 `红柱长 > 前根绿柱长`（原式符号反致全部绿转红误标橙）。"""
+    closes = (
+        [10.0] * 12  # 中位稳态 MT ≈ 86
+        + [12.0] * 6  # 冲顶（红）
+        + [6.0] * 10  # 深回落（绿，跌得深）
+        + [10.0] * 8  # 回升第一根（红候选：幅度浅于前绿 → red；随后可能超回 → orange）
+    )
+    df = _frame_from_close(closes)
+    fields = compute_mt_brick(df["high"], df["low"], df["close"])
+    mt = fields["mt"].to_list()
+    color = fields["mt_color"].to_list()
+
+    transitions = 0
+    for i in range(2, len(mt)):
+        if color[i - 1] == "green" and color[i] == "red":
+            transitions += 1
+            green_len = mt[i - 2] - mt[i - 1]  # 前根绿柱长度（正）
+            red_len = mt[i] - mt[i - 1]  # 当根红柱长度（正）
+            expect = "orange" if red_len > green_len else "red"
+            assert color[i] == expect, (
+                f"i={i} red_len={red_len:.2f} green_len={green_len:.2f} "
+                f"expect={expect} actual={color[i]}"
+            )
+        if color[i] == "orange":
+            # 橙必紧跟绿柱且严格更强
+            assert color[i - 1] == "green"
+            assert mt[i] - mt[i - 1] > mt[i - 2] - mt[i - 1]
+    assert transitions >= 1  # 形态健全：阶梯产生绿→红转换

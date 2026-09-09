@@ -31,13 +31,15 @@ def compute_mt_brick(
     m: int = 6,
     t: int = 4,
 ) -> dict[str, pl.Series]:
-    """砖形图 MT 柱（用户 TDX 原文 STICKLINE 着色规则，2026-09-08）。
+    """砖形图 MT 柱（用户 TDX 原文 STICKLINE 着色规则，2026-09-09 修订）。
 
     RED = MT > REF(MT,1)；GREEN = MT < REF(MT,1)；
-    ORANGE = RED 且 前根 GREEN 且 本次上行情度 ≥ 前次下行情度（RED_H ≥ GREEN_H 前 1 根）。
+    ORANGE = 前根 GREEN 且当根 RED 且 红柱长度 > 前根绿柱长度
+    （(mt - prev) > (prev2 - prev)；2026-09-09 修复：原式 prev - prev2 符号写反
+    致 `红柱 >= 负数` 恒真，002747 上全部 404 个绿转红均误标橙）。
     着色优先级：橙 > 绿 > 红（TDX STICKLINE 后画覆盖前画）；MT 持平无色（null）。
     返回 {"mt", "mt_prev", "mt_color"}：mt_prev = REF(MT,1)；mt_color ∈
-    red（上行）/ green（下行）/ orange（红且回踩后再上行且力度不弱）/ null（持平或预热）。
+    red（上行）/ green（下行）/ orange（绿后红且力度更强）/ null（持平或预热）。
     """
     mt = compute_mt(high, low, close, n=n, m=m, t=t)
 
@@ -47,7 +49,7 @@ def compute_mt_brick(
     prev2 = mt_col.shift(2)
     red = mt_col > prev
     green = mt_col < prev
-    orange = red & (prev < prev2) & ((mt_col - prev) >= (prev - prev2))
+    orange = red & (prev < prev2) & ((mt_col - prev) > (prev2 - prev))
     color = (
         pl.when(orange)
         .then(pl.lit("orange"))

@@ -24,7 +24,7 @@ const MAIN_OVERLAY_OPTIONS: { value: string; label: string }[] = [
   { value: "ZX", label: "多空线/短期趋势线" },
 ];
 const EXTRA_SUB_INDICATORS: { value: string; label: string }[] = [
-  { value: "MACD", label: "MACD" },
+  { value: "ZTMACD", label: "知行MACD" },
   { value: "KDJ", label: "KDJ" },
   { value: "RSI", label: "RSI" },
   { value: "BOLL", label: "BOLL" },
@@ -41,12 +41,18 @@ interface IndicatorPrefs {
   subIndicators?: string[];
 }
 
+/** 副图偏好白名单归一：内置 MACD 迁移为知行MACD（2026-09-09 换接），未知项丢弃。 */
 function loadIndicatorPrefs(): IndicatorPrefs {
+  const subValues = new Set(EXTRA_SUB_INDICATORS.map((o) => o.value));
   try {
     const saved = JSON.parse(localStorage.getItem(PREF_KEY) ?? "{}") as IndicatorPrefs;
     return {
       mainOverlays: Array.isArray(saved.mainOverlays) ? saved.mainOverlays : ["MA", "ZX"],
-      subIndicators: Array.isArray(saved.subIndicators) ? saved.subIndicators : [],
+      subIndicators: Array.isArray(saved.subIndicators)
+        ? saved.subIndicators
+            .map((v) => (v === "MACD" ? "ZTMACD" : v))
+            .filter((v): v is string => typeof v === "string" && subValues.has(v))
+        : [],
     };
   } catch {
     return { mainOverlays: ["MA", "ZX"], subIndicators: [] };
