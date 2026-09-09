@@ -17,12 +17,12 @@ def _frame_from_close(closes: list[float]) -> pl.DataFrame:
 
 
 def test_steady_state_flat_yields_null_colors():
-    # 平盘：MT 持平 → 红/绿/橙全 null（MT 持平无色）
+    # 平盘：MT 持平 → mt_color 全 null（持平无色）
     df = _frame_from_close([10.0] * 20)
     fields = compute_mt_brick(df["high"], df["low"], df["close"])
     assert fields["mt"][-1] > 0  # clip 后稳态正值
-    for name in ("mt_red", "mt_green", "mt_orange"):
-        assert fields[name][-1] is None  # 持平：无着色（末根与前根相等）
+    for i in (18, 19):
+        assert fields["mt_color"][i] is None  # 持平：无着色（末两根与前根相等）
 
 
 def test_rise_fall_rise_yields_expected_colors():
@@ -39,10 +39,10 @@ def test_rise_fall_rise_yields_expected_colors():
     # 形态健全性：三段各自稳态值单调
     assert mt[10] == pytest.approx(mt[11])          # 平台内持平
     # 冲顶段尾部出现红柱（上行）
-    red_idx = [i for i, v in enumerate(fields["mt_red"].to_list()) if v is not None]
-    assert red_idx, "上行段应有红柱"
-    green_idx = [i for i, v in enumerate(fields["mt_green"].to_list()) if v is not None]
-    assert green_idx, "回落段应有绿柱"
+    red_idx = [i for i, c in enumerate(fields["mt_color"].to_list()) if c == "red"]
+    assert red_idx, "上行段应有红砖"
+    green_idx = [i for i, c in enumerate(fields["mt_color"].to_list()) if c == "green"]
+    assert green_idx, "回落段应有绿砖"
     # 红/绿互斥：任一根不得同时着红与绿
     for i in range(len(closes)):
-        assert not (fields["mt_red"][i] is not None and fields["mt_green"][i] is not None)
+        assert not (fields["mt_color"][i] == "red" and fields["mt_color"][i] == "green")

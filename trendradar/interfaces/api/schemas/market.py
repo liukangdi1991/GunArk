@@ -29,9 +29,8 @@ class KlineBar(BaseModel):
     zx_short: float | None = None
     zx_long: float | None = None
     mt: float | None = None
-    mt_red: float | None = None
-    mt_green: float | None = None
-    mt_orange: float | None = None
+    mt_prev: float | None = None
+    mt_color: str | None = None
     xpsd_short: float | None = None
     xpsd_mid: float | None = None
     xpsd_midlong: float | None = None

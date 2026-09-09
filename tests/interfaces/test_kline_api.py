@@ -10,7 +10,7 @@ import pytest
 EXPECTED_BAR_KEYS = {
     "timestamp", "date", "open", "high", "low", "close",
     "pre_close", "volume", "amount", "zx_short", "zx_long",
-    "mt", "mt_red", "mt_green", "mt_orange",
+    "mt", "mt_prev", "mt_color",
     "xpsd_short", "xpsd_mid", "xpsd_midlong", "xpsd_long",
     "xpsig_zero", "xpsig_w20", "xpsig_xlong", "xpsig_xmid",
 }  # N21：键集合精确断言是唯一闸门（指标列随主图/副图扩展追加）

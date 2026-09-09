@@ -95,12 +95,13 @@ def build_kline_series(
     short, long_ = compute_zx_lines(out)
     out = out.with_columns(short.alias("zx_short"), long_.alias("zx_long"))
     # 砖形图 MT 色柱 + 知行洗盘线（用户 TDX 公式，副图指标）
+    # 砖形图 MT（mt/mt_prev/mt_color）+ 知行洗盘线（xpsd 两线 + xpsig 四信号）
     mt_fields = compute_mt_brick(out["high"], out["low"], out["close"])
     wash = compute_wash_lines(out)
     out = out.with_columns(
         [
             mt_fields[name] for name in
-            ("mt", "mt_red", "mt_green", "mt_orange")
+            ("mt", "mt_prev", "mt_color")
         ]
         + [
             wash[name] for name in
@@ -112,16 +113,17 @@ def build_kline_series(
         pl.col(c).round(4)
         for c in (
             "open", "high", "low", "close", "pre_close", "zx_short", "zx_long",
-            "mt", "mt_red", "mt_green", "mt_orange",
+            "mt", "mt_prev",
             "xpsd_short", "xpsd_mid", "xpsd_midlong", "xpsd_long",
             "xpsig_zero", "xpsig_w20", "xpsig_xlong", "xpsig_xmid",
         )
+        if c in out.columns and out.schema[c] != pl.Utf8
         if c in out.columns
     )
     out = out.select(
         "date", "open", "high", "low", "close", "pre_close",
         "volume", "amount", "zx_short", "zx_long",
-        "mt", "mt_red", "mt_green", "mt_orange",
+        "mt", "mt_prev", "mt_color",
         "xpsd_short", "xpsd_mid", "xpsd_midlong", "xpsd_long",
         "xpsig_zero", "xpsig_w20", "xpsig_xlong", "xpsig_xmid",
     )

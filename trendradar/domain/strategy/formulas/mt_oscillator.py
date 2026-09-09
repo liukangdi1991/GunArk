@@ -36,7 +36,8 @@ def compute_mt_brick(
     RED = MT > REF(MT,1)；GREEN = MT < REF(MT,1)；
     ORANGE = RED 且 前根 GREEN 且 本次上行情度 ≥ 前次下行情度（RED_H ≥ GREEN_H 前 1 根）。
     着色优先级：橙 > 绿 > 红（TDX STICKLINE 后画覆盖前画）；MT 持平无色（null）。
-    返回 {"mt", "mt_red", "mt_green", "mt_orange"}（非命中处为 null）。
+    返回 {"mt", "mt_prev", "mt_color"}：mt_prev = REF(MT,1)；mt_color ∈
+    red（上行）/ green（下行）/ orange（红且回踩后再上行且力度不弱）/ null（持平或预热）。
     """
     mt = compute_mt(high, low, close, n=n, m=m, t=t)
 
@@ -44,20 +45,21 @@ def compute_mt_brick(
     mt_col = pl.col("mt")
     prev = mt_col.shift(1)
     prev2 = mt_col.shift(2)
-    orange_expr = (mt_col > prev) & (prev < prev2) & ((mt_col - prev) >= (prev - prev2))
+    red = mt_col > prev
+    green = mt_col < prev
+    orange = red & (prev < prev2) & ((mt_col - prev) >= (prev - prev2))
+    color = (
+        pl.when(orange)
+        .then(pl.lit("orange"))
+        .when(green)
+        .then(pl.lit("green"))
+        .when(red)
+        .then(pl.lit("red"))
+        .otherwise(pl.lit(None, dtype=pl.Utf8))
+    )
     out = frame.select(
         pl.col("mt"),
-        pl.when(orange_expr)
-        .then(pl.col("mt"))
-        .otherwise(None)
-        .alias("mt_orange"),
-        pl.when((mt_col > prev) & ~orange_expr)
-        .then(pl.col("mt"))
-        .otherwise(None)
-        .alias("mt_red"),
-        pl.when((mt_col < prev) & prev.is_not_null())
-        .then(pl.col("mt"))
-        .otherwise(None)
-        .alias("mt_green"),
+        prev.alias("mt_prev"),
+        color.alias("mt_color"),
     )
     return {name: out[name] for name in out.columns}
