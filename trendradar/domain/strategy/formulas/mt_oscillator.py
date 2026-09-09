@@ -36,7 +36,9 @@ def compute_mt_brick(
     RED = MT > REF(MT,1)；GREEN = MT < REF(MT,1)；
     ORANGE = 前根 GREEN 且当根 RED 且 红柱长度 > 前根绿柱长度
     （(mt - prev) > (prev2 - prev)；2026-09-09 修复：原式 prev - prev2 符号写反
-    致 `红柱 >= 负数` 恒真，002747 上全部 404 个绿转红均误标橙）。
+    致 `红柱 >= 负数` 恒真、全部绿转红误标橙——服务未重启期间用户以
+    000807@2026-09-03（红 +4.73 < 绿 9.49 应为红）确认此规则后一度误改，
+    已回滚维持力度过滤）。
     着色优先级：橙 > 绿 > 红（TDX STICKLINE 后画覆盖前画）；MT 持平无色（null）。
     返回 {"mt", "mt_prev", "mt_color"}：mt_prev = REF(MT,1)；mt_color ∈
     red（上行）/ green（下行）/ orange（绿后红且力度更强）/ null（持平或预热）。
