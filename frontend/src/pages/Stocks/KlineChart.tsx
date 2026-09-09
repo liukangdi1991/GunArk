@@ -292,6 +292,21 @@ function applySymbolAndPeriod(chart: Chart, payload: KlineResponse) {
 }
 
 /* ---- 组件 ---- */
+/** 窗口化适配：副图窗格高度按容器高度比例分配。
+ *  klinecharts 窗格高度是固定 px 不随容器缩放——小窗下多个副图把主图压成缝。 */
+function applySubPaneHeights(chart: Chart, container: HTMLElement) {
+  const paneIds = [
+    ...new Set(
+      chart
+        .getIndicators()
+        .filter((i) => i.paneId !== "candle_pane")
+        .map((i) => i.paneId),
+    ),
+  ];
+  if (paneIds.length === 0) return;
+  const h = Math.max(56, Math.min(110, Math.round(container.clientHeight * 0.16)));
+  for (const id of paneIds) chart.setPaneOptions({ id, height: h });
+}
 
 export interface KlineChartProps {
   payload: KlineResponse | null;
@@ -346,6 +361,13 @@ export function KlineChart({ payload, mainOverlays, subIndicators }: KlineChartP
         true,
       );
     }
+    // 容器尺寸变化（含初次 observe）→ 按比例重设副图高度，主图吃剩余空间
+    let raf = 0;
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => applySubPaneHeights(chart, container));
+    });
+    ro.observe(container);
 
     chart.setDataLoader({
       getBars: ({ type, callback: done }) => {
@@ -361,6 +383,8 @@ export function KlineChart({ payload, mainOverlays, subIndicators }: KlineChartP
     if (dataRef.current) applySymbolAndPeriod(chart, dataRef.current);
 
     return () => {
+      ro.disconnect();
+      cancelAnimationFrame(raf);
       dispose(container);
       chartRef.current = null;
     };
@@ -373,6 +397,7 @@ export function KlineChart({ payload, mainOverlays, subIndicators }: KlineChartP
     const mainTarget = new Set(mainOverlays);
     const subTarget = [...DEFAULT_SUB_INDICATORS, ...subIndicators];
     const subSet = new Set(subTarget);
+    let changed = false;
 
     for (const overlay of MAIN_OVERLAYS) {
       const exists = chart.getIndicators().some((i) => i.name === overlay.name);
@@ -391,15 +416,20 @@ export function KlineChart({ payload, mainOverlays, subIndicators }: KlineChartP
       chart.getIndicators().filter((i) => i.paneId !== "candle_pane").map((i) => i.name),
     );
     for (const name of existingSubs) {
-      if (!subSet.has(name)) chart.removeIndicator({ name });
+      if (!subSet.has(name)) {
+        chart.removeIndicator({ name });
+        changed = true;
+      }
     }
     for (const name of subTarget) {
       if (!existingSubs.has(name)) {
-        const paneId = chart.createIndicator(name, false);
-        if (typeof paneId === "string") chart.setPaneOptions({ id: paneId, height: 90 });
+        chart.createIndicator(name, false);
+        changed = true;
       }
     }
-  }, [subIndicators, mainOverlays, payload]);
+    // 新增/移除副图后按容器高度重新分配窗格
+    if (changed && containerRef.current) applySubPaneHeights(chart, containerRef.current);
+  }, [subIndicators, mainOverlays]);
 
   return <div ref={containerRef} className="kline-chart-container" />;
 }
