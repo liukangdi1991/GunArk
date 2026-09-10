@@ -864,3 +864,51 @@ def test_r21_full_readback_missing_day_discards(runtime, job_store, sync_store,
     assert "②" in ctx.error
     assert sync_store.ledger_suspect()
     assert not list((runtime / "storage" / "market" / "staging").glob("*.parquet"))
+
+
+# ---- 2026-09-09 审查修订：doubtful 明细落账 + 已入账日全量豁免 ----
+
+def test_full_doubtful_detail_recorded(runtime, job_store, sync_store, fake_pro):
+    """全量含短行日：失败信息带日期、逐日明细写入 sync_meta.doubtful_detail。"""
+    import json
+    sync_store.insert_calendar_days(CAL)
+    for c in CODES[1:]:
+        fake_pro.code_days[c] = [d for d in CAL[:4] if d != date(2026, 8, 26)]
+    fake_pro.code_days[CODES[0]] = CAL[:4]  # 08-26 仅 1/3 → 0.33 < 0.75
+
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+
+    assert ctx.status == "failed"
+    assert "2026-08-26" in ctx.error                      # 失败信息带日期
+    detail = json.loads(sync_store.get_meta("doubtful_detail"))
+    assert detail == [{"day": "2026-08-26", "actual": 1, "expected": 3, "ratio": 0.3333}]
+    assert date.fromisoformat("2026-08-26") in sync_store.doubtful_days()
+
+
+def test_full_rebuild_exempts_booked_doubtful_days(runtime, job_store, sync_store, fake_pro):
+    """确认入账后的短行日，再次全量重建不再重复拦截（此前每次全量必失败一次）。"""
+    test_full_doubtful_detail_recorded(runtime, job_store, sync_store, fake_pro)
+    d26 = date(2026, 8, 26)
+    sync_store.add_done_days([d26])                        # 人工确认入账
+    sync_store.set_doubtful_days([])
+
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+
+    assert ctx.status == "success"                         # 不再对已入账日报警
+    assert d26 in sync_store.done_days()
+
+
+def test_incremental_doubtful_detail_recorded(runtime, job_store, sync_store, fake_pro):
+    """增量路径同样落明细（R6 场景 + 明细断言）。"""
+    import json
+    sync_store.insert_calendar_days(CAL)
+    sync_store.add_done_days(DONE)
+    d26, d27 = date(2026, 8, 26), date(2026, 8, 27)
+    fake_pro.day_codes = {d26: CODES, d27: CODES[:2]}      # 27 日 2/3 → 0.667
+
+    ctx = run_worker(fake_pro, {}, job_store)
+
+    assert ctx.status == "failed"
+    assert "2026-08-27" in ctx.error
+    detail = json.loads(sync_store.get_meta("doubtful_detail"))
+    assert detail == [{"day": "2026-08-27", "actual": 2, "expected": 3, "ratio": 0.6667}]

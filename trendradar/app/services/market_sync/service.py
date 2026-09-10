@@ -6,18 +6,19 @@ runner/writer/commit 的模块。
 
 from __future__ import annotations
 
+import json
 import shutil
 from datetime import date, datetime
 from pathlib import Path
 
 import polars as pl
 
-from trendradar.app.jobs.context import JobContext
 from trendradar.app.services.market_sync.commit import commit_full, commit_incremental
 from trendradar.domain.market.sync.planner import build_plan
 from trendradar.domain.market.sync.selfcheck import (
     coverage_ok,
     doubtful_by_row_count,
+    doubtful_detail,
     file_structure_ok,
     ledger_subset_ok,
 )
@@ -281,10 +282,25 @@ def _run_incremental(ctx, pro, store, effective, exclude_boards, plan,
         store.set_doubtful_days(union_doubtful)
     commit_incremental(store, sorted(claimed), merged_doubtful)
 
-    if res.doubtful_days:
-        return False, (f"{len(res.doubtful_days)} 个交易日行数异常（doubtful）"
-                       f"，未入账，可自愈或人工确认入账"), False
+    if res.doubtful_detail:
+        _persist_doubtful_detail(store, res.doubtful_detail)
+        for r in res.doubtful_detail:
+            ctx.log(f"doubtful {r['day']} actual={r['actual']} "
+                    f"expected={r['expected']} ratio={r['ratio']}", level="WARN")
+        return False, (f"{len(res.doubtful_days)} 个交易日行数异常（doubtful）："
+                       f"{_fmt_days(res.doubtful_days)}，未入账，可自愈或人工确认入账"), False
     return True, None, False
+
+
+def _fmt_days(days: list[date]) -> str:
+    """失败信息里列出 doubtful 日期（升序，iso 串）。"""
+    return "、".join(d.isoformat() for d in sorted(days))
+
+
+def _persist_doubtful_detail(store: SyncStore, detail: list[dict]) -> None:
+    """逐日明细快照（day/actual/expected/ratio）持久化，供确认前核对与事后审计。"""
+    store.set_meta("doubtful_detail", json.dumps(
+        [{**r, "day": r["day"].isoformat()} for r in detail], ensure_ascii=False))
 
 
 def _memory_structure_ok(all_days: pl.DataFrame) -> bool:
@@ -366,7 +382,13 @@ def _run_full(ctx, pro, store, effective, request, plan,
         ctx.fail(f"全量自检③失败：{bad} 结构异常，丢弃 staging，下轮从头重拉")
         return
 
-    doubtful = doubtful_by_row_count(_staging_day_rows(staging_dir), list(effective.rows))
+    # 已入账日豁免（2026-09-09）：确认过的历史停牌日行数不会因重拉而变，
+    # 不再重复拦截——否则每次全量重建都必然失败一次
+    doubtful_detail_rows = doubtful_detail(
+        _staging_day_rows(staging_dir), list(effective.rows),
+        already_booked=store.done_days(),
+    )
+    doubtful = [r["day"] for r in doubtful_detail_rows]
 
     # ---- 带缺口提交约束（§3.7）：卡在换名/落账之前 ----
     skipped = store.skipped_rows()
@@ -399,8 +421,15 @@ def _run_full(ctx, pro, store, effective, request, plan,
         ctx.fail(f"账本事务失败（文件已换名，{_unbooked_recovery(store)}）: {e}")
         return
     if doubtful:
-        ctx.fail(f"{len(doubtful)} 个交易日行数异常（doubtful），未入账，可确认入账")
+        _persist_doubtful_detail(store, doubtful_detail_rows)
+        for r in doubtful_detail_rows:
+            ctx.log(f"doubtful {r['day']} actual={r['actual']} "
+                    f"expected={r['expected']} ratio={r['ratio']}", level="WARN")
+        ctx.fail(f"{len(doubtful)} 个交易日行数异常（doubtful）："
+                 f"{_fmt_days(doubtful)}，未入账，可确认入账；明细见控制台与"
+                 f"sync_meta.doubtful_detail")
         return
+    store.set_meta("doubtful_detail", "[]")
     ctx.succeed({"kind": "full", "fetched": len(tasks), "failed": len(failed)})
 
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import polars as pl
 
-from trendradar.domain.market.sync.selfcheck import doubtful_by_row_count
+from trendradar.domain.market.sync.selfcheck import doubtful_detail
 from trendradar.domain.market.sync.spec import FailureKind
 from trendradar.infrastructure.tushare.fetch import (
     fetch_code_range,
@@ -28,6 +28,7 @@ from trendradar.infrastructure.tushare.writer import (
 class IncrementalResult:
     claimed_days: list[date] = field(default_factory=list)
     doubtful_days: list[date] = field(default_factory=list)
+    doubtful_detail: list[dict] = field(default_factory=list)
     all_days: pl.DataFrame | None = None   # aborted 时为 None（丢弃，不写盘）
     aborted: bool = False
     cancelled: bool = False
@@ -67,9 +68,10 @@ def run_incremental(
         # 含 doubtful 日：真实交易数据照常累积（INV-4 幂等）；空帧无列，不入 concat
         if df.width > 0:
             frames.append(df)
-        doubtful = doubtful_by_row_count({day: df.height}, list(effective.rows))
-        if doubtful:
-            result.doubtful_days.extend(doubtful)
+        detail = doubtful_detail({day: df.height}, list(effective.rows))
+        if detail:
+            result.doubtful_days.extend(r["day"] for r in detail)
+            result.doubtful_detail.extend(detail)
         else:
             result.claimed_days.append(day)
     result.all_days = pl.concat(frames) if frames else pl.DataFrame()

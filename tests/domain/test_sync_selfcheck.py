@@ -6,6 +6,7 @@ from trendradar.domain.market.sync.selfcheck import (
     ROW_COUNT_RATIO,
     coverage_ok,
     doubtful_by_row_count,
+    doubtful_detail,
     expected_trading_count,
     file_structure_ok,
     ledger_subset_ok,
@@ -34,6 +35,25 @@ def test_doubtful_by_row_count_075_threshold():
     assert doubtful_by_row_count({date(2015, 6, 1): 2335}, eff2) == []
     # 半截响应 ~0.5 应报警
     assert doubtful_by_row_count({date(2015, 6, 1): 1366}, eff2) == [date(2015, 6, 1)]
+
+
+def test_doubtful_exempts_already_booked_days():
+    """已入账日豁免：全量重建重拉历史时行数不变，不重复拦截
+    （2026-09-09 审查：2015-07 停牌日已人工确认后，每次全量仍重复报警失败）。"""
+    eff = [(date(2010, 1, 1), None)] * 100
+    d1, d2 = date(2015, 7, 8), date(2015, 7, 9)
+    rows = {d1: 50, d2: 50}
+    assert doubtful_by_row_count(rows, eff) == [d1, d2]
+    assert doubtful_by_row_count(rows, eff, already_booked={d1}) == [d2]
+    assert doubtful_by_row_count(rows, eff, already_booked={d1, d2}) == []
+
+
+def test_doubtful_detail_fields():
+    eff = [(date(2010, 1, 1), None)] * 100
+    detail = doubtful_detail({date(2015, 7, 8): 50, date(2015, 6, 1): 60}, eff)
+    assert [r["day"] for r in detail] == [date(2015, 6, 1), date(2015, 7, 8)]  # 升序
+    assert detail[0] == {"day": date(2015, 6, 1), "actual": 60,
+                         "expected": 100, "ratio": 0.6}
 
 
 def test_coverage_ok():

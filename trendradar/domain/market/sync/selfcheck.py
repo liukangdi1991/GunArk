@@ -19,16 +19,39 @@ def expected_trading_count(effective: list[_EFFECTIVE_ROW], day: date) -> int:
     )
 
 
+def doubtful_detail(
+    day_rows: dict[date, int],
+    effective: list[_EFFECTIVE_ROW],
+    threshold: float = ROW_COUNT_RATIO,
+    already_booked: set[date] | None = None,
+) -> list[dict]:
+    """断言①明细：低于阈值的日子（升序），含 actual/expected/ratio。
+
+    already_booked：账本已有日豁免——此前已通过检查或经人工确认入账，全量
+    重建重拉历史时行数不会变化，不应重复拦截（否则每次全量都必然在同样的
+    历史停牌日上失败一次；2026-09-09 审查）。
+    """
+    booked = already_booked or set()
+    out = []
+    for d in sorted(day_rows):
+        if d in booked:
+            continue
+        n = day_rows[d]
+        e = expected_trading_count(effective, d)
+        if n < threshold * e:
+            out.append({"day": d, "actual": n, "expected": e,
+                        "ratio": round(n / e, 4) if e else None})
+    return out
+
+
 def doubtful_by_row_count(
     day_rows: dict[date, int],
     effective: list[_EFFECTIVE_ROW],
     threshold: float = ROW_COUNT_RATIO,
+    already_booked: set[date] | None = None,
 ) -> list[date]:
     """断言①：行数 < threshold × expected(d) 的日期（升序）。"""
-    return sorted(
-        d for d, n in day_rows.items()
-        if n < threshold * expected_trading_count(effective, d)
-    )
+    return [r["day"] for r in doubtful_detail(day_rows, effective, threshold, already_booked)]
 
 
 def coverage_ok(calendar: set[date], claimed: set[date]) -> bool:
