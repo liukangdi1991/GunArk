@@ -476,7 +476,7 @@ git commit -m "feat(sync): 增量 doubtful 触发日 suspend_d 对账自动入�
 - Modify: `trendradar/app/services/market_sync/service.py`
 - Test: `tests/app/test_market_sync_service.py`
 
-- [ ] **Step 4.1: FakePro 支持停牌注水与 BJ 元数据（先改测试夹具）**
+- [ ] **Step 4.1: FakePro 支持停牌注水（先改测试夹具）**
 
 `tests/app/test_market_sync_service.py`：
 
@@ -487,16 +487,7 @@ git commit -m "feat(sync): 增量 doubtful 触发日 suspend_d 对账自动入�
         self.suspend_error = None  # 注水 suspend_d 异常（对账不可用）
 ```
 
-`FakePro.stock_basic` 改用后缀：
-
-```python
-    def stock_basic(self, exchange="", list_status=None, fields=None):
-        if list_status == "D":
-            return FakeResp({})
-        return _resp_meta(self.meta_codes)
-```
-
-`FakePro` 追加方法（**类名是 FakeResp**，复审 N6）：
+`FakePro` 追加方法（**类名是 FakeResp**，复审 N6；`stock_basic/_resp_meta` 维持现状，R22 不在夹具侧造 BJ）：
 
 ```python
     def suspend_d(self, trade_date=None):
@@ -598,6 +589,23 @@ def test_r6c_reconcile_unavailable_falls_back_doubtful(runtime, job_store,
 格式，非对账判定）+ `fake_pro.suspend_error = "频率超限"` + 签名追加
 `patching_sleep`；精确断言不变（`{"actual": 2, "expected": 3, "ratio": 0.6667}`）。
 
+R21 覆写语义用例（spec §7 承诺项，补入）：
+
+```python
+def test_r21_reconciled_meta_overwritten_empty(runtime, job_store, sync_store, fake_pro):
+    """R21：本轮无对账日 → reconciled_days 覆写为空，不留上一轮陈旧值。"""
+    import json
+    sync_store.insert_calendar_days(CAL)
+    sync_store.add_done_days(DONE)
+    sync_store.set_meta("reconciled_days", '["2020-01-01"]')   # 预置陈旧值
+    fake_pro.day_codes = {d26: CODES, d27: CODES}              # 全满 → 无对账
+
+    ctx = run_worker(fake_pro, {}, job_store)
+
+    assert ctx.status == "success"
+    assert json.loads(sync_store.get_meta("reconciled_days")) == []
+```
+
 链式用例签名同步（复审 Q2：被调函数加参后调用方必须透传，否则 TypeError）：
 
 ```python
@@ -614,7 +622,7 @@ def test_full_rebuild_exempts_booked_doubtful_days(runtime, job_store, sync_stor
 
 同理，`test_r14` 链 `test_r6c_...` 时签名追加 `patching_sleep` 并透传。
 
-- [ ] **Step 4.4: 全量路径用例（R19 全量正向含 BJ 断言 / R22 unit / R23 终态）**
+- [ ] **Step 4.4: 全量路径用例（R19 全量正向 / R22 unit / R23 终态）**
 
 **装置说明（复审 P2/P3 根因）**：`code_days` 决定 staging 行数（→ actual 与断言①
 触发）；`suspend_codes` 只决定对账分母。造"触发日"必须让部分股票当天无 bar。
@@ -692,7 +700,7 @@ def test_full_cancelled_during_reconcile_keeps_staging(runtime, job_store,
 
 - [ ] **Step 4.5: 跑测试确认失败**
 
-Run: `.venv/bin/python -m pytest tests/app/test_market_sync_service.py -q -k "r6 or r14 or doubtful or full_cancelled or full_doubtful_reconciles or staging_day_rows"`
+Run: `.venv/bin/python -m pytest tests/app/test_market_sync_service.py -q -k "r6 or r14 or r21 or doubtful or full_cancelled or full_doubtful_reconciles or staging_day_rows"`
 Expected: FAIL（service 尚未消费 `res.reconciled_days` / 未写 reconciled meta /
 全量无对账接线 / `_staging_day_rows` 无过滤参数）
 
@@ -810,11 +818,13 @@ Expected: 全部 PASS（无网络用例，hermetic；patching_sleep 保证限频
 - [ ] **Step 5.2: 重启服务**
 
 Run: `scripts/restart.sh`（docker-compose 部署，容器名 `trend-radar`）
+（若以进程管理器直接运行 uvicorn 而非 compose：重启 `gunark-app` 进程即可，等价）
 Expected: 服务就绪
 
 - [ ] **Step 5.3: 真实环境冒烟**
 
 ```bash
+# compose 部署走 ${APP_PORT:-8818}；进程管理器直跑时服务监听 8000
 curl -s -X POST "localhost:${APP_PORT:-8818}/api/market-data/sync" \
      -H "Content-Type: application/json" -d '{}'
 # 轮询 /api/market-data/status 至 bars_sync.status ∈ {success, failed}
