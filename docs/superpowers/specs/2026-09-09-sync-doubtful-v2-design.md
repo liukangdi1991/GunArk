@@ -1,7 +1,7 @@
 # 同步自检 doubtful v2 设计：分段阈值 + suspend_d 精确对账
 
-> 版本：v2（2026-09-09）。v1 → v2：吸收三视角评审 19 项发现（北交所口径污染、代价误算、
-> 假绿测试、降级/取消契约等）。前置：doubtful 审查修订（2cce2037）。
+> 版本：v2.1（2026-09-09）。v1 → v2：吸收三视角评审 19 项发现；v2 → v2.1：吸收复审
+> N1-N9（测试样本量纲、取消终态契约、审计无条件写等）。前置：2cce2037。
 
 ## §1 背景与问题
 
@@ -14,12 +14,12 @@
    0.75 与 0.85 之间的日子（107 天）需逐日人工裁决——2cce2037 已用 already_booked 豁免
    + 审计明细缓解，但裁决本身无法自动化。
 
-**北交所口径发现（v2 新增，评审问题 1）**：旧 spec 断言"北交所物理不可得"已失效——
-实测 `daily(trade_date=)` 现返回 BJ 行，增量按日路径已落盘 343 个 BJ 文件
-（各仅含 2026-09-08/09 两天）。2026-09-09 实测：含 BJ ratio = **1.0638**（5550/5217），
+**北交所口径发现（v2 新增）**：旧 spec 断言"北交所物理不可得"已失效——实测
+`daily(trade_date=)` 现返回 BJ 行，增量按日路径已落盘 343 个 BJ 文件（各仅含
+2026-09-08/09 两天）。2026-09-09 实测：含 BJ ratio = **1.0638**（5550/5217），
 剔 BJ ratio = **0.9981**（5207/5217）。分子含 BJ、分母剔 BJ 的口径污染若不修，
-0.95 阈值的真实报警线被稀释到 ≈0.89，"消除细截断盲区"的目标落空。
-处置：**检查时分子按 effective.codes 过滤**（纯过滤条件，不改落盘语义、不改阈值）。
+0.95 阈值的真实报警线被稀释到 ≈0.89。处置：**检查时分子按 effective.codes 过滤**
+（纯过滤条件，不改落盘语义、不改阈值）。
 
 ## §2 需求
 
@@ -28,13 +28,13 @@
 | R18 | 断言①阈值按被检日期分段：`year<2017 → 0.75`、`2017≤year<2019 → 0.85`、`year≥2019 → 0.95` |
 | R19 | 断言①触发的日期经 suspend_d 独立对账：一致（单边容差 max(5, 2%×应成交)）→ 自动入账 + reconciled 审计 |
 | R20 | 对账不可用（接口失败/限频重试耗尽/取消）→ 回退现状 doubtful 路径（能力不降级） |
-| R21 | reconciled 与 doubtful 均落 `sync_meta` 审计 + 控制台逐日日志 |
+| R21 | reconciled 与 doubtful 均落 `sync_meta` 审计 + 控制台逐日日志；**本轮无对账日时审计键覆写为空**（不留陈旧值） |
 | R22 | 行数统计分子与分母同口径：均按 effective.codes 过滤（含 BJ 剔除） |
-| R23 | 对账窗口响应取消：取消后未对账日扣账（doubtful），重跑自愈，禁止假绿 |
+| R23 | 对账窗口响应取消：取消即中止换名/落账（staging 保留续传，与拉取期取消同契约），终态 `cancelled`；未对账日重跑自愈 |
 
 （R1-R17 归属 market-sync-redesign spec，见 `2026-08-27-market-sync-redesign-design.md`。）
 
-## §3 实测校准数据（2026-09-09，检查器同口径，2841 天全史）
+## §3 实测校准数据（2026-09-09）
 
 ### 3.1 分年比值分布
 
@@ -47,6 +47,9 @@
 | 2019 | 244 | 0.979 | 0.978 | 0.972 |
 | 2020-2026 | ~1175 | 0.978-0.984 | 0.977-0.983 | 0.970-0.978 |
 
+注：本表 min 为**含 BJ 分子**的修复前基线口径；各年 min 所在日均无 BJ 行
+（BJ 文件仅含 2026-09-08/09），故 R22 口径修复不影响本表数值。
+
 ### 3.2 触发量（两种口径，勿混用）
 
 | 阈值口径 | 触发天数 |
@@ -56,7 +59,7 @@
 
 ### 3.3 suspend_d 对账实验
 
-- 2015-07-08（千股停牌日）：应市 2781 − 停牌 1348 = 应成交 1433；盘上 1446；
+- 2015-07-08（千股停牌日）：应市 2781 − 停牌 1348 = 应成交 1433；盘上 actual 1446；
   差 **+13 = +36（停牌在列却实际成交：临时停牌/盘中复牌/退整期股）− 23（真停牌但清单漏记）**，
   即 suspend_d 存在 ±1% 量级双向固有噪声 → 对账必须用**单边容差**，精确等式不可用。
 - 全史验证：2015-2019 全部 **1219 个交易日**逐日 `suspend_d` 对账，
@@ -72,7 +75,7 @@ effective 清单剔 BJ（`build_effective_list`），但 `daily(trade_date=)` �
 按 `effective.codes` 过滤**：增量路径对当日拉取帧过滤、全量路径 `_staging_day_rows`
 按 allowed_codes 过滤、对账分母 `suspended ∩ effective.codes`。
 落盘语义不变（BJ bar 照常保留），仅检查口径修正。修复后 2026-09-09 剔 BJ ratio =
-0.9981（健康）。2015-2019 段无 BJ 行，既有 1219 天对账实测不受影响。
+0.9981（健康）。
 
 ## §4 核心设计
 
@@ -103,6 +106,10 @@ expected_traded = expected_alive(d) − suspended_alive
 单边容差的依据：缺口方向（应成交却无 bar）才可能是拉取截断；多出方向是
 suspend_d 漏记/盘中复牌的真实 bar，无害（§3.3 实验）。
 
+**容差量纲**：百分比为主——expected_traded > 250 时 2% > abs 下限 5；
+abs 下限仅服务极小应市日。**测试样本必须越过 et=250 临界**（否则对账判定被
+abs 容差吞掉、正向用例假绿），实施计划用例规格按 600/300 只设计。
+
 **YAGNI 显式声明**：分段阈值下，对账的常态触发面 = 全量重建时的 7 个历史日
 （2015-07）+ 未来极端日；2019+ 段常态零触发。为此引入一个新接口 + 节流 + 退避 +
 审计字段的取舍依据：这 7 天目前依赖人工拍板，对账把"极端日裁决"彻底自动化，
@@ -116,21 +123,24 @@ suspend_d 漏记/盘中复牌的真实 bar，无害（§3.3 实验）。
 - 限频异常退避 62s 重试，最多 3 次
 - 重试耗尽/其它异常/取消 → 该日回退 doubtful（R20，保守：无法对账 = 不自动放行）
 - **代价（分段口径实测）**：全量重建触发 7 天 × 0.46s ≈ **+3.2 秒**；
-  限频退避最坏 7 × 186s ≈ 21.7 分钟（对账循环内响应取消，见 R23，不会假绿）
+  限频退避最坏 7 × 186s ≈ 21.7 分钟（对账窗口内取消即中止，见 R23，不会烧完）
 
 ### D5 审计（R21）
 
 - `doubtful_detail`（已有）：最终 doubtful 集的逐日明细
-- `reconciled_days`（新增）：本轮对账通过自动入账的日期清单
+- `reconciled_days`（新增）：本轮对账通过自动入账的日期清单；**每轮无条件覆写**
+  （无对账日写 `[]`），不留陈旧值
 - 两者均落 `sync_meta` + 控制台逐日日志；**仅落库供事后 SQL 排查，不做接口暴露**
   （status 接口与前端零变更，见 §6）
 
 ### D6 取消语义（R23）
 
-对账循环内 `fetch_suspend_list` 传 `cancel_check`：
-- 返回 cancelled → 该日按"未对账"扣账（doubtful），循环快速空转至结束
-- 全部未对账日入账提交后，作业终态 `failed`（"已取消：N 日未完成对账，重跑自愈"），
-  **禁止 ctx.succeed 假绿**；executor 单次终态语义保证外部取消标记不被覆写
+对账循环内 `fetch_suspend_list` 传 `cancel_check`；返回 cancelled 即
+**ctx.cancel() 并返回（发生在换名/落账之前）**：
+
+- staging / bars / 账本零改动——与拉取期取消完全同契约（staging 保留续传，
+  终态 `cancelled`），不存在"部分对账部分入账"的中间态，无假绿窗口
+- 未对账日不入账，重跑自愈（对账重新执行）
 
 ## §5 不变式（继承 v1）
 
@@ -139,7 +149,6 @@ suspend_d 漏记/盘中复牌的真实 bar，无害（§3.3 实验）。
 - 断言②③④（覆盖/结构/账本子集）不变
 
 ## §6 前端影响
-
 无。status/selection/backtest 接口契约零变更；reconciled_days 仅落 sync_meta，
 不进任何接口响应。
 
@@ -148,21 +157,22 @@ suspend_d 漏记/盘中复牌的真实 bar，无害（§3.3 实验）。
 | 需求 | 用例（TDD 先行） |
 |---|---|
 | R18 | `test_threshold_for_bands`、`test_doubtful_detail_uses_band_thresholds`（selfcheck） |
-| R19 | `test_run_incremental_doubtful_reconciles_via_suspend_list`（runner）、`test_r6_incremental_suspension_reconciles_and_books`（service 增量）、`test_full_doubtful_reconciles_via_suspend_list`（service 全量） |
-| R20 | `test_run_incremental_doubtful_when_suspend_list_empty`（runner，反向）、`test_r6b_reconcile_unavailable_falls_back_doubtful`（service）、`test_fetch_suspend_list_rate_limit_retries_then_env`（fetch） |
-| R21 | reconciled/doubtful meta 断言（并入 R19/R20 用例） |
-| R22 | 全量路径 `_staging_day_rows` 过滤断言（并入全量用例：BJ/清单外 bar 不计入 actual） |
-| R23 | 取消语义由 fetch cancelled 分支单测 + service 取消后 failed 断言覆盖 |
+| R19（增量） | `test_run_incremental_doubtful_reconciles_via_suspend_list`（600/300 样本，runner） |
+| R19（增量反向） | `test_run_incremental_doubtful_when_suspend_list_empty`（缺口 8 > 容差 6 → doubtful） |
+| R19（增量 service） | `test_r6_incremental_suspension_reconciles_and_books`（600 只样本） |
+| R19（全量） | `test_full_doubtful_reconciles_via_suspend_list`（含 BJ 码样本，断言其不计入 actual） |
+| R20 | `test_run_incremental_doubtful_when_suspend_list_empty`（反向）、`test_r6b_reconcile_unavailable_falls_back_doubtful`、`test_fetch_suspend_list_rate_limit_retries_then_env` |
+| R21 | reconciled/doubtful meta 断言（并入 R19/R20 用例）+ 无对账轮覆写空清单断言 |
+| R22 | `test_full_doubtful_reconciles_via_suspend_list`（含 BJ 码样本，断言其不计入 actual） |
+| R23 | `test_fetch_suspend_list_cancelled_immediately`（fetch 单测）、`test_full_cancelled_during_reconcile_keeps_staging`（service：终态 cancelled + staging 保留） |
 
-既有用例回归要点：`test_runner.py` 全部用例（`_eff` 改真实 codes 后）、
-`test_market_sync_service.py` 的 r13 / r17×4（doubtful 预期用例需注水
-suspend_error）、两个比值 20/21=0.952 的边界用例（2026 段 0.95 线敏感性：
-0.9524 > 0.95 不触发，距线 0.0024——已验证当前断言成立，列为阈值敏感注释）。
+既有用例回归要点：`test_runner.py` 全部（`_eff` 改真实 codes + 样本 600 后）、
+`test_market_sync_service.py` 的原始 r6 / r13 / r17×4 / 两个 0.952 边界用例
+（处置见实施计划 Task 4.2 处置表）。
 
 ## §8 YAGNI
 
 - reconcile 不做接口暴露、不建独立表（sync_meta 键值够用）
-- 不做 suspend_d 全史预验证缓存（对账仅触发日调用，全量 +7 天成本）
 - 阈值表硬编码三段（不加配置项；调参 = 改常量 + 测试）
 - 不改 `filter_excluded_boards`/落盘语义（BJ bar 保留在盘，仅检查口径过滤）——
   若未来要让 BJ 进入选股宇宙，属独立需求

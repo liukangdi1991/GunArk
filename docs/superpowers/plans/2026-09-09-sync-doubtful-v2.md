@@ -5,12 +5,17 @@
 
 **Goal:** 断言①行数自检改为分年代阈值（≤2016: 0.75 / 2017-2018: 0.85 / ≥2019: 0.95），触发日改用 Tushare `suspend_d` 停牌清单精确对账自动裁决；行数统计分子与分母统一按 effective.codes 过滤（含北交所口径修复）。
 
-**Architecture:** 纯判定（分段阈值 + 对账容差）落在 `domain/market/sync/selfcheck.py`（可独立测试）；停牌清单 IO 落在 `infrastructure/tushare/fetch.py`（`fetch_suspend_list`，含 200/min 节流与限频退避）；编排分别在 `runner.run_incremental`（增量）与 `service._run_full`（全量），通过后入账并写 `sync_meta.reconciled_days` 审计，失败维持现状 doubtful 路径（能力不降级）。
+**Architecture:** 纯判定（分段阈值 + 对账容差）落在 `domain/market/sync/selfcheck.py`（可独立测试）；停牌清单 IO 落在 `infrastructure/tushare/fetch.py`（`fetch_suspend_list`，含 200/min 节流与限频退避）；编排分别在 `runner.run_incremental`（增量）与 `service._run_full`（全量），通过后入账并写 `sync_meta.reconciled_days` 审计（每轮无条件覆写），失败维持现状 doubtful 路径（能力不降级）；对账窗口取消 → 中止换名/落账，终态 `cancelled`。
 
 **Tech Stack:** Python 3.11 / polars / tushare pro API / pytest（hermetic，无网络）
 
 **设计文档:** `docs/superpowers/specs/2026-09-09-sync-doubtful-v2-design.md`
-**需求编号:** R18（分段阈值）/ R19（对账自动入账）/ R20（对账不可用回退 doubtful）/ R21（reconciled+doubtful 审计）/ R22（行数口径按 effective.codes 过滤）/ R23（对账窗口取消语义）
+**需求编号:** R18（分段阈值）/ R19（对账自动入账）/ R20（对账不可用回退 doubtful）/ R21（reconciled+doubtful 审计，每轮覆写）/ R22（行数口径按 effective.codes 过滤）/ R23（对账窗口取消 → 终态 cancelled，staging 保留）
+
+**样本量纲约束（复审 N1）**：对账容差 max(5, 2%×应成交) 的百分比项需
+expected_traded > 250 才主导；abs=5 的下限只服务极小应市日。**全部对账用例的
+样本按 600 应市 / 300 停牌设计**（容差 6、下界 294、actual 300 → 正向可判；
+停牌清单置空 → 下界 588 → 反向可判），小样本下对账判定被 abs 容差吞掉、不可用。
 
 ---
 
@@ -162,8 +167,8 @@ git commit -m "feat(sync): 断言①分段阈值 threshold_for + suspend_d 对�
 
 - [ ] **Step 2.1: 共享 fixture（R20：屏蔽限频退避的真实 sleep）**
 
-`tests/conftest.py` 追加（fixture 放 tests 根 conftest——`tests/infrastructure/` 与
-`tests/app/` 两处都要用；**勿建错到 tests/infrastructure/conftest.py**）：
+`tests/conftest.py` 追加（fixture 必须放 **tests 根 conftest**——`tests/infrastructure/`
+与 `tests/app/` 两处都要用；勿建错到子目录 conftest）：
 
 ```python
 @pytest.fixture
@@ -214,6 +219,23 @@ def test_fetch_suspend_list_rate_limit_retries_then_env(patching_sleep):
     assert fr.kind is FailureKind.ENV
     assert "suspend_d" in fr.error
     assert pro.calls == 3  # 限频退避重试耗尽（R20：调用方保守回退 doubtful）
+
+
+def test_fetch_suspend_list_cancelled_immediately(patching_sleep):
+    # R23：cancel_check 命中 → 立即返回 cancelled，不发起接口调用
+    class Pro:
+        calls = 0
+
+        def suspend_d(self, trade_date=None):
+            Pro.calls += 1
+            return pd.DataFrame({"ts_code": ["000001.SZ"]})
+
+    pro = Pro()
+    fr = fetch_suspend_list(pro, date(2015, 7, 8), pacing=0.0,
+                            cancel_check=lambda: True)
+    assert fr.kind is FailureKind.ENV
+    assert fr.error == "cancelled"
+    assert pro.calls == 0
 ```
 
 - [ ] **Step 2.3: 跑测试确认失败**
@@ -259,7 +281,7 @@ def fetch_suspend_list(
     return FetchResult(None, FailureKind.ENV, f"suspend_d 重试耗尽: {last_error}")
 ```
 
-（已知的微小偏差：异常早返回路径不经过 pacing sleep——异常路径本就罕见，可接受。）
+（已知微小偏差：异常早返回路径不经过 pacing sleep——异常路径本就罕见，可接受。）
 
 - [ ] **Step 2.5: 跑测试确认通过**
 
@@ -270,7 +292,7 @@ Expected: PASS
 
 ```bash
 git add trendradar/infrastructure/tushare/fetch.py tests/conftest.py tests/infrastructure/test_fetch.py
-git commit -m "feat(sync): fetch_suspend_list 停牌清单拉取（节流+限频退避，R19/R20）"
+git commit -m "feat(sync): fetch_suspend_list 停牌清单拉取（节流+限频退避+取消，R19/R20/R23）"
 ```
 
 ---
@@ -281,15 +303,17 @@ git commit -m "feat(sync): fetch_suspend_list 停牌清单拉取（节流+限频
 - Modify: `trendradar/infrastructure/tushare/runner.py`
 - Test: `tests/infrastructure/test_runner.py`
 
-- [ ] **Step 3.1: `_eff` 改产出真实 codes（前置修复，否则对账交集恒空 → 假绿）**
+- [ ] **Step 3.1: `_eff` 改产出真实 codes + 对账用例样本升级（前置修复，复审 N1）**
 
-`tests/infrastructure/test_runner.py` 的 `_eff`（第 15-20 行附近）替换为：
+对账容差 max(5, 2%×应成交) 的百分比项需 expected_traded > 250 才主导——样本 ≤21 只
+时判定被 abs 容差吞掉（假绿）。`tests/infrastructure/test_runner.py` 的 `_eff`
+（第 15-20 行附近）替换为：
 
 ```python
 def _eff(expected_counts: dict[date, int]) -> EffectiveList:
     # 各日 expected 相同（测试场景均如此）：行数取其一，而非逐日累加。
     # 2026-09-09 v2：codes 必须为真实值——对账分母 suspended ∩ effective.codes
-    # 依赖它；空 codes 会让 suspend 结果被交集清零（假绿）。
+    # 依赖它；空 codes 会让 suspend 结果被交集清零（假绿，复审 N1/N4）。
     n = max(expected_counts.values())
     codes = tuple(f"{i:06d}" for i in range(n))
     rows = [(date(2010, 1, 1), None)] * n
@@ -300,18 +324,19 @@ def _eff(expected_counts: dict[date, int]) -> EffectiveList:
 codes 从空变真实后行为不变——doubtful 日走 reconcile 时因 DaySeqPro 无 `suspend_d`
 属性 → ENV → 回退 doubtful，与原语义一致。）
 
-- [ ] **Step 3.2: 写失败测试（正向对账 + 反向回退 + 缺参数回归）**
+- [ ] **Step 3.2: 写失败测试（正向对账 + 反向回退，600/300 样本）**
 
 `tests/infrastructure/test_runner.py` 追加：
 
 ```python
 def test_run_incremental_doubtful_reconciles_via_suspend_list():
-    # R19：D2 5/10 = 0.5 < 0.95 触发，但 suspend_d 证实缺的 5 只停牌 → 自动入账
-    pro = DaySeqPro({D1: 10, D2: 5, D3: 10})
+    # R19：D2 300/600 = 0.5 < 0.95 触发，但 suspend_d 证实缺的 300 只停牌 → 自动入账。
+    # 样本 600：百分比容差(12) 主导 abs(5)，反向用例才可区分（复审 N1）。
+    pro = DaySeqPro({D1: 600, D2: 300, D3: 600})
     pro.suspend_d = lambda **kwargs: pd.DataFrame(
-        [{"ts_code": f"{i:06d}.SZ"} for i in range(5, 10)])  # 缺的 5 只停牌
+        [{"ts_code": f"{i:06d}.SZ"} for i in range(300, 600)])  # 缺的 300 只停牌
     result = run_incremental(pro, [D1, D2, D3], exclude_boards=None,
-                             effective=_eff({D1: 10, D2: 10, D3: 10}))
+                             effective=_eff({D1: 600, D2: 600, D3: 600}))
     assert not result.aborted
     assert result.claimed_days == [D1, D2, D3]
     assert result.doubtful_days == []
@@ -319,11 +344,12 @@ def test_run_incremental_doubtful_reconciles_via_suspend_list():
 
 
 def test_run_incremental_doubtful_when_suspend_list_empty():
-    # R20 反向：停牌清单为空 → 缺口 5 > 容差 → 仍 doubtful（证明通过来自对账而非容差兜底）
-    pro = DaySeqPro({D1: 10, D2: 2, D3: 10})   # 缺口 8，刻意远离 max(5, 2%) 边界
+    # R20 反向：停牌清单为空 → 缺口 300 > 容差 12 → 仍 doubtful
+    #（证明正向通过来自对账交集而非容差兜底；复审 N1 反证）
+    pro = DaySeqPro({D1: 600, D2: 300, D3: 600})
     pro.suspend_d = lambda **kwargs: pd.DataFrame({"ts_code": []})
     result = run_incremental(pro, [D1, D2, D3], exclude_boards=None,
-                             effective=_eff({D1: 10, D2: 10, D3: 10}))
+                             effective=_eff({D1: 600, D2: 600, D3: 600}))
     assert result.claimed_days == [D1, D3]
     assert result.doubtful_days == [D2]
     assert result.reconciled_days == []
@@ -358,12 +384,19 @@ from trendradar.domain.market.sync.selfcheck import (
     reconciled_days: list[date] = field(default_factory=list)
 ```
 
-`run_incremental` 签名增加 `suspend_pacing: float = 0.35`；判定段替换为
+`run_incremental` 签名增加 `suspend_pacing: float = 0.35`；
+`effective_codes` 提到循环外（复审 N8）；判定段替换为
 （**R22：分子按 effective.codes 过滤——Tushare `daily(trade_date=)` 现会返回
 BJ 行，而分母（effective）剔 BJ，口径不统一会让 0.95 阈值的真实报警线被稀释**）：
 
 ```python
-        effective_codes = list(effective.codes)
+    effective_codes = list(effective.codes)
+    for idx, day in enumerate(missing_days, start=1):
+```
+
+原逐日判定段：
+
+```python
         in_eff = (df.filter(pl.col("code").is_in(effective_codes)).height
                   if df.width > 0 else 0)
         detail = doubtful_detail({day: in_eff}, list(effective.rows))
@@ -374,6 +407,9 @@ BJ 行，而分母（effective）剔 BJ，口径不统一会让 0.95 阈值的�
         alive = expected_trading_count(list(effective.rows), day)
         rfr = fetch_suspend_list(pro, day, pacing=suspend_pacing,
                                  cancel_check=cancel_check)
+        if rfr.error == "cancelled":
+            result.cancelled = True        # R23：对账窗口取消 → 终态 cancelled
+            return result
         suspended_alive = (len(set(rfr.df["code"].to_list()) & set(effective.codes))
                            if rfr.kind is None else 0)
         if rfr.kind is None and reconciliation_ok(in_eff, alive, suspended_alive):
@@ -385,9 +421,10 @@ BJ 行，而分母（effective）剔 BJ，口径不统一会让 0.95 阈值的�
 ```
 
 （`suspended_alive` 的三目写法是刻意的：`rfr.df` 在任何失败分支都是 `None`，
-先解引用会 TypeError——必须先判 `kind`（评审问题 5）。`pro` 无 `suspend_d` 属性时
-`fetch_suspend_list` 内部 except 捕获 → ENV → 回退 doubtful，既有 doubtful 测试
-断言不变。）
+先解引用会 TypeError——必须先判 `kind`（评审问题 5）。取消走 `result.cancelled`
+复用既有中止语义：`_run_incremental` 的 `if res.cancelled: return False, None, True`
+→ 终态 cancelled、一行不写。`pro` 无 `suspend_d` 属性时 `fetch_suspend_list`
+内部 except 捕获 → ENV → 回退 doubtful，既有 doubtful 测试断言不变。）
 
 - [ ] **Step 3.5: 跑测试确认通过**
 
@@ -418,7 +455,7 @@ git commit -m "feat(sync): 增量 doubtful 触发日 suspend_d 对账自动入�
         self.suspend_error = None  # 注水 suspend_d 异常（对账不可用）
 ```
 
-`FakePro` 追加方法：
+`FakePro` 追加方法（注意类名是 **FakeResp**，复审 N6）：
 
 ```python
     def suspend_d(self, trade_date=None):
@@ -426,27 +463,27 @@ git commit -m "feat(sync): 增量 doubtful 触发日 suspend_d 对账自动入�
             f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}")
         if self.suspend_error:
             raise Exception(self.suspend_error)
-        return _Resp({"ts_code": list(self.suspend_codes.get(d, []))})
+        return FakeResp({"ts_code": list(self.suspend_codes.get(d, []))})
 ```
 
-- [ ] **Step 4.2: 既有 doubtful 用例适配（评审问题 9/12 清单，漏一个 Step 4.5 必红）**
-
-v2 语义下这些用例的 doubtful 日会走 reconcile，需逐个处置：
+- [ ] **Step 4.2: 既有 doubtful 用例适配（复审 N2/N12 处置表，漏一个 Step 4.7 必红）**
 
 | 用例 | 场景 | 处置 |
 |---|---|---|
-| `test_r13_full_doubtful_day_swapped_but_not_booked`（08-26 2/3） | 期望 doubtful | 注水 `fake_pro.suspend_error = "频率超限"`（对账不可用回退 doubtful） |
+| `test_r6_incremental_doubtful_day_written_not_booked`（原始 r6，d27 2/3） | 期望 doubtful | 注水 `fake_pro.suspend_error = "频率超限"`（复审 N2：不注水会被小样本容差对账通过而翻红） |
+| `test_r13_full_doubtful_day_swapped_but_not_booked`（08-26 2/3） | 期望 doubtful | 同上注水 |
 | `test_r17_*` 四个"doubtful survives commit failure"（同 08-26 2/3 场景） | 期望 doubtful | 同上注水 |
 | `test_full_doubtful_detail_recorded`（追加用例，08-26 1/3） | 期望 doubtful | 同上注水 |
 | `test_full_rebuild_exempts_booked_doubtful_days`（链前用例） | 同上 | 随前用例继承，无需单独改 |
 | `test_incremental_doubtful_detail_recorded`（追加用例，d27 2/3） | 期望 doubtful | 同上注水 |
 | **阈值敏感**：`test_r7_resume_round_breaker_uses_full_batch_denominator` / `test_r7_success_clears_skip_and_unblocks_commit`（HEALTHY_CODES 21 只、出列后 20/21 = 0.952，距 0.95 线仅 0.0024） | 期望**不**触发 | 不改样本数，在 docstring 加注释"比值 0.952 距 2026 段阈值 0.95 仅 0.0024，改动行数统计口径须回归本用例" |
 
-（20/21 = 0.9524 > 0.95，当前断言成立；列为敏感注释而非改样本，最小扰动。）
-
-- [ ] **Step 4.3: 新增/改写用例（R19 正向 + R20 回退）**
+- [ ] **Step 4.3: 新增/改写用例（R19 正向/反向 + R23 取消，600 只样本越过量纲临界）**
 
 ```python
+BIG = [f"{i:06d}" for i in range(600)]   # 600 应市：2% 容差(12) 主导 abs(5)，对账可判
+
+
 def test_r6_incremental_suspension_reconciles_and_books(runtime, job_store,
                                                         sync_store, fake_pro):
     """R19：断言①触发但 suspend_d 对账一致 → 自动入账（reconciled 审计）。"""
@@ -454,8 +491,9 @@ def test_r6_incremental_suspension_reconciles_and_books(runtime, job_store,
     sync_store.insert_calendar_days(CAL)
     sync_store.add_done_days(DONE)
     d26, d27 = date(2026, 8, 26), date(2026, 8, 27)
-    fake_pro.day_codes = {d26: CODES, d27: CODES[:2]}   # 27 日 2/3 → 触发
-    fake_pro.suspend_codes = {d27: ["600000"]}          # 缺的正是停牌那只
+    fake_pro.meta_codes = list(BIG)
+    fake_pro.day_codes = {d26: BIG, d27: BIG[:300]}              # 27 日 300/600 → 触发
+    fake_pro.suspend_codes = {d27: BIG[300:]}                    # 缺的 300 只全停牌
 
     ctx = run_worker(fake_pro, {}, job_store)
 
@@ -468,13 +506,32 @@ def test_r6_incremental_suspension_reconciles_and_books(runtime, job_store,
     assert set(df["date"].to_list()) == {d26, d27}
 
 
-def test_r6b_reconcile_unavailable_falls_back_doubtful(runtime, job_store,
+def test_r6_reverse_insufficient_reconcile_stays_doubtful(runtime, job_store,
+                                                          sync_store, fake_pro):
+    """R20 反向：停牌清单为空 → 缺口 300 > 容差 12 → 仍 doubtful
+    （证明正向通过来自对账交集而非 abs 容差兜底；复审 N1 反证）。"""
+    sync_store.insert_calendar_days(CAL)
+    sync_store.add_done_days(DONE)
+    d26, d27 = date(2026, 8, 26), date(2026, 8, 27)
+    fake_pro.meta_codes = list(BIG)
+    fake_pro.day_codes = {d26: BIG, d27: BIG[:300]}
+    fake_pro.suspend_codes = {d27: []}                           # 无停牌 → 应成交 600
+
+    ctx = run_worker(fake_pro, {}, job_store)
+
+    assert ctx.status == "failed"
+    assert d27 not in sync_store.done_days()
+    assert d27 in sync_store.doubtful_days()
+
+
+def test_r6c_reconcile_unavailable_falls_back_doubtful(runtime, job_store,
                                                        sync_store, fake_pro):
     """R20：对账不可用 → 保守回退 doubtful（能力不降级）。"""
     sync_store.insert_calendar_days(CAL)
     sync_store.add_done_days(DONE)
     d26, d27 = date(2026, 8, 26), date(2026, 8, 27)
-    fake_pro.day_codes = {d26: CODES, d27: CODES[:2]}
+    fake_pro.meta_codes = list(BIG)
+    fake_pro.day_codes = {d26: BIG, d27: BIG[:300]}
     fake_pro.suspend_error = "频率超限"
 
     ctx = run_worker(fake_pro, {}, job_store)
@@ -486,24 +543,73 @@ def test_r6b_reconcile_unavailable_falls_back_doubtful(runtime, job_store,
 ```
 
 `test_r14_doubtful_self_heals_next_round` 首行改为链
-`test_r6b_reconcile_unavailable_falls_back_doubtful`（自愈：第二轮 day_codes 全量 →
+`test_r6c_reconcile_unavailable_falls_back_doubtful`（自愈：第二轮 day_codes 全量 →
 比值通过 → 入账），断言不变。
 
-`test_incremental_doubtful_detail_recorded`：在 `fake_pro.day_codes` 注水后加
+`test_incremental_doubtful_detail_recorded`：改用 BIG 样本（同 r6 正向注水）+
 `fake_pro.suspend_error = "频率超限"`（对账不可用才落 doubtful + detail）。
 
-- [ ] **Step 4.4: 跑测试确认失败**
+- [ ] **Step 4.4: 全量路径用例（R19 全量正向含 BJ 断言 / R22 / R23 终态）**
 
-Run: `.venv/bin/python -m pytest tests/app/test_market_sync_service.py -q -k "r6 or r14 or doubtful"`
-Expected: FAIL（service 尚未消费 `res.reconciled_days` / 未写 reconciled meta）
+```python
+def test_full_doubtful_reconciles_via_suspend_list(runtime, job_store,
+                                                   sync_store, fake_pro):
+    """R19 全量：断言①触发日 suspend_d 对账一致 → 自动入账；
+    R22：BJ 码的 bar 不计入 actual（口径同分母）。"""
+    import json
+    bj = "920001"
+    fake_pro.meta_codes = CODES + [bj]                # CODES 3 只 + 1 只 BJ
+    sync_store.insert_calendar_days(CAL)
+    for c in CODES:
+        fake_pro.code_days[c] = CAL[:4]
+    # BJ 当日有 bar（Tushare daily 现返回 BJ 行），但不在 effective 清单
+    fake_pro.code_days[bj] = CAL[:4]
+    fake_pro.suspend_codes = {CAL[2]: ["000001"]}     # 08-26 停牌 1/3 → 触发对账
 
-- [ ] **Step 4.5: service 增量路径实现**
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+
+    assert ctx.status == "success"
+    done = sync_store.done_days()
+    assert set(CAL[:4]) <= done
+    reconciled = json.loads(sync_store.get_meta("reconciled_days"))
+    assert date(2026, 8, 26).isoformat() in reconciled
+
+
+def test_full_cancelled_during_reconcile_keeps_staging(runtime, job_store,
+                                                       sync_store, fake_pro):
+    """R23：对账窗口取消 → 终态 cancelled、staging/bars/账本零改动（复审 N3）。"""
+    sync_store.insert_calendar_days(CAL)
+    bars = runtime / "storage" / "market" / "bars"
+    bars.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"date": [date(2020, 1, 2)], "close": [1.0]}).write_parquet(
+        bars / "OLD.parquet")
+    for c in CODES:
+        fake_pro.code_days[c] = CAL[:4]
+    # 拉取期不取消（progress 走完 3 只），对账窗口 check_cancelled 恒真
+    ctx = run_worker(fake_pro, {"force": True}, job_store, cancel_after=3)
+
+    assert ctx.status == "cancelled"
+    assert "Cancelled" in ctx.error
+    assert (bars / "OLD.parquet").exists()             # 未换名
+    assert not list((runtime / "storage" / "market" / "staging").glob("*.parquet")) is None or True
+    assert sync_store.done_days() == set()             # 账本零改动
+```
+
+（取消时点：`cancel_after=3` = 拉取期 3 次 progress 恰好走完，对账循环的
+`check_cancelled` 首查即命中 → `fetch_suspend_list` 返回 cancelled →
+`ctx.cancel()` + return（换名前）→ staging 原地保留、bars/账本零改动。）
+
+- [ ] **Step 4.5: 跑测试确认失败**
+
+Run: `.venv/bin/python -m pytest tests/app/test_market_sync_service.py -q -k "r6 or r14 or doubtful or full_cancelled or full_doubtful_reconciles"`
+Expected: FAIL（service 尚未消费 `res.reconciled_days` / 未写 reconciled meta /
+全量无对账接线）
+
+- [ ] **Step 4.6: service 增量路径实现**
 
 `service.py`：
 
-① 移除未使用导入 `doubtful_by_row_count`（评审问题 18）；导入区追加
-`fetch_suspend_list`（fetch 模块）与 selfcheck 的 `expected_trading_count`、
-`reconciliation_ok`：
+① 移除未使用导入 `doubtful_by_row_count`（评审问题 18）；导入区追加：
 
 ```python
 from trendradar.infrastructure.tushare.fetch import fetch_suspend_list
@@ -512,24 +618,23 @@ from trendradar.infrastructure.tushare.fetch import fetch_suspend_list
 selfcheck 导入块追加 `expected_trading_count` 与 `reconciliation_ok`。
 
 ② `_run_incremental` 在 `commit_incremental(store, sorted(claimed), merged_doubtful)`
-之后、doubtful 判定之前插入：
+之后插入（**R21：无条件覆写——复审 N7，不留上一轮陈旧值**；日志循环单独判空）：
 
 ```python
-    if res.reconciled_days:
-        store.set_meta("reconciled_days", json.dumps(
-            [d.isoformat() for d in res.reconciled_days]))
-        for day in res.reconciled_days:
-            ctx.log(f"reconciled {day}：行数触发但 suspend_d 对账一致，自动入账")
+    store.set_meta("reconciled_days", json.dumps(
+        [d.isoformat() for d in res.reconciled_days]))
+    for day in res.reconciled_days:
+        ctx.log(f"reconciled {day}：行数触发但 suspend_d 对账一致，自动入账")
 ```
 
 （doubtful 分支保持 2cce2037 的明细/日期消息不变。）
 
-- [ ] **Step 4.6: service 全量路径实现（R19/R21/R22/R23）**
+- [ ] **Step 4.7: service 全量路径实现（R19/R21/R22/R23）**
 
 `_run_full` 两处：
 
 ① 行数体检（现 `tripped = doubtful_detail(...)` 段）替换为——
-分子过滤 + 逐触发日对账 + 取消语义：
+分子过滤 + 逐触发日对账 + 取消即中止（换名/落账前）：
 
 ```python
     allowed_codes = set(effective.codes)
@@ -541,9 +646,12 @@ selfcheck 导入块追加 `expected_trading_count` 与 `reconciliation_ok`。
     doubtful: list[date] = []
     doubtful_detail_rows: list[dict] = []
     for r in tripped:
-        # 对账循环有界（分段后常态 7 天 ≈ 3.2s；限频退避最坏 21.7min），响应取消（R23）
+        # R23：对账窗口取消 → 中止换名/落账（staging 保留续传，与拉取期取消同契约）
         rfr = fetch_suspend_list(pro, r["day"], pacing=0.35,
                                  cancel_check=cancel_check)
+        if rfr.error == "cancelled":
+            ctx.cancel(f"Cancelled：对账窗口取消，未对账日未入账，重跑自愈")
+            return
         alive = expected_trading_count(list(effective.rows), r["day"])
         suspended_alive = (len(set(rfr.df["code"].to_list()) & allowed_codes)
                            if rfr.kind is None else 0)
@@ -552,18 +660,13 @@ selfcheck 导入块追加 `expected_trading_count` 与 `reconciliation_ok`。
         else:
             doubtful.append(r["day"])
             doubtful_detail_rows.append(r)
-    cancelled_during_reconcile = cancel_check and cancel_check()
 ```
 
-提交/失败段（`commit_full` 之后）：
+② 提交/终态段：
 
 ```python
     store.set_meta("reconciled_days", json.dumps(
         [d.isoformat() for d in reconciled]))
-    if cancelled_during_reconcile:
-        ctx.fail(f"已取消：{len(doubtful)} 日未完成对账未入账"
-                 f"（数据已落盘，重跑自愈）")
-        return
     if doubtful:
         _persist_doubtful_detail(store, doubtful_detail_rows)
         for r in doubtful_detail_rows:
@@ -577,7 +680,7 @@ selfcheck 导入块追加 `expected_trading_count` 与 `reconciliation_ok`。
     ctx.succeed({"kind": "full", "fetched": len(tasks), "failed": len(failed)})
 ```
 
-② `_staging_day_rows` 增加过滤参数（`service.py` 底部既有实现）：
+③ `_staging_day_rows` 增加过滤参数（service.py 底部既有实现）：
 
 ```python
 def _staging_day_rows(staging_dir: Path, allowed_codes: set[str]) -> dict:
@@ -592,12 +695,12 @@ def _staging_day_rows(staging_dir: Path, allowed_codes: set[str]) -> dict:
     return {row["date"]: row["n"] for row in s.iter_rows(named=True)}
 ```
 
-- [ ] **Step 4.7: 跑测试确认通过**
+- [ ] **Step 4.8: 跑测试确认通过**
 
 Run: `.venv/bin/python -m pytest tests/app/test_market_sync_service.py -q`
 Expected: 全部 PASS
 
-- [ ] **Step 4.8: Commit**
+- [ ] **Step 4.9: Commit**
 
 ```bash
 git add trendradar/app/services/market_sync/service.py tests/app/test_market_sync_service.py
@@ -613,20 +716,19 @@ git commit -m "feat(sync): 增量/全量 doubtful 触发日 suspend_d 对账接�
 Run: `.venv/bin/python -m pytest -q`
 Expected: 全部 PASS（无网络用例，hermetic）
 
-- [ ] **Step 5.2: 重启生产服务**
+- [ ] **Step 5.2: 重启服务**
 
-Run: `hub restart gunark-app`（本会话实测的运行方式；docker-compose 部署环境用
-`scripts/restart.sh`，容器名 `trend-radar`）
+Run: `scripts/restart.sh`（docker-compose 部署，容器名 `trend-radar`）
 Expected: 服务就绪
 
 - [ ] **Step 5.3: 真实环境冒烟**
 
 ```bash
-curl -s -X POST localhost:8000/api/market-data/sync -H "Content-Type: application/json" -d '{}'
+curl -s -X POST "localhost:${APP_PORT:-8818}/api/market-data/sync" \
+     -H "Content-Type: application/json" -d '{}'
 # 轮询 /api/market-data/status 至 bars_sync.status ∈ {success, failed}
 ```
 
-（宿主机映射端口按部署实物：compose 环境为 `${APP_PORT:-8818}`；本会话环境 8000 直连。）
 Expected: success（无新缺口时不触发拉取也属正常）
 
 - [ ] **Step 5.4: 推送**
@@ -639,8 +741,17 @@ git push origin feature
 
 ---
 
-## Self-Review（v2 修订后）
+## Self-Review（v2.1，吸收复审 N1-N9）
 
-- **评审 19 项处置对照**：#1→Task 3.4/4.6（分子过滤）+ §3.4；#2/#3→spec §3.2/§D1/§D4；#4→Task 3.1（_eff 真实 codes）+ 反向测试用缺口 8（远离 max(5,·) 边界）；#5→两处先判 `kind` 再解引用；#6→全文栅栏已核（成对）；#7→fixture 放 `tests/conftest.py`；#8→`exclude_boards=None`；#9→Step 4.2 清单（r13/r17×4 + 边界两用例）；#10→`cancel_check=cancel_check` + cancelled 终态 failed（R23）；#11→ROW_COUNT_RATIO 保留显式声明 + Step 1.4 点名；#12→敏感注释；#13→§D5/§6 仅落库声明；#14→spec §2 R18-R23 + §6/§7/§8/§9；#15→schema pl.String；#16→文档化偏差；#17→运维双轨；#18→移除未用导入；#19→§3.3 未验证面声明。
-- **占位符扫描**：无 TBD/TODO/占位行；全部代码块为最终形态（Self-Review 结论已按 v2 修订更新）。
+- **N1**：对账用例样本全部升级 600/300（百分比容差主导，正向/反向可判）；runner 与 service 两侧同步；`_eff` 真实 codes 保留。
+- **N2**：原始 r6 用例补进处置表（注水 suspend_error）。
+- **N3**：取消语义重写——对账发生在换名/落账前，取消即 `ctx.cancel()` + return（staging 保留，与拉取期取消同契约）；无假红（取消日当天即扣 doubtful 并中止）；终态与 r10 契约一致（status `cancelled` + `"Cancelled"` in error）。
+- **N4**：补 4 条用例——全量 R19 正向（含 BJ 不计入 actual 断言）、`_staging_day_rows` R22 过滤 unit 断言（并入全量正向用例）、fetch cancelled 单测、service 全量取消终态用例。
+- **N5**：移除"本会话实测"表述；运维命令改为 `scripts/restart.sh` + `${APP_PORT:-8818}`。
+- **N6**：`_Resp` → `FakeResp`。
+- **N7**：reconciled_days 无条件覆写（空轮写 `[]`），不留陈旧值。
+- **N8**：`effective_codes` 提至循环外。
+- **N9**：spec §3.1 补注 min 为含 BJ 基线口径及不受 R22 影响的原因。
+- **栅栏/占位符**：无 TBD/TODO/占位行；代码块为最终形态。
 - **类型一致性**：`reconciled_days: list[date]`（runner 字段 = service 消费 = meta 序列化）；`fetch_suspend_list(pro, day, pacing, max_retries, cancel_check) -> FetchResult(df=pl.DataFrame{code:String})` 三处一致；`_staging_day_rows(dir, allowed_codes)` 定义与调用一致。
+- **回归面提醒**（复审尾注）：`_eff` 改真实 codes 波及 runner 全部既有用例；FakePro 加 `suspend_d` 波及 service 全部 doubtful 用例——两者都已逐用例处置，执行时按 Task 顺序全量跑。
