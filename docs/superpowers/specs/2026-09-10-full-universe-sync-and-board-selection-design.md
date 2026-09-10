@@ -90,6 +90,10 @@
 | `execution.py:21` `("4","8")` → 0.30 | 涨跌停 | **改用 `is_bse_code`**（R25） |
 | `execution.py:28` `("688","689")` → 200 股 | 最小买入单位 | 无需改（北交所 100 股 = 默认档） |
 | `fetch.py:EXCLUDE_BOARD_PREFIXES` `{"gem","star"}` | 可选的拉取排除 | 保留（R27；默认关闭） |
+| `service.py:54,513` `BSE_UNAVAILABLE_REASON` + `is_bse_code` 三元 | 显式补齐的 BJ 拒绝理由 | **删除**（BJ 可拉后成死分支；`is_bse_code` 导入同步清理） |
+| `stocklist.py:69,85` docstring | "L∪D − 北交所" 口径描述 | 更新（去北交所剔除字样） |
+| `spec.py:17` `is_bse_code` docstring | "Tushare daily 物理不提供其行情" | 更新（过期假设） |
+| `fetch.py:32` 注释 | "北交所改由 .BJ 后缀识别" | 更新（全市场拉取后无剔除语义） |
 
 ## §4 核心设计
 
@@ -103,7 +107,12 @@
   `if not frames: return StockOutcome(code, True, OK_EMPTY)` 视为**成功**（不写文件、
   不计失败、不进 `sync_skipped`）。
 - **断言①分母**：`expected_trading_count` 随 effective 自然纳入北交所（上市日期起算）。
+  已退市 3 只（833x/832x，2022 退市）也会计入其 2020-2022 存续期的 expected，但拉取
+  返回空 → 该区间每日 expected 虚高 3 只（≈0.07%，4 千只量级），由分段阈值容差吸收；
+  每轮全量对其产生 2 次空返回调用（OK_EMPTY、不写文件、不计失败）。
 - **增量路径**：本就含北交所行——纳入后两路口径统一，"全量剔、增量漏"的矛盾消失。
+- **`service.py` 显式补齐路径**：`BSE_UNAVAILABLE_REASON` 拒绝分支删除后，BJ 代码走
+  常规 `clamped_range` 校验（在册即补齐，不在册仍按 `NOT_IN_LIST_REASON` 拒绝）。
 
 ### D2 涨跌停规则改用单一实现源（R25）
 
@@ -158,6 +167,8 @@ boards + codes 同时  → 交集：白名单中 market ∈ boards 的子集
   基线全量 ≈41 分钟 → 预估 **+2~4 分钟**。
 - 现有 343 个两天窗的北交所文件**无需清理**——重建即覆盖（INV-4 幂等），且增量路径
   本就在持续追加。重建前北交所数据"只有两天"属已知过渡态。
+- **选股侧影响**：宇宙 +348 只（bars 各约 200-650 行）——加载与 warmup 量级 +5-7%，
+  可忽略；若用户用 `boards` 反向收窄（如仅主板），实际负载还会下降。
 
 ### D6 与既有 spec/计划的联动（R28）
 
@@ -166,7 +177,7 @@ boards + codes 同时  → 交集：白名单中 market ∈ boards 的子集
 | market-sync-redesign（2026-08-27） | R16 的".BJ 永不进入拉取清单与 expected"被本 spec 取代——在该 spec 的修订记录或本 spec 内留交叉引用（不改旧文正文，保持其评审溯源） |
 | doubtful v2（2026-09-09） | §1/§3.4 的"BJ 口径污染"叙事在本 spec 实施后由"纳入统一"解决；**R22 的 `effective.codes` 分子过滤保留**为通用防线（防按日帧含清单外码）——实施本 spec 时在 doubtful v2 spec 追加一行注记 |
 | 本 spec 与 doubtful v2 的实施顺序 | **先 v2 后本 spec**：v2 已七轮评审收敛、机制宇宙无关（R22 过滤在含/不含 BJ 两种宇宙下均正确）；本 spec 需自己的评审周期，且其数据回填依赖独立的运维窗口（全量重建） |
-| 测试联动 | `tests/infrastructure/test_stocklist.py::test_effective_list_excludes_bj_and_future_listed` 改写（断言反转：920x 进入 effective、已退市 833x 走钳制/空）；`test_market_sync_service.py` 中 `.BJ`/920099 相关夹具评估 |
+| 测试联动 | 见 §5 R28 行（stocklist 断言反转、backfill 用例语义反转、`test_limit_up_price_bse` 扩展、5 处过期字面量清理） |
 | 前端文案 | 见 D4-2 |
 
 ## §5 测试计划（R → 用例映射）
@@ -174,10 +185,10 @@ boards + codes 同时  → 交集：白名单中 market ∈ boards 的子集
 | 需求 | 用例 |
 |---|---|
 | R24 | `test_effective_list_includes_bse_codes`（920x 在 effective；已退市 833x 经钳制后区间为空 → 不入清单或 OK_EMPTY 路径）；既有 BJ 排除用例改写 |
-| R25 | `test_limit_pct_bse_920x_is_30pct`、`test_limit_pct_gem_star_is_20pct`（回归）、`test_limit_pct_default_is_10pct`（回归） |
+| R25 | 扩展既有 `test_backtest_execution.py::test_limit_up_price_bse`（430001 老号段保留）+ 新增 920x 断言（`limit_up_price(10.0, code="920001") == 13.0`）；创业板/科创板 20% 与默认 10% 既有断言保持绿 |
 | R26 | `test_selection_boards_filter_universe`（boards=北交所 → 宇宙仅 348）；`test_selection_boards_plus_codes_intersection`；`test_selection_invalid_board_400`；`test_selection_default_universe_unchanged`（不传 boards 行为不变） |
 | R27 | 前端文案快照不适用（无前端测试体系）——人工走查；后端 `exclude_boards` 既有用例保持绿 |
-| R28 | 文档交叉引用人工核对；`test_effective_list_excludes_bj_and_future_listed` 改写后全量回归 |
+| R28 | ① `test_stocklist.py::test_effective_list_excludes_bj_and_future_listed` 改写（920099 进 codes；`clamped_range("920099")` 非 None）；② `test_explicit_backfill_rejects_bse_code` 语义反转并更名 `test_explicit_backfill_accepts_bse_code`（BJ 在册 → 可补齐；"不在册"仍拒绝）；③ 过期字面量 5 处清理（stocklist×3、fetch:32、spec:17、service:54 删除）；④ 全量回归 |
 
 ## §6 前端影响
 
