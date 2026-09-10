@@ -79,6 +79,11 @@ effective 清单剔 BJ（`build_effective_list`），但 `daily(trade_date=)` �
 落盘语义不变（BJ bar 照常保留），仅检查口径修正。修复后 2026-09-09 剔 BJ ratio =
 0.9981（健康）。
 
+> **2026-09-10 注记（R22 定性变更）**：全市场拉取 spec（`2026-09-10-full-universe-sync-
+> and-board-selection-design.md`）实施后，北交所已纳入 effective（`build_effective_list`
+> 不再剔 BJ），"BJ 口径污染"消失——本 spec 的 `effective.codes` 分子过滤由口径修复项
+> **降级为纯防御**（防按日帧含清单外码）。
+
 ## §4 核心设计
 
 ### D1 分段阈值（R18，`threshold_for(day)`）

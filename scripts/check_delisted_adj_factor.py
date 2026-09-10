@@ -160,7 +160,7 @@ def main() -> int:
     boards = [b.strip() for b in args.exclude_boards.split(",") if b.strip()]
     effective = build_effective_list(meta, boards, latest)
     print(f"最新可得交易日 {latest}；有效清单 {len(effective.codes)} 只"
-          f"（已剔北交所/排除板块/未来上市/退市早于 {BASELINE_START}）")
+          f"（排除板块/未来上市/退市早于 {BASELINE_START}；北交所随全市场拉取）")
 
     delist_map = dict(zip(effective.codes,
                           (r[1] for r in effective.rows), strict=True))
