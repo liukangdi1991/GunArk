@@ -20,23 +20,24 @@ META = pl.DataFrame({
 LATEST = date(2026, 8, 27)
 
 
-def test_effective_list_excludes_bj_and_future_listed():
+def test_effective_list_includes_bse_codes():
+    """R24：920x 与转板 833x/832x 精选层段均进 effective（不再按 .BJ 剔除）。"""
     eff = build_effective_list(META, exclude_boards=[], latest_tradeable=LATEST)
-    assert "920099" not in eff.codes          # .BJ 永久剔除
-    assert "301999" not in eff.codes          # list_date > latest
-    assert set(eff.codes) == {"000001", "000004", "300001", "688001"}
+    assert "920099" in eff.codes
+    assert "301999" not in eff.codes          # list_date > latest 仍剔
+    assert set(eff.codes) == {"000001", "000004", "920099", "300001", "688001"}
 
 
 def test_effective_list_exclude_boards_gem_star():
     eff = build_effective_list(META, exclude_boards=["gem", "star"], latest_tradeable=LATEST)
-    assert set(eff.codes) == {"000001", "000004"}
+    assert set(eff.codes) == {"000001", "000004", "920099"}   # exclude_boards 无 bse 键，920099 回归
 
 
 def test_effective_clamped_range():
     eff = build_effective_list(META, exclude_boards=[], latest_tradeable=LATEST)
     assert eff.clamped_range("000001") == (date(2015, 1, 1), LATEST)      # BASELINE 钳制
     assert eff.clamped_range("000004") == (date(2015, 1, 1), date(2026, 7, 13))  # 退市钳制
-    assert eff.clamped_range("920099") is None
+    assert eff.clamped_range("920099") == (date(2020, 7, 27), LATEST)     # list_date 钳制
 
 
 def test_normalize_meta_parses_dates_and_empty_delist():

@@ -66,7 +66,7 @@ def sync_stock_list(bars_dir: Path) -> pl.DataFrame:
 
 @dataclass(frozen=True)
 class EffectiveList:
-    """有效清单 = L∪D − 北交所 − exclude_boards（与拉取侧同一过滤，§3.8 断言①分母）。"""
+    """有效清单 = L∪D − exclude_boards（与拉取侧同一过滤，§3.8 断言①分母）。"""
 
     codes: tuple[str, ...]
     rows: tuple[tuple[date, date | None], ...]  # (list_date, delist_date)
@@ -82,7 +82,7 @@ def build_effective_list(
     latest_tradeable: date,
     baseline_start: date = BASELINE_START,
 ) -> EffectiveList:
-    """spec §3.6 待拉清单 ①-④：剔未来上市 / 剔北交所 / 剔排除板块 / 区间钳制。"""
+    """spec §3.6 待拉清单 ①-④：剔未来上市 / 剔排除板块 / 区间钳制（北交所随全市场拉取）。"""
     if meta.is_empty() or latest_tradeable is None:
         return EffectiveList((), (), {})
 
@@ -94,9 +94,6 @@ def build_effective_list(
     clamped: dict[str, tuple[date, date]] = {}
 
     for row in meta.iter_rows(named=True):
-        ts_code = str(row.get("ts_code") or "")
-        if ts_code.endswith(".BJ"):
-            continue  # Tushare daily 物理不提供北交所行情
         code = str(row["code"])
         if prefixes and code.startswith(prefixes):
             continue
