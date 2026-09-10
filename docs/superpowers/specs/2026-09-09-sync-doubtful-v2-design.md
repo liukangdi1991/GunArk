@@ -2,7 +2,8 @@
 
 > 版本：v2.3（2026-09-09）。v1 → v2：吸收三视角评审 19 项发现；v2 → v2.1：吸收复审
 > N1-N9；v2.1 → v2.2：吸收复审三 P1-P10（§7 用例名对齐、R22 拆 unit）；v2.2 → v2.3：
-> 吸收复审五 R1-R4（§7 R19 全量样本描述、R23 补 runner 取消用例）（测试样本量纲、取消终态契约、审计无条件写等）。前置：2cce2037。
+> 吸收复审五 R1-R4（§7 R19 全量样本描述、R23 补 runner 取消用例）；v2.3 → 本轮终验
+> S1-S4（§7 R22 行撤回已删承诺、版本注记对齐）。前置：2cce2037。
 
 ## §1 背景与问题
 
@@ -159,7 +160,7 @@ abs 容差吞掉、正向用例假绿），实施计划用例规格按 600/300 �
 |---|---|
 | R18 | `test_threshold_for_bands`、`test_doubtful_detail_uses_band_thresholds`（selfcheck） |
 | R19（增量） | `test_run_incremental_doubtful_reconciles_via_suspend_list`（600/300 样本，runner） |
-| R19（增量反向） | `test_run_incremental_doubtful_when_suspend_list_empty`（缺口 8 > 容差 6 → doubtful） |
+| R19（增量反向） | `test_run_incremental_doubtful_when_suspend_list_empty`（600/300 样本，缺口 300 > 容差 12 → doubtful） |
 | R19（增量 service） | `test_r6_incremental_suspension_reconciles_and_books`（600 只样本） |
 | R19（全量） | `test_full_doubtful_reconciles_via_suspend_list`（600 只样本，触发日 500/600） |
 | R20 | `test_run_incremental_doubtful_when_suspend_list_empty`（增量反向）、`test_r6_reverse_insufficient_reconcile_stays_doubtful`（service 反向）、`test_r6c_reconcile_unavailable_falls_back_doubtful`、`test_fetch_suspend_list_rate_limit_retries_then_env` |
