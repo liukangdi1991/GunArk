@@ -1,7 +1,8 @@
 # 同步自检 doubtful v2 设计：分段阈值 + suspend_d 精确对账
 
-> 版本：v2.1（2026-09-09）。v1 → v2：吸收三视角评审 19 项发现；v2 → v2.1：吸收复审
-> N1-N9（测试样本量纲、取消终态契约、审计无条件写等）。前置：2cce2037。
+> 版本：v2.3（2026-09-09）。v1 → v2：吸收三视角评审 19 项发现；v2 → v2.1：吸收复审
+> N1-N9；v2.1 → v2.2：吸收复审三 P1-P10（§7 用例名对齐、R22 拆 unit）；v2.2 → v2.3：
+> 吸收复审五 R1-R4（§7 R19 全量样本描述、R23 补 runner 取消用例）（测试样本量纲、取消终态契约、审计无条件写等）。前置：2cce2037。
 
 ## §1 背景与问题
 
@@ -163,7 +164,7 @@ abs 容差吞掉、正向用例假绿），实施计划用例规格按 600/300 �
 | R19（全量） | `test_full_doubtful_reconciles_via_suspend_list`（600 只样本，触发日 500/600） |
 | R20 | `test_run_incremental_doubtful_when_suspend_list_empty`（增量反向）、`test_r6_reverse_insufficient_reconcile_stays_doubtful`（service 反向）、`test_r6c_reconcile_unavailable_falls_back_doubtful`、`test_fetch_suspend_list_rate_limit_retries_then_env` |
 | R21 | reconciled/doubtful meta 断言（并入 R19/R20 用例）+ 无对账轮覆写空清单断言 |
-| R22 | `test_staging_day_rows_excludes_codes_outside_allowed`（unit）+ `test_full_doubtful_reconciles_via_suspend_list`（含 BJ 码样本，断言其不计入 actual） |
+| R22 | `test_staging_day_rows_excludes_codes_outside_allowed`（unit）——全量路径 R22 的真实风险面是续传残留的清单外文件，由 unit 测试直接覆盖；端到端用例不再断言 BJ（BJ 经 `build_effective_list` 剔除后不会进入 tasks） |
 | R23 | `test_fetch_suspend_list_cancelled_immediately`（fetch 单测）、`test_run_incremental_cancelled_during_reconcile_aborts_batch`（runner：整批中止）、`test_full_cancelled_during_reconcile_keeps_staging`（service：终态 cancelled + staging 保留） |
 
 既有用例回归要点：`test_runner.py` 全部（`_eff` 改真实 codes + 样本 600 后）、

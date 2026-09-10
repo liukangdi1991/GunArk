@@ -383,12 +383,14 @@ def test_run_incremental_cancelled_during_reconcile_aborts_batch():
     assert result.doubtful_days == []            # 中止路径不落 doubtful（重跑自愈）
 ```
 
-（两用例都显式传 `exclude_boards=None`——真实签名的必填位置参数，漏传即 TypeError。）
+（三用例都显式传 `exclude_boards=None`——真实签名的必填位置参数，漏传即 TypeError。）
 
 - [ ] **Step 3.3: 跑测试确认失败**
 
-Run: `.venv/bin/python -m pytest tests/infrastructure/test_runner.py -q -k reconciles`
-Expected: FAIL（`IncrementalResult` 无 `reconciled_days`）
+Run: `.venv/bin/python -m pytest tests/infrastructure/test_runner.py -q -k "reconcil or suspend_list_empty"`
+Expected: 三条全 FAIL（`IncrementalResult` 无 `reconciled_days`：正向对账用例与反向用例红在
+`result.reconciled_days` 缺失；取消用例红在旧代码无对账直接落 doubtful →
+`assert result.doubtful_days == []` 不成立）
 
 - [ ] **Step 3.4: 实现**
 
@@ -842,10 +844,11 @@ git push origin feature
 - **P8**：`test_incremental_doubtful_detail_recorded` 统一为"小样本 + suspend_error"（验证明细格式，非对账判定），删除 BIG 指令冲突。
 - **P9**：正向用例注释容差数字修正为 6。
 - **P10**：suspend 注水统一带 `.SZ` 后缀。
-- **R1**：全量正向用例补 `meta_codes = list(BIG)`（复审 R1：Q3 删 BJ 时连带误删，effective 退回 3 只致自检②失败）；装置说明补"meta_codes 与 code_days 必须同时设置"。
+- **R1**：全量正向用例补 `meta_codes = list(BIG)`（复审 R1：Q3 删 BJ 时连带误删，effective 退回 3 只致自检②失败）；全量用例的 meta_codes 行内注释补"漏设则 effective 退回默认 3 只"因果警示（紧贴易错点）。
 - **R2**：恢复 `test_full_cancelled_during_reconcile_keeps_staging`（v2.2 修订时被连带误删，四处悬空引用）；补增量侧对称用例 `test_run_incremental_cancelled_during_reconcile_aborts_batch`（result.cancelled → 整批中止）。
 - **R3**：spec §7 三行漂移同步（R19 全量样本描述、R22 收敛为 unit、R23 补 runner 取消用例）。
 - **R4**：本节标题与内容随本轮更新；删除 orange×3 误输入。
-- **机械化名称核查**：本文档引用的全部既有 test_* 用例名已逐个 grep 仓库确认存在（r6/r13/r14/r17×5/r21/r7×2/full×5/incremental detail×2）；新增用例名已标注新增。后续自查固定执行此步。
+- **机械化名称核查**：本文档引用的全部既有 test_* 用例名已逐个 grep 仓库确认存在（r6/r13/r14/r17×5/r21/r7×2/full×5/incremental detail×2）；新增用例名已标注新增。后续自查固定执行此步。补充：spec §7 每行括号内的场景描述，须与 plan 中对应用例的
+docstring 逐条比对（名字对、描述错的情况本机制查不出——复审六 S1 教训）。
 - **类型一致性**：`reconciled_days: list[date]` 三处一致；`fetch_suspend_list` 签名一致；`_staging_day_rows(dir, allowed_codes)` 定义与调用一致；FakePro.suspend_d 返回 ts_code（.SZ 后缀）与 fetch_suspend_list 的 [:6] 切片匹配。
 - **回归面**（复审尾注）：`_eff` 真实 codes 波及 runner 全部用例（Step 3.1 已论证兼容）；FakePro.suspend_d 波及 service 全部 doubtful 用例（Step 4.2 表已逐用例注水/透传）。
