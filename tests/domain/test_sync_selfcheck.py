@@ -107,3 +107,35 @@ def test_ledger_subset_ok():
 
 def test_ratio_constant():
     assert ROW_COUNT_RATIO == 0.75
+
+
+def test_threshold_for_bands():
+    from trendradar.domain.market.sync.selfcheck import threshold_for
+    assert threshold_for(date(2015, 7, 8)) == 0.75
+    assert threshold_for(date(2016, 12, 30)) == 0.75
+    assert threshold_for(date(2017, 6, 1)) == 0.85
+    assert threshold_for(date(2018, 12, 31)) == 0.85
+    assert threshold_for(date(2019, 1, 1)) == 0.95
+    assert threshold_for(date(2026, 9, 9)) == 0.95
+
+
+def test_doubtful_detail_uses_band_thresholds():
+    eff = [(date(2010, 1, 1), None)] * 100
+    # 2019 日 0.90：旧全局 0.75 通过、新分段 0.95 触发（R18）
+    detail = doubtful_detail({date(2019, 6, 1): 90}, eff)
+    assert [r["day"] for r in detail] == [date(2019, 6, 1)]
+    # 2015 日 0.80：0.75 带内通过
+    assert doubtful_detail({date(2015, 6, 1): 80}, eff) == []
+
+
+def test_reconciliation_ok():
+    from trendradar.domain.market.sync.selfcheck import reconciliation_ok
+    # 真实案例：2015-07-08 应市 2781、停牌 1348、盘上 1446（+13 ≈ 0.9%）→ 通过（R19）
+    assert reconciliation_ok(1446, expected_alive=2781, suspended=1348)
+    # 多出方向无害（单边容差，只罚缺不罚多）
+    assert reconciliation_ok(1500, expected_alive=2781, suspended=1348)
+    # 缺口超容差：1400 < 1433 − max(5, 28.66)
+    assert not reconciliation_ok(1400, expected_alive=2781, suspended=1348)
+    # 小日子绝对容差 5：alive=100、停牌 1 → 应成交 99、容差 5
+    assert reconciliation_ok(96, expected_alive=100, suspended=1)
+    assert not reconciliation_ok(93, expected_alive=100, suspended=1)
