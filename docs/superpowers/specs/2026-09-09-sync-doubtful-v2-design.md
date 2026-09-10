@@ -161,10 +161,11 @@ abs 容差吞掉、正向用例假绿），实施计划用例规格按 600/300 �
 | R18 | `test_threshold_for_bands`、`test_doubtful_detail_uses_band_thresholds`（selfcheck） |
 | R19（增量） | `test_run_incremental_doubtful_reconciles_via_suspend_list`（600/300 样本，runner） |
 | R19（增量反向） | `test_run_incremental_doubtful_when_suspend_list_empty`（600/300 样本，缺口 300 > 容差 12 → doubtful） |
+| R19（对账判定纯函数） | `test_reconciliation_ok`（selfcheck 单测，含 2015-07-08 真实案例断言） |
 | R19（增量 service） | `test_r6_incremental_suspension_reconciles_and_books`（600 只样本） |
 | R19（全量） | `test_full_doubtful_reconciles_via_suspend_list`（600 只样本，触发日 500/600） |
 | R20 | `test_run_incremental_doubtful_when_suspend_list_empty`（增量反向）、`test_r6_reverse_insufficient_reconcile_stays_doubtful`（service 反向）、`test_r6c_reconcile_unavailable_falls_back_doubtful`、`test_fetch_suspend_list_rate_limit_retries_then_env` |
-| R21 | reconciled/doubtful meta 断言（并入 R19/R20 用例）+ `test_r21_reconciled_meta_overwritten_empty`（无对账轮覆写空清单） |
+| R21 | reconciled/doubtful meta 断言（并入 R19/R20 用例）+ `test_r21_reconciled_meta_overwritten_empty`（无对账轮覆写空清单，增量侧）；全量侧由 `test_full_doubtful_reconciles_via_suspend_list` 的 reconciled meta 断言覆盖 |
 | R22 | `test_staging_day_rows_excludes_codes_outside_allowed`（unit）——全量路径 R22 的真实风险面是续传残留的清单外文件，由 unit 测试直接覆盖；端到端用例不再断言 BJ（BJ 经 `build_effective_list` 剔除后不会进入 tasks） |
 | R23 | `test_fetch_suspend_list_cancelled_immediately`（fetch 单测）、`test_run_incremental_cancelled_during_reconcile_aborts_batch`（runner：整批中止）、`test_full_cancelled_during_reconcile_keeps_staging`（service：终态 cancelled + staging 保留） |
 

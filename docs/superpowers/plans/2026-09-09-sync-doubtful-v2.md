@@ -515,12 +515,14 @@ git commit -m "feat(sync): 增量 doubtful 触发日 suspend_d 对账自动入�
 | `test_incremental_doubtful_detail_recorded`（追加用例，d27 2/3） | 期望 doubtful | `patching_sleep` | 同上注水（保持小样本：本用例验证明细落库格式，非对账判定） |
 | **阈值敏感**：`test_r7_resume_round_breaker_uses_full_batch_denominator` / `test_r7_success_clears_skip_and_unblocks_commit`（HEALTHY_CODES 21 只、出列后 20/21 = 0.952，距 0.95 线仅 0.0024） | 期望**不**触发 | 不需要 | 不改样本数，在 docstring 加注释"比值 0.952 距 2026 段阈值 0.95 仅 0.0024，改动行数统计口径须回归本用例" |
 
-**完成后先跑一次既有套件，再进 Step 4.3**（复审七实施建议，分离两类红灯）：
+**完成后先跑一次既有套件，再进 Step 4.3**（复审七实施建议，分离两类红灯）。
+注意：`test_r14` 已链 Step 4.3 才定义的 `test_r6c_...`，此轮须排除——
 
-Run: `.venv/bin/python -m pytest tests/app/test_market_sync_service.py -q`
+Run: `.venv/bin/python -m pytest tests/app/test_market_sync_service.py -q -k "not r14"`
 Expected: 既有用例全绿——此时 service/runner 尚未接线，注水 `suspend_error` 无效果，
 套件行为应与改动前完全一致。若此处出现红灯，即为"夹具适配引入的回归"（与本次需求无关），
 须先排查；确认全绿后再进 Step 4.3 的新增用例，此后红灯才是新逻辑的预期红灯。
+（复审八 U2：原文未排除 r14，门禁必然假红——实施时以 `-k "not r14"` 执行过，本文档补记。）
 
 - [ ] **Step 4.3: 新增/改写用例（R19 正向/反向 + R20 回退，600 只样本越过量纲临界）**
 
@@ -605,6 +607,7 @@ def test_r21_reconciled_meta_overwritten_empty(runtime, job_store, sync_store, f
     sync_store.insert_calendar_days(CAL)
     sync_store.add_done_days(DONE)
     sync_store.set_meta("reconciled_days", '["2020-01-01"]')   # 预置陈旧值
+    d26, d27 = date(2026, 8, 26), date(2026, 8, 27)
     fake_pro.day_codes = {d26: CODES, d27: CODES}              # 全满 → 无对账
 
     ctx = run_worker(fake_pro, {}, job_store)
@@ -849,7 +852,7 @@ git push origin feature
 
 ---
 
-## Self-Review（v2.3.1，吸收复审四 Q1-Q6 + 复审五 R1-R4 + 复审六 S1-S4 + 复审七 T1-T4）
+## Self-Review（v2.3.2，吸收复审四 Q1-Q6 + 复审五 R1-R4 + 复审六 S1-S4 + 复审七 T1-T4 + 复审八 U1-U6）
 
 - **P1**：patching_sleep 声明进**所有注水 suspend_error 的用例**（原始 r6 / r13 / r17 doubtful-survives ×4 / test_full_doubtful_detail_recorded / test_incremental_doubtful_detail_recorded / test_r6c_...，及链式调用它们的 test_r14、test_full_rebuild_exempts_...）；成功路径与 monkeypatch 用例不需要。fixture 确认放 tests 根 conftest。
 - **P2**：全量正向用例触发条件修正——从 code_days 剔除当日 bar（suspend_codes 不影响 actual），500/600 = 0.833 < 0.95 真触发。
@@ -870,6 +873,12 @@ git push origin feature
 - **S3**：Step 3.3 的 `-k` 扩为三用例、Expected 按用例分因（取消用例红灯根因与另两条不同）。
 - **S4**：L386「两用例」→「三用例」；R1 条目表述改为与 meta_codes 行内注释的实际位置一致。
 - **T1/T2/T3/T4**（复审七）：Step 4.4/4.1 标题的 BJ 残留已在 483c8d18 清理；本节随轮更新（T3）；比对机制扩为三层（T4，见下条）。实施建议已采纳：Task 4 改为先做 4.1+4.2 并跑既有套件确认全绿，再做 4.3+。
+- **U1**（复审八，DeepSeek 代班）：plan 的 R21 用例代码缺 `d26/d27` 定义（NameError）——实施时已在测试文件修复，plan 代码块本轮同步补齐。
+- **U2**：Step 4.2 门禁与 test_r14 链 r6c 的矛盾——实施时以 `-k "not r14"` 绕过，plan 门禁本轮补记排除说明。
+- **U4**：spec §7 补 `test_reconciliation_ok` 映射（R19 对账判定纯函数）。
+- **U5**：R21 覆写语义的增量/全量两侧覆盖说明补入 spec §7。
+- **U6**：门禁验收并入 Step 4.2 文内（无独立 checkbox，语义已完整）。
+- **U3 说明**：`gunark-app` 是本运行时进程管理器（omp hub）登记的服务名，复审环境不可见属正常；生产重启/冒烟均经其实例执行。
 - **机械化名称核查**：本文档引用的全部既有 test_* 用例名已逐个 grep 仓库确认存在（r6/r13/r14/r17×5/r21/r7×2/full×5/incremental detail×2）；新增用例名已标注新增。后续自查固定执行此步。补充（复审六 S1 教训 + 复审七 T4 扩层）：**三层比对**——
 ① spec §7 括号内场景描述 ↔ plan 对应用例 docstring；
 ② plan 各 Step 标题点名的能力 ↔ 该 Step 下代码块的实际断言（标题承诺的每一项都能找到对应断言，反之无恒真/零覆盖断言）；
