@@ -64,9 +64,12 @@ class FakePro:
         self.raise_daily = None    # daily(trade_date=) 抛错
         self.raise_daily_codes = set()                        # 按股注水（范围模式）
         self.raise_daily_exc = RuntimeError("频率超限")
+        self.raise_daily_delay = 0.0   # 秒：失败前延迟（供顺序敏感用例使用）
         self.daily_calls = 0
         self.adj_empty = False      # adj_factor 接口通但返回空
         self.adj_empty_codes = set()   # 只让这些股的 adj_factor 返回空
+        self.suspend_codes = {}    # date -> 当日停牌代码列表（夹具自动补 .SZ 后缀）
+        self.suspend_error = None  # 注水 suspend_d 异常（对账不可用）
 
     def trade_cal(self, exchange=None, start_date=None, end_date=None):
         if self.raise_cal:
@@ -78,6 +81,13 @@ class FakePro:
             return FakeResp({})
         return _resp_meta(self.meta_codes)
 
+    def suspend_d(self, trade_date=None):
+        d = date.fromisoformat(
+            f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}")
+        if self.suspend_error:
+            raise Exception(self.suspend_error)
+        return FakeResp({"ts_code": [f"{c}.SZ" for c in self.suspend_codes.get(d, [])]})
+
     def daily(self, ts_code=None, trade_date=None, start_date=None, end_date=None, freq=None):
         self.daily_calls += 1
         if trade_date:
@@ -88,6 +98,9 @@ class FakePro:
             return _resp_day(day, codes) if codes else FakeResp({})
         code = ts_code.split(".")[0]
         if code in self.raise_daily_codes:
+            if self.raise_daily_delay:
+                import time as _time
+                _time.sleep(self.raise_daily_delay)
             raise self.raise_daily_exc
         lo = datetime.strptime(start_date, "%Y%m%d").date()
         hi = datetime.strptime(end_date, "%Y%m%d").date()
@@ -225,6 +238,23 @@ def fake_pro(monkeypatch):
     return pro
 
 
+class _NoWaitBucket:
+    """不限流令牌桶：service 测试直连 FakePro（无网络节流需求）。
+
+    TokenBucket 自身有专门单测（tests/infrastructure/test_rate_limit.py）；
+    生产默认 270/min，600 只全量用例会被真实排队 ~207s（实测）。
+    """
+
+    def acquire(self, timeout: float = 60.0, cancel_check=None) -> bool:
+        return True
+
+
+@pytest.fixture
+def fast_bucket(monkeypatch):
+    from trendradar.app.services.market_sync import service as service_module
+    monkeypatch.setattr(service_module, "TokenBucket", _NoWaitBucket)
+
+
 def run_worker(fake_pro, request, job_store, cancel_after=None):
     # 生产里 worker 起跑前 jobs 行已存在（executor 建）→ 测试同样如此，
     # 否则 worker 无从得知自己的终态
@@ -318,11 +348,13 @@ def test_execution_rows_record_failure(runtime, job_store, sync_store, fake_pro)
 # ---- R6 / R14：增量 doubtful 与自愈 ----
 
 def test_r6_incremental_doubtful_day_written_not_booked(runtime, job_store,
-                                                        sync_store, fake_pro):
+                                                        sync_store, fake_pro,
+                                                        patching_sleep):
     sync_store.insert_calendar_days(CAL)
     sync_store.add_done_days(DONE)
     d26, d27 = date(2026, 8, 26), date(2026, 8, 27)
     fake_pro.day_codes = {d26: CODES, d27: CODES[:2]}  # 27 日只有 2/3 → 0.667 < 0.75
+    fake_pro.suspend_error = "频率超限"                 # 对账不可用 → 回退 doubtful（复审 N2）
     ctx = run_worker(fake_pro, {}, job_store)
     assert ctx.status == "failed"
     assert "doubtful" in ctx.error
@@ -335,10 +367,13 @@ def test_r6_incremental_doubtful_day_written_not_booked(runtime, job_store,
     assert set(df["date"].to_list()) == {d26, d27}              # doubtful 日数据照常写盘
 
 
-def test_r14_doubtful_self_heals_next_round(runtime, job_store, sync_store, fake_pro):
-    test_r6_incremental_doubtful_day_written_not_booked(runtime, job_store, sync_store, fake_pro)
+def test_r14_doubtful_self_heals_next_round(runtime, job_store, sync_store, fake_pro,
+                                            patching_sleep):
+    test_r6c_reconcile_unavailable_falls_back_doubtful(
+        runtime, job_store, sync_store, fake_pro, patching_sleep)
     d27 = date(2026, 8, 27)
-    fake_pro.day_codes = {d27: CODES}                           # 重拉回升
+    fake_pro.suspend_error = None
+    fake_pro.day_codes = {d27: BIG}                             # 重拉回升 → 比值通过
     ctx = run_worker(fake_pro, {}, job_store)
     assert ctx.status == "success"
     assert d27 in sync_store.done_days()
@@ -424,6 +459,9 @@ def test_r7_full_env_breaker_records_nothing(runtime, job_store, sync_store, fak
     sync_store.insert_calendar_days(CAL)
     fake_pro.code_days = {"000001": CAL[:4]}                    # 1/3 成功 → 66% > 5%
     fake_pro.raise_daily_codes = {"000002", "600000"}           # 其余股限流（立即返回）
+    # 失败前延迟：熔断会取消未启动的 task，"000001 已写盘"与线程调度存在竞态；
+    # 延迟失败使成功路径必然先行（复现过一次全量跑 flake，加确定性保障）
+    fake_pro.raise_daily_delay = 0.1
     ctx = run_worker(fake_pro, {"force": True}, job_store)
     assert ctx.status == "failed"
     assert "熔断" in ctx.error
@@ -518,6 +556,9 @@ def test_r7_resume_round_breaker_uses_full_batch_denominator(
     staging 保留 20 只成功文件。第 2 轮续传只拉 000002：若分母收缩成 len(tasks)=1，
     1/1=100%>5% → 整批熔断 → 不计次 → attempts 永远停在 1，出列门槛（≥3）不可达，
     同步链路死锁。修复后分母 = 待拉 + 已暂存 = 21，照常计次直至出列。
+
+    【阈值敏感】出列后当日 20/21 = 0.952 距 2026 段阈值 0.95 仅 0.0024——
+    改动行数统计口径（R22 分子过滤/分段阈值）须回归本用例。
     """
     _seed_healthy_full(fake_pro, sync_store, "000002")
 
@@ -667,12 +708,14 @@ def test_auto_backfill_skips_unfetchable_without_failing(runtime, job_store, syn
 
 # ---- R13：全量批单日语义 ----
 
-def test_r13_full_doubtful_day_swapped_but_not_booked(runtime, job_store, sync_store, fake_pro):
+def test_r13_full_doubtful_day_swapped_but_not_booked(runtime, job_store, sync_store,
+                                                      fake_pro, patching_sleep):
     sync_store.insert_calendar_days(CAL)
-    # 26 日只有 2/3 只 → 0.667 < 0.75 → doubtful；其余日齐全
+    # 26 日只有 2/3 只 → 0.667 < 0.95 → doubtful；其余日齐全
     for c in CODES:
         fake_pro.code_days[c] = CAL[:4]
     fake_pro.code_days["600000"] = [d for d in CAL[:4] if d != date(2026, 8, 26)]
+    fake_pro.suspend_error = "频率超限"                 # 对账不可用 → 回退 doubtful
     ctx = run_worker(fake_pro, {"force": True}, job_store)
     assert ctx.status == "failed"
     assert "doubtful" in ctx.error
@@ -708,7 +751,8 @@ def test_r17_commit_failure_after_swap(runtime, job_store, sync_store, fake_pro,
 
 
 def test_r17_full_doubtful_survives_commit_failure(runtime, job_store, sync_store,
-                                                   fake_pro, monkeypatch):
+                                                   fake_pro, monkeypatch,
+                                                   patching_sleep):
     """doubtful 与 done_days 同在 commit_full 一个事务里，回滚不该把它一起吞掉：
     换名后它已在盘上，「确认入账」入口应当轮就可用，而不是等下一轮重算。"""
     sync_store.insert_calendar_days(CAL)
@@ -716,6 +760,7 @@ def test_r17_full_doubtful_survives_commit_failure(runtime, job_store, sync_stor
         fake_pro.code_days[c] = CAL[:4]
     # 26 日只有 2/3 只 → 0.667 < 0.75 → doubtful
     fake_pro.code_days["600000"] = [d for d in CAL[:4] if d != date(2026, 8, 26)]
+    fake_pro.suspend_error = "频率超限"                 # 对账不可用 → 回退 doubtful
 
     def boom(*args, **kwargs):
         raise RuntimeError("txn boom")
@@ -729,7 +774,7 @@ def test_r17_full_doubtful_survives_commit_failure(runtime, job_store, sync_stor
 
 
 def test_r17_full_self_healed_doubtful_survives_commit_failure(
-        runtime, job_store, sync_store, fake_pro, monkeypatch):
+        runtime, job_store, sync_store, fake_pro, monkeypatch, patching_sleep):
     """P1#4 全量路径同构：commit_full 回滚时，本轮已健康、正转入 booked 的旧
     doubtful 日不得被预写从 doubtful 抹掉（否则既不在 done 也不在 doubtful）。
 
@@ -742,6 +787,7 @@ def test_r17_full_self_healed_doubtful_survives_commit_failure(
     sync_store.insert_calendar_days(CAL)
     sync_store.add_done_days(DONE)
     fake_pro.day_codes = {d26: CODES[:2], d27: CODES[:2]}       # 第 1 轮增量：两日 doubtful
+    fake_pro.suspend_error = "频率超限"                          # 对账不可用 → 回退 doubtful
     run_worker(fake_pro, {}, job_store)
     assert sync_store.doubtful_days() == [d26, d27]
 
@@ -761,12 +807,14 @@ def test_r17_full_self_healed_doubtful_survives_commit_failure(
 
 
 def test_r17_incremental_doubtful_survives_commit_failure(runtime, job_store, sync_store,
-                                                          fake_pro, monkeypatch):
+                                                          fake_pro, monkeypatch,
+                                                          patching_sleep):
     """增量批同一机制：commit_incremental 也把 doubtful 与 done_days 写在一个事务里。"""
     sync_store.insert_calendar_days(CAL)
     sync_store.add_done_days(DONE)
     d26, d27 = date(2026, 8, 26), date(2026, 8, 27)
-    fake_pro.day_codes = {d26: CODES, d27: CODES[:2]}           # 27 日 0.667 < 0.75
+    fake_pro.day_codes = {d26: CODES, d27: CODES[:2]}           # 27 日 0.667 < 0.95
+    fake_pro.suspend_error = "频率超限"                          # 对账不可用 → 回退 doubtful
 
     def boom(*args, **kwargs):
         raise RuntimeError("txn boom")
@@ -780,7 +828,7 @@ def test_r17_incremental_doubtful_survives_commit_failure(runtime, job_store, sy
 
 
 def test_r17_incremental_self_healed_doubtful_survives_commit_failure(
-        runtime, job_store, sync_store, fake_pro, monkeypatch):
+        runtime, job_store, sync_store, fake_pro, monkeypatch, patching_sleep):
     """P1#4：自愈中的旧 doubtful 日不得在事务回滚时凭空消失。
 
     第 1 轮 d26/d27 双双 doubtful。第 2 轮 d27 回补满（claimed，本应转入 done）、
@@ -793,7 +841,8 @@ def test_r17_incremental_self_healed_doubtful_survives_commit_failure(
     d26, d27 = date(2026, 8, 26), date(2026, 8, 27)
     sync_store.insert_calendar_days(CAL)
     sync_store.add_done_days(DONE)
-    fake_pro.day_codes = {d26: CODES[:2], d27: CODES[:2]}       # 两日都 0.667 < 0.75
+    fake_pro.day_codes = {d26: CODES[:2], d27: CODES[:2]}       # 两日都 0.667 < 0.95
+    fake_pro.suspend_error = "频率超限"                          # 对账不可用 → 回退 doubtful
     run_worker(fake_pro, {}, job_store)                          # 第 1 轮：d26/d27 入 doubtful
     assert sync_store.doubtful_days() == [d26, d27]
     assert sync_store.done_days() == set(DONE)
@@ -868,13 +917,15 @@ def test_r21_full_readback_missing_day_discards(runtime, job_store, sync_store,
 
 # ---- 2026-09-09 审查修订：doubtful 明细落账 + 已入账日全量豁免 ----
 
-def test_full_doubtful_detail_recorded(runtime, job_store, sync_store, fake_pro):
+def test_full_doubtful_detail_recorded(runtime, job_store, sync_store, fake_pro,
+                                       patching_sleep):
     """全量含短行日：失败信息带日期、逐日明细写入 sync_meta.doubtful_detail。"""
     import json
     sync_store.insert_calendar_days(CAL)
     for c in CODES[1:]:
         fake_pro.code_days[c] = [d for d in CAL[:4] if d != date(2026, 8, 26)]
-    fake_pro.code_days[CODES[0]] = CAL[:4]  # 08-26 仅 1/3 → 0.33 < 0.75
+    fake_pro.code_days[CODES[0]] = CAL[:4]  # 08-26 仅 1/3 → 0.33 < 0.95
+    fake_pro.suspend_error = "频率超限"       # 对账不可用 → 回退 doubtful
 
     ctx = run_worker(fake_pro, {"force": True}, job_store)
 
@@ -885,9 +936,11 @@ def test_full_doubtful_detail_recorded(runtime, job_store, sync_store, fake_pro)
     assert date.fromisoformat("2026-08-26") in sync_store.doubtful_days()
 
 
-def test_full_rebuild_exempts_booked_doubtful_days(runtime, job_store, sync_store, fake_pro):
+def test_full_rebuild_exempts_booked_doubtful_days(runtime, job_store, sync_store,
+                                                   fake_pro, patching_sleep):
     """确认入账后的短行日，再次全量重建不再重复拦截（此前每次全量必失败一次）。"""
-    test_full_doubtful_detail_recorded(runtime, job_store, sync_store, fake_pro)
+    test_full_doubtful_detail_recorded(runtime, job_store, sync_store, fake_pro,
+                                       patching_sleep)
     d26 = date(2026, 8, 26)
     sync_store.add_done_days([d26])                        # 人工确认入账
     sync_store.set_doubtful_days([])
@@ -898,13 +951,15 @@ def test_full_rebuild_exempts_booked_doubtful_days(runtime, job_store, sync_stor
     assert d26 in sync_store.done_days()
 
 
-def test_incremental_doubtful_detail_recorded(runtime, job_store, sync_store, fake_pro):
+def test_incremental_doubtful_detail_recorded(runtime, job_store, sync_store, fake_pro,
+                                              patching_sleep):
     """增量路径同样落明细（R6 场景 + 明细断言）。"""
     import json
     sync_store.insert_calendar_days(CAL)
     sync_store.add_done_days(DONE)
     d26, d27 = date(2026, 8, 26), date(2026, 8, 27)
     fake_pro.day_codes = {d26: CODES, d27: CODES[:2]}      # 27 日 2/3 → 0.667
+    fake_pro.suspend_error = "频率超限"                     # 对账不可用 → 回退 doubtful（验证明细落库）
 
     ctx = run_worker(fake_pro, {}, job_store)
 
@@ -912,3 +967,151 @@ def test_incremental_doubtful_detail_recorded(runtime, job_store, sync_store, fa
     assert "2026-08-27" in ctx.error
     detail = json.loads(sync_store.get_meta("doubtful_detail"))
     assert detail == [{"day": "2026-08-27", "actual": 2, "expected": 3, "ratio": 0.6667}]
+
+
+# ---- doubtful v2（R19-R23）：对账自动入账 / 回退 / 审计 / 取消 ----
+
+BIG = [f"{i:06d}" for i in range(600)]   # 600 应市：2% 容差(6) 主导 abs(5)，对账可判
+
+
+def test_r6_incremental_suspension_reconciles_and_books(runtime, job_store,
+                                                        sync_store, fake_pro):
+    """R19：断言①触发但 suspend_d 对账一致 → 自动入账（reconciled 审计）。"""
+    import json
+    sync_store.insert_calendar_days(CAL)
+    sync_store.add_done_days(DONE)
+    d26, d27 = date(2026, 8, 26), date(2026, 8, 27)
+    fake_pro.meta_codes = list(BIG)
+    fake_pro.day_codes = {d26: BIG, d27: BIG[:300]}              # 27 日 300/600 → 触发
+    fake_pro.suspend_codes = {d27: BIG[300:]}                    # 缺的 300 只全停牌
+
+    ctx = run_worker(fake_pro, {}, job_store)
+
+    assert ctx.status == "success"
+    assert d27 in sync_store.done_days()
+    assert d27 not in sync_store.doubtful_days()
+    assert d27.isoformat() in json.loads(sync_store.get_meta("reconciled_days"))
+    bars = runtime / "storage" / "market" / "bars"
+    df = pl.read_parquet(bars / "000001.parquet")
+    assert set(df["date"].to_list()) == {d26, d27}
+
+
+def test_r6_reverse_insufficient_reconcile_stays_doubtful(runtime, job_store,
+                                                          sync_store, fake_pro):
+    """R20 反向：停牌清单为空 → 缺口 300 > 容差 12 → 仍 doubtful
+    （证明正向通过来自对账交集而非 abs 容差兜底；复审 N1 反证）。"""
+    sync_store.insert_calendar_days(CAL)
+    sync_store.add_done_days(DONE)
+    d26, d27 = date(2026, 8, 26), date(2026, 8, 27)
+    fake_pro.meta_codes = list(BIG)
+    fake_pro.day_codes = {d26: BIG, d27: BIG[:300]}
+    fake_pro.suspend_codes = {d27: []}                           # 无停牌 → 应成交 600
+
+    ctx = run_worker(fake_pro, {}, job_store)
+
+    assert ctx.status == "failed"
+    assert d27 not in sync_store.done_days()
+    assert d27 in sync_store.doubtful_days()
+
+
+def test_r6c_reconcile_unavailable_falls_back_doubtful(runtime, job_store,
+                                                       sync_store, fake_pro,
+                                                       patching_sleep):
+    """R20：对账不可用 → 保守回退 doubtful（能力不降级）。"""
+    sync_store.insert_calendar_days(CAL)
+    sync_store.add_done_days(DONE)
+    d26, d27 = date(2026, 8, 26), date(2026, 8, 27)
+    fake_pro.meta_codes = list(BIG)
+    fake_pro.day_codes = {d26: BIG, d27: BIG[:300]}
+    fake_pro.suspend_error = "频率超限"
+
+    ctx = run_worker(fake_pro, {}, job_store)
+
+    assert ctx.status == "failed"
+    assert "doubtful" in ctx.error
+    assert d27 not in sync_store.done_days()
+    assert d27 in sync_store.doubtful_days()
+
+
+def test_r21_reconciled_meta_overwritten_empty(runtime, job_store, sync_store, fake_pro):
+    """R21：本轮无对账日 → reconciled_days 覆写为空，不留上一轮陈旧值。"""
+    import json
+    sync_store.insert_calendar_days(CAL)
+    sync_store.add_done_days(DONE)
+    sync_store.set_meta("reconciled_days", '["2020-01-01"]')   # 预置陈旧值
+    d26, d27 = date(2026, 8, 26), date(2026, 8, 27)
+    fake_pro.day_codes = {d26: CODES, d27: CODES}              # 全满 → 无对账
+
+    ctx = run_worker(fake_pro, {}, job_store)
+
+    assert ctx.status == "success"
+    assert json.loads(sync_store.get_meta("reconciled_days")) == []
+
+
+def test_staging_day_rows_excludes_codes_outside_allowed(tmp_path):
+    """R22 unit：_staging_day_rows 按 allowed_codes 过滤——BJ/清单外 bar 不计入 actual。"""
+    from trendradar.app.services.market_sync.service import _staging_day_rows
+    d = date(2026, 8, 26)
+    for code in ("000001", "000002", "920001"):     # 920001 = BJ，不在 allowed
+        pl.DataFrame({"code": [code], "date": [d], "close": [1.0]}).write_parquet(
+            tmp_path / f"{code}.parquet")
+    rows = _staging_day_rows(tmp_path, {"000001", "000002"})
+    assert rows == {d: 2}                            # BJ 那行被过滤掉
+
+
+def test_full_doubtful_reconciles_via_suspend_list(runtime, job_store, sync_store,
+                                                   fake_pro, patching_sleep,
+                                                   fast_bucket):
+    """R19 全量：触发日（08-26 有 100 只无 bar → 500/600 = 0.833 < 0.95 触发）
+    对账一致（suspend 清单恰为缺的 100 只）→ 自动入账。样本 600 越过量纲临界。"""
+    import json
+    fake_pro.meta_codes = list(BIG)   # 漏设则 effective 退回默认 3 只，自检②即失败
+    sync_store.insert_calendar_days(CAL)
+    for c in BIG:
+        fake_pro.code_days[c] = CAL[:4]
+    for c in BIG[:100]:
+        fake_pro.code_days[c] = [d for d in CAL[:4] if d != CAL[2]]  # 08-26 缺 100 只
+
+    fake_pro.suspend_codes = {CAL[2]: BIG[:100]}     # 夹具自动补 .SZ
+
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+
+    assert ctx.status == "success"
+    assert set(CAL[:4]) <= sync_store.done_days()
+    reconciled = json.loads(sync_store.get_meta("reconciled_days"))
+    assert date(2026, 8, 26).isoformat() in reconciled
+
+
+def test_full_cancelled_during_reconcile_keeps_staging(runtime, job_store,
+                                                       sync_store, fake_pro,
+                                                       monkeypatch):
+    """R23：对账窗口取消 → ctx.cancel 于换名/落账之前；staging/bars/账本零改动。
+    取消分支在 reconciliation_ok 之前短路，不受样本量纲约束（3 只小样本即可）。"""
+    from trendradar.app.services.market_sync import service
+    from trendradar.domain.market.sync.spec import FailureKind
+    from trendradar.infrastructure.tushare.fetch import FetchResult
+    sync_store.insert_calendar_days(CAL)
+    bars = runtime / "storage" / "market" / "bars"
+    bars.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"date": [date(2020, 1, 2)], "close": [1.0]}).write_parquet(
+        bars / "OLD.parquet")
+    d24, d25, d26, d27 = CAL[:4]
+    fake_pro.code_days = {
+        "000001": [d24, d25, d26, d27],
+        "000002": [d24, d25, d26, d27],
+        "600000": [d24, d25, d27],          # 08-26 无 bar → 该日 2/3 触发断言①
+    }
+    # 拉取期正常完成，进入对账窗口后首调即返回 cancelled
+    monkeypatch.setattr(service, "fetch_suspend_list",
+                        lambda *a, **k: FetchResult(None, FailureKind.ENV, "cancelled"))
+
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+
+    assert ctx.status == "cancelled"
+    assert "对账窗口取消" in ctx.error        # 关键：证明走新分支而非既有 R10 路径
+    assert (bars / "OLD.parquet").exists()     # 未换名
+    assert not (runtime / "storage" / "market" / "bars_prev").exists()
+    assert sync_store.done_days() == set()     # 账本零改动
+    staged = sorted(p.stem for p in
+                    (runtime / "storage" / "market" / "staging").glob("*.parquet"))
+    assert staged == sorted(CODES)             # staging 原地保留（R23 验收点）

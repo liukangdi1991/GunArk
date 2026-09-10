@@ -17,10 +17,11 @@ from trendradar.app.services.market_sync.commit import commit_full, commit_incre
 from trendradar.domain.market.sync.planner import build_plan
 from trendradar.domain.market.sync.selfcheck import (
     coverage_ok,
-    doubtful_by_row_count,
     doubtful_detail,
+    expected_trading_count,
     file_structure_ok,
     ledger_subset_ok,
+    reconciliation_ok,
 )
 from trendradar.domain.market.sync.spec import (
     BASELINE_START,
@@ -30,6 +31,7 @@ from trendradar.domain.market.sync.spec import (
     is_bse_code,
 )
 from trendradar.infrastructure.storage.sync_store import SyncStore
+from trendradar.infrastructure.tushare.fetch import fetch_suspend_list
 from trendradar.infrastructure.tushare.calendar import fetch_trade_calendar
 from trendradar.infrastructure.tushare.client import get_pro
 from trendradar.infrastructure.tushare.rate_limit import TokenBucket
@@ -282,6 +284,11 @@ def _run_incremental(ctx, pro, store, effective, exclude_boards, plan,
         store.set_doubtful_days(union_doubtful)
     commit_incremental(store, sorted(claimed), merged_doubtful)
 
+    store.set_meta("reconciled_days", json.dumps(
+        [d.isoformat() for d in res.reconciled_days]))
+    for day in res.reconciled_days:
+        ctx.log(f"reconciled {day}：行数触发但 suspend_d 对账一致，自动入账")
+
     if res.doubtful_detail:
         _persist_doubtful_detail(store, res.doubtful_detail)
         for r in res.doubtful_detail:
@@ -384,11 +391,29 @@ def _run_full(ctx, pro, store, effective, request, plan,
 
     # 已入账日豁免（2026-09-09）：确认过的历史停牌日行数不会因重拉而变，
     # 不再重复拦截——否则每次全量重建都必然失败一次
-    doubtful_detail_rows = doubtful_detail(
-        _staging_day_rows(staging_dir), list(effective.rows),
+    allowed_codes = set(effective.codes)
+    tripped = doubtful_detail(
+        _staging_day_rows(staging_dir, allowed_codes), list(effective.rows),
         already_booked=store.done_days(),
     )
-    doubtful = [r["day"] for r in doubtful_detail_rows]
+    reconciled: list[date] = []
+    doubtful: list[date] = []
+    doubtful_detail_rows: list[dict] = []
+    for r in tripped:
+        # R23：对账窗口取消 → 中止换名/落账（staging 保留续传，与拉取期取消同契约）
+        rfr = fetch_suspend_list(pro, r["day"], pacing=0.35,
+                                 cancel_check=cancel_check)
+        if rfr.error == "cancelled":
+            ctx.cancel("Cancelled：对账窗口取消，未对账日未入账，重跑自愈")
+            return
+        alive = expected_trading_count(list(effective.rows), r["day"])
+        suspended_alive = (len(set(rfr.df["code"].to_list()) & allowed_codes)
+                           if rfr.kind is None else 0)
+        if rfr.kind is None and reconciliation_ok(r["actual"], alive, suspended_alive):
+            reconciled.append(r["day"])
+        else:
+            doubtful.append(r["day"])
+            doubtful_detail_rows.append(r)
 
     # ---- 带缺口提交约束（§3.7）：卡在换名/落账之前 ----
     skipped = store.skipped_rows()
@@ -420,6 +445,8 @@ def _run_full(ctx, pro, store, effective, request, plan,
     except Exception as e:
         ctx.fail(f"账本事务失败（文件已换名，{_unbooked_recovery(store)}）: {e}")
         return
+    store.set_meta("reconciled_days", json.dumps(
+        [d.isoformat() for d in reconciled]))
     if doubtful:
         _persist_doubtful_detail(store, doubtful_detail_rows)
         for r in doubtful_detail_rows:
@@ -460,12 +487,13 @@ def _first_structurally_bad_file(staging_dir: Path) -> str | None:
     return None
 
 
-def _staging_day_rows(staging_dir: Path) -> dict:
+def _staging_day_rows(staging_dir: Path, allowed_codes: set[str]) -> dict:
     files = sorted(Path(staging_dir).glob("*.parquet"))
     if not files:
         return {}
     s = (
         pl.scan_parquet([str(p) for p in files])
+        .filter(pl.col("code").is_in(sorted(allowed_codes)))   # R22：分子剔 BJ/清单外
         .group_by("date").agg(pl.len().alias("n")).collect()
     )
     return {row["date"]: row["n"] for row in s.iter_rows(named=True)}
