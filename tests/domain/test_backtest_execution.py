@@ -5,7 +5,7 @@ import pytest
 from trendradar.domain.backtest.config import CostConfig
 from trendradar.domain.backtest.execution import (
     FillResult,
-    calc_buy_fill,
+    min_trading_shares,
     calc_sell_fill,
     is_limit_down,
     is_limit_up,
@@ -26,6 +26,12 @@ class TestLimitPrices:
 
     def test_limit_up_price_bse(self):
         assert limit_up_price(10.0, code="430001") == pytest.approx(13.0)
+
+    def test_limit_up_price_bse_920(self):
+        assert limit_up_price(10.0, code="920001") == pytest.approx(13.0)
+
+    def test_min_trading_shares_bse_default_lot(self):
+        assert min_trading_shares(code="920001") == 100   # 北交所沿用默认档
 
     def test_limit_up_price_rounding(self):
         result = limit_up_price(9.99)

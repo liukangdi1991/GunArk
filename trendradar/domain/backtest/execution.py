@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 
 from trendradar.domain.backtest.config import CostConfig
-
+from trendradar.domain.market.sync.spec import is_bse_code   # 北交所号段单一实现源（92/4/8）
 
 @dataclass(frozen=True)
 class FillResult:
@@ -18,7 +18,7 @@ def _limit_pct(*, code: str = "") -> float:
     normalized = str(code or "").strip()
     if normalized.startswith(("300", "301", "688", "689")):
         return 0.20
-    if normalized.startswith(("4", "8")):
+    if is_bse_code(normalized):        # 北交所 ±30%（号段 92/4/8，见 spec.BSE_PREFIXES）
         return 0.30
     return 0.10
 
