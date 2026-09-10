@@ -104,14 +104,32 @@ def _get_strategy_resolve_input(store) -> tuple[list[dict], list[dict], dict[str
     return group_defs, member_defs, settings_map
 
 
-def validate_selection_request(request: dict, store) -> None:
-    """提交时同步校验请求里的 group/strategy id，未知 id 抛 ValueError → API 400。
+VALID_BOARDS = ("主板", "创业板", "科创板", "北交所")
+
+
+def validate_selection_request(request: dict, store, market_store=None) -> None:
+    """提交时同步校验请求（group/strategy id、boards），未知 id/板块抛 ValueError → API 400。
 
     必须在 enqueue 之前调用：worker 里的 resolve 是静默跳过未知 id 的，等任务跑完
     才发现少了一个策略就太晚了。disabled 不算错误，仍由 resolve 阶段正常跳过。
+    boards 校验同样只能在提交前做——worker 内 raise 只会作业 failed，HTTP 早已 202。
+    market_store 由调用方传入（三个提交点均已握有）；缺列时 400，绝不静默放宽
+    （否则用户点"北交所"会拿到全宇宙，结果看着正常但语义错误）。
     """
     group_defs, _member_defs, _settings_map = _get_strategy_resolve_input(store)
     validate_request_ids(group_defs, request)
+
+    boards = request.get("boards")
+    if not boards:
+        return
+    invalid = sorted({str(b) for b in boards} - set(VALID_BOARDS))
+    if invalid:
+        raise ValueError(f"未知板块: {invalid}（可选值：{list(VALID_BOARDS)}）")
+    if market_store is None:
+        raise ValueError("boards 过滤需要 market_store（调用方未传入）")
+    meta = market_store.stock_meta()
+    if "market" not in meta.columns:
+        raise ValueError("stock_meta 缺少 market 列，无法按板块过滤（数据待全量重建后回填）")
 
 
 def _run_selection(
@@ -160,13 +178,27 @@ def _run_selection(
     max_window = 120
     extended_start = trading_dates[0] - timedelta(days=max_window * 2)
     codes = request.get("codes")
-    if codes is None or len(codes) == 0:
-        meta = market_store.stock_meta()
-        codes = meta["code"].to_list() if not meta.is_empty() else []
-        ctx.log(f"Using all {len(codes)} available stocks")
+    boards = request.get("boards") or []
+    need_meta = not codes or bool(boards)
+    meta = market_store.stock_meta() if need_meta else None
+    if boards:
+        # market 列存在性由提交前校验保证（缺列已在提交前 400），此处无降级分支
+        meta = meta.filter(pl.col("market").is_in(boards))
+    if codes:
+        if boards:
+            allowed = set(meta["code"].to_list()) if not meta.is_empty() else set()
+            codes = sorted(c for c in codes if c in allowed)
+            ctx.log(f"Boards {boards} ∩ whitelist: {len(codes)} stocks")
+        else:
+            ctx.log(f"Using {len(codes)} specified stocks")
     else:
-        ctx.log(f"Using {len(codes)} specified stocks")
-    codes = sorted(codes)   # normalize ordering (spec: deterministic across inputs)
+        codes = sorted(meta["code"].to_list()) if not meta.is_empty() else []
+        if boards:
+            ctx.log(f"Boards {boards}: universe {len(codes)} stocks")
+        else:
+            ctx.log(f"Using all {len(codes)} available stocks")
+    if boards and not codes:
+        ctx.log(f"板块过滤后宇宙为空（boards={boards}）——正常返回 0 信号")
 
     market_data = market_store.load_bars(codes, extended_start, trading_dates[-1])
     if market_data.is_empty():

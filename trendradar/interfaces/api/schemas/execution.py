@@ -13,6 +13,7 @@ class ExecutionRequest(BaseModel):
     codes: list[str] | None = None
     groups: list[str] | None = None
     strategies: list[str] | None = None
+    boards: list[str] | None = None
 
 
 class DeleteKeysRequest(BaseModel):
@@ -25,6 +26,7 @@ class SelectionBacktestRequest(BaseModel):
     codes: list[str] | None = None
     groups: list[str] | None = None
     strategies: list[str] | None = None
+    boards: list[str] | None = None
     backtest: dict[str, Any] = Field(default_factory=dict)
 
 

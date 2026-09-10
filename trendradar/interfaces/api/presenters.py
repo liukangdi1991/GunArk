@@ -859,7 +859,7 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
 
     jtype = request.get("type")
     params = dict(request.get("params") or {})
-    for key in ("start_date", "end_date", "codes", "groups", "strategies"):
+    for key in ("start_date", "end_date", "codes", "groups", "strategies", "boards"):
         if request.get(key) is not None and key not in params:
             params[key] = request[key]
 
@@ -881,8 +881,9 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
             "codes": params.get("codes"),
             "groups": params.get("groups"),
             "strategies": _strategies_names_to_ids(params.get("strategies")),
+            "boards": params.get("boards"),
         }
-        validate_selection_request(sel_params, store)
+        validate_selection_request(sel_params, store, market_store)
         if jtype == "selection_batch":
             job_id = submit_batch_selection(executor, market_store, sel_params, store)
             job_type = "batch_selection"
@@ -934,6 +935,8 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
             "end_date": params.get("to") or params.get("end_date"),
             "groups": params.get("groups"),
             "strategies": _strategies_names_to_ids(params.get("strategies")),
+            "codes": params.get("codes"),
+            "boards": params.get("boards"),
             "backtest": {
                 "capital": {
                     "mode": params.get("mode", "unlimited_cash"),
@@ -943,7 +946,7 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
             },
             "trade_strategy": params.get("trade_strategy"),
         }
-        validate_selection_request(bt_params, store)
+        validate_selection_request(bt_params, store, market_store)
         job_id = submit_selection_backtest(
             executor,
             market_store,

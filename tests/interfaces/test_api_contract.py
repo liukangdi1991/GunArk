@@ -208,6 +208,7 @@ def _write_stock_meta(storage: Path) -> None:
             "code": ["000001", "600519", "000333"],
             "name": ["平安银行", "贵州茅台", "美的集团"],
             "industry": ["银行", "白酒", "家用电器"],
+            "market": ["主板", "主板", "主板"],
         }
     )
     meta.write_parquet(storage / "market" / "stock_meta.parquet")
@@ -524,7 +525,7 @@ def test_submit_selection_backtest_unknown_strategy_returns_400(client):
             },
         },
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 400, resp.json()
     assert "no_such_strategy" in resp.json()["detail"]
 
 
@@ -540,6 +541,42 @@ def test_legacy_selection_backtest_route_unknown_strategy_returns_400(client):
     )
     assert resp.status_code == 400
     assert "no_such_strategy" in resp.json()["detail"]
+
+
+def test_submit_selection_invalid_board_returns_400(client):
+    """非法板块值提交时 400（校验在 enqueue 前），不是静默吞掉或作业失败。"""
+    resp = client.post(
+        "/api/executions",
+        json={"type": "selection_single", "params": {"date": "2026-08-20", "boards": ["Hack"]}},
+    )
+    assert resp.status_code == 400
+    assert "Hack" in resp.json()["detail"]
+
+
+def test_selection_backtest_boards_passthrough(client, monkeypatch):
+    """Critical 3 回归：selection_backtest 的 boards/codes 必须透传进请求（schema 不再吞）。"""
+    captured = {}
+
+    def fake_submit(executor, market_store, repo, request):
+        captured.update(request)
+        return "job-boards-1"
+
+    import trendradar.app.services.backtest_service as bs
+    monkeypatch.setattr(bs, "submit_selection_backtest", fake_submit)
+    resp = client.post(
+        "/api/executions",
+        json={
+            "type": "selection_backtest",
+            "params": {
+                "from": "2026-08-18", "to": "2026-08-20",
+                "boards": ["北交所"], "codes": ["920001"],
+                "strategies": ["bbi_kdj_b1"],
+            },
+        },
+    )
+    assert resp.status_code == 200
+    assert captured["boards"] == ["北交所"]
+    assert captured["codes"] == ["920001"]
 
 
 def test_console_response_shape(client):

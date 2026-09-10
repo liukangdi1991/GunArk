@@ -148,7 +148,7 @@ def submit_selection_backtest_route(body: SelectionBacktestRequest, request: Fas
 
     req = body.model_dump(exclude_none=True)
     try:
-        validate_selection_request(req, _store(request))
+        validate_selection_request(req, _store(request), _market_store(request))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
