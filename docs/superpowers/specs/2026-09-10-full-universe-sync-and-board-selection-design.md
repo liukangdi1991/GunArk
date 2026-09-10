@@ -96,14 +96,15 @@
 | `spec.py:13` `BSE_PREFIXES=("92","4","8")` | 裸码→ts_code 映射等 | **保留**（单一实现源，已含 92x） |
 | `spec.py:17` `is_bse_code` docstring | "Tushare daily 物理不提供其行情" | 更新（过期假设） |
 | `fetch.py:_to_ts_code` 走 `is_bse_code` | code→ts_code | 无需改（920x → `.BJ` 映射正确） |
+| `fetch.py:32` 注释 | "北交所改由 .BJ 后缀识别（stocklist.py），此处仅保留 gem/star" | 更新注释（R24 后 stocklist.py 的剔除机制已删，括号指向失效；"仅保留 gem/star" 表述仍成立，保留） |
 | `execution.py:21` `("4","8")` → 0.30 | 涨跌停 | **改用 `is_bse_code`**（R25） |
 | `execution.py:28` `("688","689")` → 200 股 | 最小买入单位 | 无需改（北交所 100 股 = 默认档） |
 | `fetch.py:EXCLUDE_BOARD_PREFIXES`（dict） `{"gem","star"}` | 可选的拉取排除 | 保留（R27；默认关闭；**无 bse 键——上线后北交所无法经此排除**） |
 | `service.py:54` `BSE_UNAVAILABLE_REASON` | 显式补齐的 BJ 拒绝理由 | **删除**（BJ 可拉后成死分支；`is_bse_code` 导入同步清理） |
+| `service.py:513` `is_bse_code` 三元 | 补齐跳过理由 | **删除**（同 `:54` 行，BJ 可拉后成死分支，三元塌缩为 `NOT_IN_LIST_REASON`；`is_bse_code` 导入同步清理） |
 | `tests/app/test_market_sync_service.py:661-667` `test_explicit_backfill_rejects_bse_code` | docstring"北交所行情物理不可得" + `"北交所" in ctx.error` 断言 | **R28④ 一并反转**（更名 accepts + docstring/断言改走成功路径）；**fixture 注水（复审 N6）**：`fake_pro.meta_codes` 加入 `920001`（:233-238 函数级 fixture 可安全改）——否则 R24 后 920001 不在 effective → `clamped_range=None` → `NOT_IN_LIST_REASON`，用例卡在"有效清单"断言不出成功路径；`.BJ` 后缀与 market 列可选（`build_effective_list` R24 后不按后缀过滤） |
 | `scripts/check_delisted_adj_factor.py:161,163,173` | 运维诊断工具：调 `build_effective_list`、打印"已剔北交所"、算熔断阈值 | 更新文案 + 重跑（有效清单 5470→5818、退市样本 252→257、熔断阈值 273→290），新基线记入 review-backlog |
 | `scripts/check_delisted_adj_factor.py:66` 注释 | "92,4,8→.BJ"（复用 `_to_ts_code` 说明） | 无需改（R24 后语义仍正确） |
-| `tests/app/test_market_sync_service.py:661-667` `test_explicit_backfill_rejects_bse_code` | docstring"北交所行情物理不可得" + `"北交所" in ctx.error` 断言 | **R28④ 一并反转**（更名 accepts + docstring/断言改走成功路径） |
 | `.superpowers/handoff.md:57` | "北交所 30%（4/8 开头）" | 更新为"92/4/8 开头，单一实现源 `spec.BSE_PREFIXES`" |
 | 前端 MarketDataPage 占位文案 | "北交所永久剔除" | 更新（R27） |
 
