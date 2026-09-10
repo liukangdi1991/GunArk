@@ -29,7 +29,7 @@ ENV_MARKERS = (
 )
 CODE_MARKERS = ("参数错误", "无此股票", "invalid parameter", "not found")
 
-# 北交所改由 .BJ 后缀识别（stocklist.py），此处仅保留 gem/star
+# 拉取排除仅支持创业板/科创板（无 bse 键：北交所随全市场拉取，见 2026-09-10 spec R27）
 EXCLUDE_BOARD_PREFIXES = {"gem": ("300", "301"), "star": ("688", "689")}
 
 

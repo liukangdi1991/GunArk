@@ -14,7 +14,7 @@ BSE_PREFIXES = ("92", "4", "8")     # 92 为新代码段，4/8 为原三板平�
 
 
 def is_bse_code(code: str) -> bool:
-    """裸代码是否属北交所 —— Tushare daily 物理不提供其行情。"""
+    """裸代码是否属北交所（号段 92/4/8，见 BSE_PREFIXES；行情已随全市场拉取）。"""
     return str(code).split(".")[0].zfill(6).startswith(BSE_PREFIXES)
 
 

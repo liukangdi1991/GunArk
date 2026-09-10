@@ -657,14 +657,25 @@ def test_backfill_worker_backfills_excluded_list(runtime, job_store, sync_store,
 
 # ---- 补齐入口：不可投递的代码必须可见 ----
 
-def test_explicit_backfill_rejects_bse_code(runtime, job_store, sync_store, fake_pro):
-    """北交所行情物理不可得：显式请求不能记一句"无可拉代码"就绿灯。"""
+def test_explicit_backfill_accepts_bse_code(runtime, job_store, sync_store, fake_pro):
+    """R24/R27：北交所可拉取——在册 920x 走常规补齐路径，精选层段数据落盘。"""
     sync_store.insert_calendar_days(CAL)
     sync_store.add_done_days(DONE)
+    fake_pro.meta_codes = list(CODES) + ["920001"]        # fixture 注水（复审 N6）
+    fake_pro.code_days = {"920001": [date(2026, 8, 26)]}  # 精选层段有数据
     ctx = run_worker(fake_pro, {"codes": ["920001"]}, job_store)
+    assert ctx.status == "success"
+    assert (runtime / "storage" / "market" / "bars" / "920001.parquet").exists()
+
+
+def test_explicit_backfill_rejects_nonlist_bse_code(runtime, job_store, sync_store, fake_pro):
+    """R27：不在有效清单的 BJ 码走 NOT_IN_LIST 理由（北交所专属文案已死）。"""
+    sync_store.insert_calendar_days(CAL)
+    sync_store.add_done_days(DONE)
+    ctx = run_worker(fake_pro, {"codes": ["920777"]}, job_store)
     assert ctx.status == "failed"
-    assert "920001" in ctx.error
-    assert "北交所" in ctx.error
+    assert "920777" in ctx.error
+    assert "有效清单" in ctx.error
 
 
 def test_explicit_backfill_rejects_code_outside_effective_list(runtime, job_store,

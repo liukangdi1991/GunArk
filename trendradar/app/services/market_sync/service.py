@@ -28,7 +28,6 @@ from trendradar.domain.market.sync.spec import (
     FailureKind,
     PlanKind,
     SHANGHAI,
-    is_bse_code,
 )
 from trendradar.infrastructure.storage.sync_store import SyncStore
 from trendradar.infrastructure.tushare.fetch import fetch_suspend_list
@@ -51,7 +50,6 @@ from trendradar.infrastructure.tushare.writer import (
 )
 
 FULL_FAIL_RATE_BREAKER = 0.05
-BSE_UNAVAILABLE_REASON = "北交所行情物理不可得（Tushare daily 不提供）"
 NOT_IN_LIST_REASON = "不在有效清单（可能已退市或代码有误）"
 
 
@@ -510,7 +508,7 @@ def _run_backfill_batch(ctx, pro, store, effective, codes, bars_dir,
     for code in codes:
         rng = effective.clamped_range(code)
         if rng is None:
-            reason = BSE_UNAVAILABLE_REASON if is_bse_code(code) else NOT_IN_LIST_REASON
+            reason = NOT_IN_LIST_REASON
             ctx.log(f"补齐跳过 {code}：{reason}", level="WARNING")
             skipped.append({"code": code, "reason": reason})
             continue
