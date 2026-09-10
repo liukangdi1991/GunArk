@@ -100,7 +100,7 @@
 | `execution.py:28` `("688","689")` → 200 股 | 最小买入单位 | 无需改（北交所 100 股 = 默认档） |
 | `fetch.py:EXCLUDE_BOARD_PREFIXES`（dict） `{"gem","star"}` | 可选的拉取排除 | 保留（R27；默认关闭；**无 bse 键——上线后北交所无法经此排除**） |
 | `service.py:54` `BSE_UNAVAILABLE_REASON` | 显式补齐的 BJ 拒绝理由 | **删除**（BJ 可拉后成死分支；`is_bse_code` 导入同步清理） |
-| `service.py:513` `is_bse_code` 三元 | 补齐跳过理由 | 同上 |
+| `tests/app/test_market_sync_service.py:661-667` `test_explicit_backfill_rejects_bse_code` | docstring"北交所行情物理不可得" + `"北交所" in ctx.error` 断言 | **R28④ 一并反转**（更名 accepts + docstring/断言改走成功路径）；**fixture 注水（复审 N6）**：`fake_pro.meta_codes` 加入 `920001`（:233-238 函数级 fixture 可安全改）——否则 R24 后 920001 不在 effective → `clamped_range=None` → `NOT_IN_LIST_REASON`，用例卡在"有效清单"断言不出成功路径；`.BJ` 后缀与 market 列可选（`build_effective_list` R24 后不按后缀过滤） |
 | `scripts/check_delisted_adj_factor.py:161,163,173` | 运维诊断工具：调 `build_effective_list`、打印"已剔北交所"、算熔断阈值 | 更新文案 + 重跑（有效清单 5470→5818、退市样本 252→257、熔断阈值 273→290），新基线记入 review-backlog |
 | `scripts/check_delisted_adj_factor.py:66` 注释 | "92,4,8→.BJ"（复用 `_to_ts_code` 说明） | 无需改（R24 后语义仍正确） |
 | `tests/app/test_market_sync_service.py:661-667` `test_explicit_backfill_rejects_bse_code` | docstring"北交所行情物理不可得" + `"北交所" in ctx.error` 断言 | **R28④ 一并反转**（更名 accepts + docstring/断言改走成功路径） |
@@ -174,13 +174,15 @@ boards + codes 同时  → 交集：白名单中 market ∈ boards 的子集
 
   ```python
   need_meta = (not codes) or boards
-  meta = market_store.stock_meta() if need_meta else None
+  meta = market_store.stock_meta() if need_meta else None   # market 列存在性由提交前校验保证
   if boards:
-      meta = meta.filter(pl.col("market").is_in(boards)) if meta is not None else ...
-  codes = ...  # 按分支派生
+      meta = meta.filter(pl.col("market").is_in(boards))    # 无降级分支（缺列已在提交前 400）
+  codes = ...  # 按分支派生（boards ∩ codes 白名单）
   ```
 
   仅在 if 分支加过滤会**静默丢弃交集语义**（白名单原样通过、无报错、无测试覆盖）。
+  复审润色①：既已定"market 列缺失 → 提交前 400"，`_run_selection` 内不再有
+  `if meta is not None` 降级分支（原骨架中的该分支已死，删除）。
 - **校验（落点在提交前，复审 N2）**：`validate_selection_request` 签名加 `market_store`
   参数，承担 boards 取值校验（非法值 → `ValueError` → 400，与既有 group/strategy id
   校验同风格；boards 为空列表按"不传"处理）**与 market 列可得性探测**。三个调用点
@@ -189,6 +191,11 @@ boards + codes 同时  → 交集：白名单中 market ∈ boards 的子集
   raise 只会作业 failed，HTTP 早已 202 返回，前端拿不到 400。
 - **null market 边界**：`T600018`（2006 退市）在任何板块过滤下都不命中（`market ∉ boards`）；
   该符号在任何现代选股区间均无 bar，无实际影响，但语义在本文档定死。
+- **空宇宙语义（复审润色②）**：boards 过滤后宇宙为 0（如所选板块在区间内无成员）时，
+  正常返回 0 信号、作业 success——与"区间无交易日"同路径；但日志必须点名
+  "板块过滤后宇宙为空（boards=…）"而非仅 `Using all 0 available stocks`，避免被当
+  bug 排查。前端 latest/single/batch 三张表单共用 `runSelection`，`boards` 注入点
+  一处（提交 payload 组装处）。
 - **stock_meta 降级分支边界（复审 S14）**：`stock_meta()` 在 parquet 缺失/读取异常时回落
   扫描 bars 文件，仅返回 `code` 列（无 `market`）→ boards 过滤会抛 `ColumnNotFoundError`。
   处置：market 列缺失时**在提交前校验（见上条落点）raise ValueError 走 400**（静默放宽会让用户点"北交所"却拿到
@@ -250,7 +257,7 @@ boards + codes 同时  → 交集：白名单中 market ∈ boards 的子集
 | R26 | `test_selection_boards_filter_universe`（验收断言 = picks 非空 且 pick.code 全 ∈ 当日 stock_meta 中 market=='北交所' 的在册只数集合，不硬编码 348）；`test_selection_boards_plus_codes_intersection`；`test_selection_invalid_board_400`；`test_selection_default_universe_unchanged`（不传 boards 行为不变）；`test_selection_boards_without_market_column`（降级分支：**提交前**校验 raise → 400，见 D3 校验落点） |
 | R26（选股回测入口） | `test_selection_backtest_boards_filter`（经 type=`selection_backtest` 提交含 boards 的请求 → 宇宙按板块过滤——否则 Critical 3 修复无法被证伪）；`test_selection_backtest_boards_codes_intersection` |
 | R27 | 前端文案人工走查；后端 `exclude_boards` 既有用例保持绿（R28 的用例改写对齐——见下方三条） |
-| R28 | ① `test_stocklist.py::test_effective_list_excludes_bj_and_future_listed` 改写（断言集改为 {000001,000004,300001,688001,920099}）；② `test_stocklist.py::test_effective_clamped_range` 改写（`clamped_range("920099") == (date(2020,7,27), LATEST)`）；③ `test_stocklist.py::test_effective_list_exclude_boards_gem_star` 改写（断言集加回 920099——**exclude_boards 无 bse 键，此用例名下 R24 后 920099 回归**）；④ `test_explicit_backfill_rejects_bse_code` 语义反转并更名 `test_explicit_backfill_accepts_bse_code`（docstring 与 `"北交所" in ctx.error` 断言同步反转，见 §3.4 清查表行）；⑤ `test_backfill_*` 两用例的 "920001" 换 "999999"（**可选语义清理**：R24 后走 NOT_IN_LIST_REASON 仍 failed + 名字在 error，不会翻红——标注为可选而非必改）；⑥ 过期字面量清理；⑦ 全量回归 |
+| R28 | ① `test_stocklist.py::test_effective_list_excludes_bj_and_future_listed` 改写（断言集改为 {000001,000004,300001,688001,920099}）；② `test_stocklist.py::test_effective_clamped_range` 改写（`clamped_range("920099") == (date(2020,7,27), LATEST)`）；③ `test_stocklist.py::test_effective_list_exclude_boards_gem_star` 改写（断言集加回 920099——**exclude_boards 无 bse 键，此用例名下 R24 后 920099 回归**）；④ `test_explicit_backfill_rejects_bse_code` 语义反转并更名 `test_explicit_backfill_accepts_bse_code`（docstring 与 `"北交所" in ctx.error` 断言同步反转，见 §3.4 清查表行；**fixture `fake_pro.meta_codes` 加 `920001`**——复审 N6，否则断言不出成功路径）；⑤ `test_backfill_*` 两用例的 "920001" 换 "999999"（**可选语义清理**：R24 后走 NOT_IN_LIST_REASON 仍 failed + 名字在 error，不会翻红——标注为可选而非必改）；⑥ 过期字面量清理；⑦ 全量回归 |
 
 ## §6 前端影响
 
