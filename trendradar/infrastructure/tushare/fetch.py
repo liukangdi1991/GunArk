@@ -290,3 +290,36 @@ def fetch_day_by_date(
                 return FetchResult(None, kind, last_error)
     return FetchResult(None, classify_error(last_error) if last_error else FailureKind.UNKNOWN,
                        last_error or "retries exhausted")
+
+
+def fetch_suspend_list(
+    pro, day: date, pacing: float = 0.35, max_retries: int = 3, cancel_check=None,
+) -> FetchResult:
+    """suspend_d 当日停牌清单（code 集合），供断言①触发的精确对账（spec v2 §D2/D4）。
+
+    接口限频 200 次/分钟（实测 0.11s/次）：pacing 串行节流；
+    限频异常退避 62s 重试；耗尽/其它异常/取消 → ENV（调用方保守回退 doubtful，R20）。
+    """
+    day_s = day.strftime("%Y%m%d")
+    last_error = ""
+    for attempt in range(max_retries):
+        if cancel_check and cancel_check():
+            return FetchResult(None, FailureKind.ENV, "cancelled")
+        try:
+            resp = pro.suspend_d(trade_date=day_s)
+            if resp is None:
+                return FetchResult(None, FailureKind.UNKNOWN, "suspend_d 返回 None")
+            df = resp if isinstance(resp, pl.DataFrame) else pl.DataFrame(
+                resp.to_dict(orient="list"))
+            codes = sorted({str(c)[:6] for c in df["ts_code"].to_list()}) if df.height else []
+            if pacing:
+                time.sleep(pacing)
+            return FetchResult(
+                pl.DataFrame({"code": codes}, schema={"code": pl.String}), None)
+        except Exception as e:
+            last_error = str(e)
+            if "频率超限" in last_error and attempt < max_retries - 1:
+                time.sleep(62)
+                continue
+            return FetchResult(None, FailureKind.ENV, f"suspend_d 对账失败: {last_error}")
+    return FetchResult(None, FailureKind.ENV, f"suspend_d 重试耗尽: {last_error}")

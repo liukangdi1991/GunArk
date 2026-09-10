@@ -11,6 +11,7 @@ from trendradar.infrastructure.tushare.fetch import (
     classify_error,
     fetch_code_range,
     fetch_day_by_date,
+    fetch_suspend_list,
     shard_ranges,
     _attach_adj_factor,
     _response_to_df,
@@ -277,3 +278,56 @@ def test_each_tushare_call_consumes_one_token():
     fr = fetch_code_range(pro, "000001", date(2015, 1, 1), date(2026, 8, 21), bucket=bucket)
     assert fr.kind is None, fr.error
     assert bucket.acquires == 2
+
+
+def test_fetch_suspend_list_collects_codes(patching_sleep):
+    class Pro:
+        def suspend_d(self, trade_date=None):
+            return pd.DataFrame({"ts_code": ["000001.SZ", "600000.SH"]})
+
+    fr = fetch_suspend_list(Pro(), date(2015, 7, 8), pacing=0.0)
+    assert fr.kind is None
+    assert fr.df["code"].to_list() == ["000001", "600000"]
+
+
+def test_fetch_suspend_list_empty_response_gets_string_schema(patching_sleep):
+    class Pro:
+        def suspend_d(self, trade_date=None):
+            return pd.DataFrame({"ts_code": []})
+
+    fr = fetch_suspend_list(Pro(), date(2015, 7, 8), pacing=0.0)
+    assert fr.kind is None
+    assert fr.df["code"].dtype == pl.String        # Null dtype 会污染后续 concat
+    assert fr.df.height == 0
+
+
+def test_fetch_suspend_list_rate_limit_retries_then_env(patching_sleep):
+    class Pro:
+        calls = 0
+
+        def suspend_d(self, trade_date=None):
+            self.calls += 1
+            raise Exception("抱歉，您访问接口(suspend_d)频率超限(200次/分钟)")
+
+    pro = Pro()
+    fr = fetch_suspend_list(pro, date(2015, 7, 8), pacing=0.0)
+    assert fr.kind is FailureKind.ENV
+    assert "suspend_d" in fr.error
+    assert pro.calls == 3  # 限频退避重试耗尽（R20：调用方保守回退 doubtful）
+
+
+def test_fetch_suspend_list_cancelled_immediately(patching_sleep):
+    # R23：cancel_check 命中 → 立即返回 cancelled，不发起接口调用
+    class Pro:
+        calls = 0
+
+        def suspend_d(self, trade_date=None):
+            Pro.calls += 1
+            return pd.DataFrame({"ts_code": ["000001.SZ"]})
+
+    pro = Pro()
+    fr = fetch_suspend_list(pro, date(2015, 7, 8), pacing=0.0,
+                            cancel_check=lambda: True)
+    assert fr.kind is FailureKind.ENV
+    assert fr.error == "cancelled"
+    assert pro.calls == 0
