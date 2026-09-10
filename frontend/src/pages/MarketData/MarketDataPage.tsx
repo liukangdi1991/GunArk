@@ -206,7 +206,7 @@ export function MarketDataPage() {
                           { label: "创业板 gem", value: "gem" },
                           { label: "科创板 star", value: "star" },
                         ]}
-                        placeholder="排除板块（默认不排除；北交所永久剔除）"
+                        placeholder="排除板块（可选创业板/科创板；北交所随全市场拉取，不适用此选项）"
                       />
                       <Button
                         block danger icon={<ThunderboltOutlined />}

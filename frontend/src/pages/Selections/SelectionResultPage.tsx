@@ -85,7 +85,7 @@ const pickColumns: ColumnsType<SelectionPick> = [
     ),
   },
   {
-    title: "所属板块",
+    title: "所属行业",
     dataIndex: "industry",
     key: "industry",
     width: 140,

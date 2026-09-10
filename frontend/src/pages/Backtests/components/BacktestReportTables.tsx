@@ -113,7 +113,7 @@ export const tradeColumns: ColumnsType<BacktestTrade> = [
   },
   { title: "名称", dataIndex: "name", key: "name", width: 110, render: (value) => value || "-" },
   {
-    title: "所属板块",
+    title: "所属行业",
     dataIndex: "industry",
     key: "industry",
     width: 130,
@@ -158,7 +158,7 @@ export const skipColumns: ColumnsType<BacktestSkip> = [
   },
   { title: "名称", dataIndex: "name", key: "name", width: 110, render: (value) => value || "-" },
   {
-    title: "所属板块",
+    title: "所属行业",
     dataIndex: "industry",
     key: "industry",
     width: 130,
@@ -184,7 +184,7 @@ export const openPositionColumns: ColumnsType<BacktestOpenPosition> = [
   },
   { title: "名称", dataIndex: "name", key: "name", width: 110, render: (value) => value || "-" },
   {
-    title: "所属板块",
+    title: "所属行业",
     dataIndex: "industry",
     key: "industry",
     width: 130,

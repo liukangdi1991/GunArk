@@ -21,10 +21,13 @@ type SubmitKey = "latest" | "single" | "batch";
 
 interface SelectionFormValues {
   strategies?: string[];
+  boards?: string[];
   date?: Dayjs;
   from?: Dayjs;
   to?: Dayjs;
 }
+
+const BOARD_OPTIONS = ["主板", "创业板", "科创板", "北交所"].map((b) => ({ label: b, value: b }));
 
 function selectedStrategies(values?: string[]) {
   return values && values.length ? values : null;
@@ -154,6 +157,9 @@ export function SelectionWorkspacePage() {
         params.from = formatPickerDate(values.from);
         params.to = formatPickerDate(values.to);
       }
+      if (values.boards?.length) {
+        params.boards = values.boards;
+      }
       const execution = await submitExecution({ type, params });
       window.location.href = execution.console_url;
     } catch (error) {
@@ -221,6 +227,9 @@ export function SelectionWorkspacePage() {
                   <Form.Item label="选股策略" name="strategies">
                     <Select allowClear mode="multiple" options={strategyOptions} placeholder="不选择则按默认策略执行" />
                   </Form.Item>
+                  <Form.Item label="板块" name="boards" initialValue={BOARD_OPTIONS.map((o) => o.value)}>
+                    <Select mode="multiple" options={BOARD_OPTIONS} allowClear placeholder="默认全选四板块；取消北交所可做 A/B 对比" />
+                  </Form.Item>
                   <Button block type="primary" htmlType="submit" icon={<PlayCircleOutlined />} loading={submitting === "latest"}>
                     执行最新选股
                   </Button>
@@ -239,6 +248,9 @@ export function SelectionWorkspacePage() {
                   </Form.Item>
                   <Form.Item label="选股策略" name="strategies">
                     <Select allowClear mode="multiple" options={strategyOptions} placeholder="不选择则按默认策略执行" />
+                  </Form.Item>
+                  <Form.Item label="板块" name="boards" initialValue={BOARD_OPTIONS.map((o) => o.value)}>
+                    <Select mode="multiple" options={BOARD_OPTIONS} allowClear placeholder="默认全选四板块；取消北交所可做 A/B 对比" />
                   </Form.Item>
                   <Button block type="primary" htmlType="submit" icon={<CalendarOutlined />} loading={submitting === "single"}>
                     执行单日选股
@@ -286,6 +298,9 @@ export function SelectionWorkspacePage() {
                   </Row>
                   <Form.Item label="选股策略" name="strategies">
                     <Select allowClear mode="multiple" options={strategyOptions} placeholder="不选择则按默认策略执行" />
+                  </Form.Item>
+                  <Form.Item label="板块" name="boards" initialValue={BOARD_OPTIONS.map((o) => o.value)}>
+                    <Select mode="multiple" options={BOARD_OPTIONS} allowClear placeholder="默认全选四板块；取消北交所可做 A/B 对比" />
                   </Form.Item>
                   <Button block type="primary" htmlType="submit" icon={<PlayCircleOutlined />} loading={submitting === "batch"}>
                     执行批量选股
