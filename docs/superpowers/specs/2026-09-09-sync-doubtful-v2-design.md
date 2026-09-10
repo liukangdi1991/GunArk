@@ -160,11 +160,11 @@ abs 容差吞掉、正向用例假绿），实施计划用例规格按 600/300 �
 | R19（增量） | `test_run_incremental_doubtful_reconciles_via_suspend_list`（600/300 样本，runner） |
 | R19（增量反向） | `test_run_incremental_doubtful_when_suspend_list_empty`（缺口 8 > 容差 6 → doubtful） |
 | R19（增量 service） | `test_r6_incremental_suspension_reconciles_and_books`（600 只样本） |
-| R19（全量） | `test_full_doubtful_reconciles_via_suspend_list`（600 只样本 + BJ 元数据，断言 BJ 不被拉取入账） |
+| R19（全量） | `test_full_doubtful_reconciles_via_suspend_list`（600 只样本，触发日 500/600） |
 | R20 | `test_run_incremental_doubtful_when_suspend_list_empty`（增量反向）、`test_r6_reverse_insufficient_reconcile_stays_doubtful`（service 反向）、`test_r6c_reconcile_unavailable_falls_back_doubtful`、`test_fetch_suspend_list_rate_limit_retries_then_env` |
 | R21 | reconciled/doubtful meta 断言（并入 R19/R20 用例）+ 无对账轮覆写空清单断言 |
 | R22 | `test_staging_day_rows_excludes_codes_outside_allowed`（unit）+ `test_full_doubtful_reconciles_via_suspend_list`（含 BJ 码样本，断言其不计入 actual） |
-| R23 | `test_fetch_suspend_list_cancelled_immediately`（fetch 单测）、`test_full_cancelled_during_reconcile_keeps_staging`（service：终态 cancelled + staging 保留） |
+| R23 | `test_fetch_suspend_list_cancelled_immediately`（fetch 单测）、`test_run_incremental_cancelled_during_reconcile_aborts_batch`（runner：整批中止）、`test_full_cancelled_during_reconcile_keeps_staging`（service：终态 cancelled + staging 保留） |
 
 既有用例回归要点：`test_runner.py` 全部（`_eff` 改真实 codes + 样本 600 后）、
 `test_market_sync_service.py` 的原始 r6 / r13 / r17×4 / 两个 0.952 边界用例

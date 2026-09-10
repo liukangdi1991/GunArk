@@ -21,6 +21,9 @@ expected_traded > 250 才主导；abs=5 的下限只服务极小应市日。**�
 `code_days` 决定 staging 行数（→ actual 与断言①触发）；`suspend_codes` 只决定
 对账分母 `suspended_alive`（→ 对账判定）。**两者互不影响**——造"触发日"必须让
 某些股票当天没有 bar（从 code_days 剔除），只注 suspend_codes 不会触发。
+`meta_codes` 决定 effective 清单规模（→ expected 分母与拉取任务集）；`code_days`
+只对其中的码生效——**两者必须同时设置**（复审 R1：漏 meta_codes 会退回默认 3 只，
+失败点在自检②而非对账，报错隔了三层）。
 
 ---
 
@@ -358,6 +361,26 @@ def test_run_incremental_doubtful_when_suspend_list_empty():
     assert result.claimed_days == [D1, D3]
     assert result.doubtful_days == [D2]
     assert result.reconciled_days == []
+
+
+def test_run_incremental_cancelled_during_reconcile_aborts_batch():
+    # R23（增量）：对账窗口取消 → result.cancelled → 整批中止、一行不写。
+    # cancel_check 计数：D1 拉取(1)、D2 拉取(2) 放行；D2 对账(3) 命中。
+    pro = DaySeqPro({D1: 600, D2: 300, D3: 600})
+    pro.suspend_d = lambda **kwargs: pd.DataFrame(
+        [{"ts_code": f"{i:06d}.SZ"} for i in range(300, 600)])
+    calls = {"n": 0}
+
+    def cancel_check():
+        calls["n"] += 1
+        return calls["n"] > 2
+
+    result = run_incremental(pro, [D1, D2, D3], exclude_boards=None,
+                             effective=_eff({D1: 600, D2: 600, D3: 600}),
+                             cancel_check=cancel_check)
+    assert result.cancelled
+    assert result.claimed_days == [D1]           # D2/D3 未入账
+    assert result.doubtful_days == []            # 中止路径不落 doubtful（重跑自愈）
 ```
 
 （两用例都显式传 `exclude_boards=None`——真实签名的必填位置参数，漏传即 TypeError。）
@@ -612,6 +635,7 @@ def test_full_doubtful_reconciles_via_suspend_list(runtime, job_store,
     """R19 全量：触发日（08-26 有 100 只无 bar → 500/600 = 0.833 < 0.95 触发）
     对账一致（suspend 清单恰为缺的 100 只）→ 自动入账。样本 600 越过量纲临界。"""
     import json
+    fake_pro.meta_codes = list(BIG)   # 复审 R1：漏设则 effective 退回默认 3 只，自检②即失败
     sync_store.insert_calendar_days(CAL)
     for c in BIG:
         fake_pro.code_days[c] = CAL[:4]
@@ -626,6 +650,42 @@ def test_full_doubtful_reconciles_via_suspend_list(runtime, job_store,
     assert set(CAL[:4]) <= sync_store.done_days()
     reconciled = json.loads(sync_store.get_meta("reconciled_days"))
     assert date(2026, 8, 26).isoformat() in reconciled
+```
+
+```python
+def test_full_cancelled_during_reconcile_keeps_staging(runtime, job_store,
+                                                       sync_store, fake_pro,
+                                                       monkeypatch):
+    """R23：对账窗口取消 → ctx.cancel 于换名/落账之前；staging/bars/账本零改动。
+    取消分支在 reconciliation_ok 之前短路，不受样本量纲约束（3 只小样本即可）。"""
+    from trendradar.app.services.market_sync import service
+    from trendradar.domain.market.sync.spec import FailureKind
+    from trendradar.infrastructure.tushare.fetch import FetchResult
+    sync_store.insert_calendar_days(CAL)
+    bars = runtime / "storage" / "market" / "bars"
+    bars.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"date": [date(2020, 1, 2)], "close": [1.0]}).write_parquet(
+        bars / "OLD.parquet")
+    d24, d25, d26, d27 = CAL[:4]
+    fake_pro.code_days = {
+        "000001": [d24, d25, d26, d27],
+        "000002": [d24, d25, d26, d27],
+        "600000": [d24, d25, d27],          # 08-26 无 bar → 该日 2/3 触发断言①
+    }
+    # 拉取期正常完成，进入对账窗口后首调即返回 cancelled
+    monkeypatch.setattr(service, "fetch_suspend_list",
+                        lambda *a, **k: FetchResult(None, FailureKind.ENV, "cancelled"))
+
+    ctx = run_worker(fake_pro, {"force": True}, job_store)
+
+    assert ctx.status == "cancelled"
+    assert "对账窗口取消" in ctx.error        # 关键：证明走新分支而非既有 R10 路径
+    assert (bars / "OLD.parquet").exists()     # 未换名
+    assert not (runtime / "storage" / "market" / "bars_prev").exists()
+    assert sync_store.done_days() == set()     # 账本零改动
+    staged = sorted(p.stem for p in
+                    (runtime / "storage" / "market" / "staging").glob("*.parquet"))
+    assert staged == sorted(CODES)             # staging 原地保留（R23 验收点）
 ```
 
 - [ ] **Step 4.5: 跑测试确认失败**
@@ -770,7 +830,7 @@ git push origin feature
 
 ---
 
-## Self-Review（v2.2，吸收复审三 P1-P10）
+## Self-Review（v2.3，吸收复审四 Q1-Q6 + 复审五 R1-R4）
 
 - **P1**：patching_sleep 声明进**所有注水 suspend_error 的用例**（原始 r6 / r13 / r17 doubtful-survives ×4 / test_full_doubtful_detail_recorded / test_incremental_doubtful_detail_recorded / test_r6c_...，及链式调用它们的 test_r14、test_full_rebuild_exempts_...）；成功路径与 monkeypatch 用例不需要。fixture 确认放 tests 根 conftest。
 - **P2**：全量正向用例触发条件修正——从 code_days 剔除当日 bar（suspend_codes 不影响 actual），500/600 = 0.833 < 0.95 真触发。
@@ -782,6 +842,10 @@ git push origin feature
 - **P8**：`test_incremental_doubtful_detail_recorded` 统一为"小样本 + suspend_error"（验证明细格式，非对账判定），删除 BIG 指令冲突。
 - **P9**：正向用例注释容差数字修正为 6。
 - **P10**：suspend 注水统一带 `.SZ` 后缀。
-- **机械化名称核查**：本文档引用的全部既有 test_* 用例名已逐个 grep 仓库确认存在（r6/r13/r14/r17×5/r21/r7×2/full×4/incremental detail/orange×3）；新增用例名已标注新增。后续自查固定执行此步。
+- **R1**：全量正向用例补 `meta_codes = list(BIG)`（复审 R1：Q3 删 BJ 时连带误删，effective 退回 3 只致自检②失败）；装置说明补"meta_codes 与 code_days 必须同时设置"。
+- **R2**：恢复 `test_full_cancelled_during_reconcile_keeps_staging`（v2.2 修订时被连带误删，四处悬空引用）；补增量侧对称用例 `test_run_incremental_cancelled_during_reconcile_aborts_batch`（result.cancelled → 整批中止）。
+- **R3**：spec §7 三行漂移同步（R19 全量样本描述、R22 收敛为 unit、R23 补 runner 取消用例）。
+- **R4**：本节标题与内容随本轮更新；删除 orange×3 误输入。
+- **机械化名称核查**：本文档引用的全部既有 test_* 用例名已逐个 grep 仓库确认存在（r6/r13/r14/r17×5/r21/r7×2/full×5/incremental detail×2）；新增用例名已标注新增。后续自查固定执行此步。
 - **类型一致性**：`reconciled_days: list[date]` 三处一致；`fetch_suspend_list` 签名一致；`_staging_day_rows(dir, allowed_codes)` 定义与调用一致；FakePro.suspend_d 返回 ts_code（.SZ 后缀）与 fetch_suspend_list 的 [:6] 切片匹配。
 - **回归面**（复审尾注）：`_eff` 真实 codes 波及 runner 全部用例（Step 3.1 已论证兼容）；FakePro.suspend_d 波及 service 全部 doubtful 用例（Step 4.2 表已逐用例注水/透传）。
