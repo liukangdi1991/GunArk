@@ -5,6 +5,7 @@ import pytest
 from trendradar.domain.backtest.config import CostConfig
 from trendradar.domain.backtest.execution import (
     FillResult,
+    calc_buy_fill,
     min_trading_shares,
     calc_sell_fill,
     is_limit_down,
