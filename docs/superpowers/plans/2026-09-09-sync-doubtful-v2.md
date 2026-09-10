@@ -515,6 +515,13 @@ git commit -m "feat(sync): 增量 doubtful 触发日 suspend_d 对账自动入�
 | `test_incremental_doubtful_detail_recorded`（追加用例，d27 2/3） | 期望 doubtful | `patching_sleep` | 同上注水（保持小样本：本用例验证明细落库格式，非对账判定） |
 | **阈值敏感**：`test_r7_resume_round_breaker_uses_full_batch_denominator` / `test_r7_success_clears_skip_and_unblocks_commit`（HEALTHY_CODES 21 只、出列后 20/21 = 0.952，距 0.95 线仅 0.0024） | 期望**不**触发 | 不需要 | 不改样本数，在 docstring 加注释"比值 0.952 距 2026 段阈值 0.95 仅 0.0024，改动行数统计口径须回归本用例" |
 
+**完成后先跑一次既有套件，再进 Step 4.3**（复审七实施建议，分离两类红灯）：
+
+Run: `.venv/bin/python -m pytest tests/app/test_market_sync_service.py -q`
+Expected: 既有用例全绿——此时 service/runner 尚未接线，注水 `suspend_error` 无效果，
+套件行为应与改动前完全一致。若此处出现红灯，即为"夹具适配引入的回归"（与本次需求无关），
+须先排查；确认全绿后再进 Step 4.3 的新增用例，此后红灯才是新逻辑的预期红灯。
+
 - [ ] **Step 4.3: 新增/改写用例（R19 正向/反向 + R20 回退，600 只样本越过量纲临界）**
 
 ```python
@@ -842,7 +849,7 @@ git push origin feature
 
 ---
 
-## Self-Review（v2.3，吸收复审四 Q1-Q6 + 复审五 R1-R4）
+## Self-Review（v2.3.1，吸收复审四 Q1-Q6 + 复审五 R1-R4 + 复审六 S1-S4 + 复审七 T1-T4）
 
 - **P1**：patching_sleep 声明进**所有注水 suspend_error 的用例**（原始 r6 / r13 / r17 doubtful-survives ×4 / test_full_doubtful_detail_recorded / test_incremental_doubtful_detail_recorded / test_r6c_...，及链式调用它们的 test_r14、test_full_rebuild_exempts_...）；成功路径与 monkeypatch 用例不需要。fixture 确认放 tests 根 conftest。
 - **P2**：全量正向用例触发条件修正——从 code_days 剔除当日 bar（suspend_codes 不影响 actual），500/600 = 0.833 < 0.95 真触发。
@@ -858,7 +865,14 @@ git push origin feature
 - **R2**：恢复 `test_full_cancelled_during_reconcile_keeps_staging`（v2.2 修订时被连带误删，四处悬空引用）；补增量侧对称用例 `test_run_incremental_cancelled_during_reconcile_aborts_batch`（result.cancelled → 整批中止）。
 - **R3**：spec §7 三行漂移同步（R19 全量样本描述、R22 收敛为 unit、R23 补 runner 取消用例）。
 - **R4**：本节标题与内容随本轮更新；删除 orange×3 误输入。
-- **机械化名称核查**：本文档引用的全部既有 test_* 用例名已逐个 grep 仓库确认存在（r6/r13/r14/r17×5/r21/r7×2/full×5/incremental detail×2）；新增用例名已标注新增。后续自查固定执行此步。补充：spec §7 每行括号内的场景描述，须与 plan 中对应用例的
-docstring 逐条比对（名字对、描述错的情况本机制查不出——复审六 S1 教训）。
+- **S1**：spec §7 R22 行撤回"含 BJ 码样本"承诺（Q3 已删该断言，端到端不再断言 BJ）。
+- **S2**：spec 版本注记补至 v2.3 并整合残片（v2→v2.1 的摘要不再挂在 v2.3 之后）。
+- **S3**：Step 3.3 的 `-k` 扩为三用例、Expected 按用例分因（取消用例红灯根因与另两条不同）。
+- **S4**：L386「两用例」→「三用例」；R1 条目表述改为与 meta_codes 行内注释的实际位置一致。
+- **T1/T2/T3/T4**（复审七）：Step 4.4/4.1 标题的 BJ 残留已在 483c8d18 清理；本节随轮更新（T3）；比对机制扩为三层（T4，见下条）。实施建议已采纳：Task 4 改为先做 4.1+4.2 并跑既有套件确认全绿，再做 4.3+。
+- **机械化名称核查**：本文档引用的全部既有 test_* 用例名已逐个 grep 仓库确认存在（r6/r13/r14/r17×5/r21/r7×2/full×5/incremental detail×2）；新增用例名已标注新增。后续自查固定执行此步。补充（复审六 S1 教训 + 复审七 T4 扩层）：**三层比对**——
+① spec §7 括号内场景描述 ↔ plan 对应用例 docstring；
+② plan 各 Step 标题点名的能力 ↔ 该 Step 下代码块的实际断言（标题承诺的每一项都能找到对应断言，反之无恒真/零覆盖断言）；
+③ spec 表格内的数值（缺口、容差、样本）↔ plan 用例体的数值。三层均须机械化 grep/比对，不靠人读。
 - **类型一致性**：`reconciled_days: list[date]` 三处一致；`fetch_suspend_list` 签名一致；`_staging_day_rows(dir, allowed_codes)` 定义与调用一致；FakePro.suspend_d 返回 ts_code（.SZ 后缀）与 fetch_suspend_list 的 [:6] 切片匹配。
 - **回归面**（复审尾注）：`_eff` 真实 codes 波及 runner 全部用例（Step 3.1 已论证兼容）；FakePro.suspend_d 波及 service 全部 doubtful 用例（Step 4.2 表已逐用例注水/透传）。
