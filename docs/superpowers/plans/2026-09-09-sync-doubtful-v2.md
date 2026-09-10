@@ -455,27 +455,11 @@ git commit -m "feat(sync): 增量 doubtful 触发日 suspend_d 对账自动入�
 
 `tests/app/test_market_sync_service.py`：
 
-① `_resp_meta` 增加后缀参数（R22 需要 .BJ 后缀才能被 `build_effective_list` 识别剔除）：
+① `FakePro.__init__` 追加：
 
 ```python
-def _resp_meta(codes, suffixes=None):
-    suffixes = suffixes or [".SZ"] * len(codes)
-    n = len(codes)
-    return FakeResp({
-        "ts_code": [f"{c}{s}" for c, s in zip(codes, suffixes)],
-        "symbol": list(codes),
-        "name": [f"S{c}" for c in codes], "area": [""] * n,
-        "industry": [""] * n, "market": [""] * n,
-        "list_date": ["20100101"] * n, "delist_date": [None] * n,
-    })
-```
-
-② `FakePro.__init__` 追加：
-
-```python
-        self.suspend_codes = {}    # date -> 当日停牌 ts_code 列表（含 .SZ 后缀）
+        self.suspend_codes = {}    # date -> 当日停牌代码列表（夹具自动补 .SZ 后缀）
         self.suspend_error = None  # 注水 suspend_d 异常（对账不可用）
-        self.meta_suffixes = None  # 注水 meta 的 ts_code 后缀（".BJ" → effective 剔除）
 ```
 
 `FakePro.stock_basic` 改用后缀：
@@ -484,7 +468,7 @@ def _resp_meta(codes, suffixes=None):
     def stock_basic(self, exchange="", list_status=None, fields=None):
         if list_status == "D":
             return FakeResp({})
-        return _resp_meta(self.meta_codes, self.meta_suffixes)
+        return _resp_meta(self.meta_codes)
 ```
 
 `FakePro` 追加方法（**类名是 FakeResp**，复审 N6）：
@@ -504,9 +488,14 @@ def _resp_meta(codes, suffixes=None):
 |---|---|---|---|
 | `test_r6_incremental_doubtful_day_written_not_booked`（原始 r6，d27 2/3） | 期望 doubtful | `patching_sleep` | 注水 `fake_pro.suspend_error = "频率超限"`（复审 N2：不注水会被小样本容差对账通过而翻红） |
 | `test_r13_full_doubtful_day_swapped_but_not_booked`（08-26 2/3） | 期望 doubtful | `patching_sleep` | 同上注水 |
-| `test_r17_commit_failure_after_swap` / `test_r17_ledger_failure_after_swap` / `test_r17_swap_success_book_failure` / `test_r17_partial_commit_survives_cancel`（四个 doubtful-survives 用例，链 r13 场景） | 期望 doubtful | `patching_sleep` | 同上注水 |
+| `test_r17_full_doubtful_survives_commit_failure`（08-26 2/3） | 期望 doubtful | `patching_sleep` | 同上注水 |
+| `test_r17_full_self_healed_doubtful_survives_commit_failure`（d26/d27 各 2/3） | 期望 doubtful | `patching_sleep` | 同上注水 |
+| `test_r17_incremental_doubtful_survives_commit_failure`（d27 2/3） | 期望 doubtful | `patching_sleep` | 同上注水 |
+| `test_r17_incremental_self_healed_doubtful_survives_commit_failure`（两日各 2/3） | 期望 doubtful | `patching_sleep` | 同上注水 |
+| `test_r17_commit_failure_after_swap`（3 只全拉满 → ratio 1.0） | 不触发对账 | — | **无需改动** |
+| `test_r21_full_staging_corruption_discards`（断言③提前 return） | 走不到对账循环 | — | **无需改动** |
 | `test_full_doubtful_detail_recorded`（追加用例，08-26 1/3） | 期望 doubtful | `patching_sleep` | 同上注水 |
-| `test_full_rebuild_exempts_booked_doubtful_days`（链前用例） | 同上 | `patching_sleep` | 随前用例继承（透传 fixture） |
+| `test_full_rebuild_exempts_booked_doubtful_days`（链前用例，签名追加并透传 fixture——见下） | 期望 doubtful | `patching_sleep` | 同上注水 |
 | `test_incremental_doubtful_detail_recorded`（追加用例，d27 2/3） | 期望 doubtful | `patching_sleep` | 同上注水（保持小样本：本用例验证明细落库格式，非对账判定） |
 | **阈值敏感**：`test_r7_resume_round_breaker_uses_full_batch_denominator` / `test_r7_success_clears_skip_and_unblocks_commit`（HEALTHY_CODES 21 只、出列后 20/21 = 0.952，距 0.95 线仅 0.0024） | 期望**不**触发 | 不需要 | 不改样本数，在 docstring 加注释"比值 0.952 距 2026 段阈值 0.95 仅 0.0024，改动行数统计口径须回归本用例" |
 
@@ -584,6 +573,22 @@ def test_r6c_reconcile_unavailable_falls_back_doubtful(runtime, job_store,
 格式，非对账判定）+ `fake_pro.suspend_error = "频率超限"` + 签名追加
 `patching_sleep`；精确断言不变（`{"actual": 2, "expected": 3, "ratio": 0.6667}`）。
 
+链式用例签名同步（复审 Q2：被调函数加参后调用方必须透传，否则 TypeError）：
+
+```python
+def test_full_doubtful_detail_recorded(runtime, job_store, sync_store, fake_pro,
+                                       patching_sleep):
+    ...
+
+
+def test_full_rebuild_exempts_booked_doubtful_days(runtime, job_store, sync_store,
+                                                   fake_pro, patching_sleep):
+    test_full_doubtful_detail_recorded(runtime, job_store, sync_store, fake_pro,
+                                       patching_sleep)
+```
+
+同理，`test_r14` 链 `test_r6c_...` 时签名追加 `patching_sleep` 并透传。
+
 - [ ] **Step 4.4: 全量路径用例（R19 全量正向含 BJ 断言 / R22 unit / R23 终态）**
 
 **装置说明（复审 P2/P3 根因）**：`code_days` 决定 staging 行数（→ actual 与断言①
@@ -602,65 +607,25 @@ def test_staging_day_rows_excludes_codes_outside_allowed(tmp_path):
 
 
 def test_full_doubtful_reconciles_via_suspend_list(runtime, job_store,
-                                                   sync_store, fake_pro):
-    """R19 全量：触发日对账一致自动入账；R22：BJ 元数据不被拉取、不入账。"""
+                                                   sync_store, fake_pro,
+                                                   patching_sleep):
+    """R19 全量：触发日（08-26 有 100 只无 bar → 500/600 = 0.833 < 0.95 触发）
+    对账一致（suspend 清单恰为缺的 100 只）→ 自动入账。样本 600 越过量纲临界。"""
     import json
-    bj = "920001"
-    fake_pro.meta_codes = BIG + [bj]
-    fake_pro.meta_suffixes = [".SZ"] * len(BIG) + [".BJ"]   # BJ 被 effective 剔除
     sync_store.insert_calendar_days(CAL)
-    d24, d25, d26, d27 = CAL[:4]
     for c in BIG:
-        fake_pro.code_days[c] = [d24, d25, d26, d27]
-    # 触发日：08-26 有 100 只无 bar → 500/600 = 0.833 < 0.95 触发（R22：BJ 有 bar 也不计入）
+        fake_pro.code_days[c] = CAL[:4]
     for c in BIG[:100]:
-        fake_pro.code_days[c] = [d for d in CAL[:4] if d != d26]
-    fake_pro.code_days[bj] = [d24, d25, d26, d27]    # BJ 有 bar，但不在 effective
-    fake_pro.suspend_codes = {d26: [f"{c}.SZ" for c in BIG[:100]]}  # 缺的 100 只全停牌
+        fake_pro.code_days[c] = [d for d in CAL[:4] if d != CAL[2]]  # 08-26 缺 100 只
+
+    fake_pro.suspend_codes = {CAL[2]: BIG[:100]}     # 夹具自动补 .SZ
 
     ctx = run_worker(fake_pro, {"force": True}, job_store)
 
     assert ctx.status == "success"
-    done = sync_store.done_days()
-    assert set(CAL[:4]) <= done
+    assert set(CAL[:4]) <= sync_store.done_days()
     reconciled = json.loads(sync_store.get_meta("reconciled_days"))
     assert date(2026, 8, 26).isoformat() in reconciled
-    bars = runtime / "storage" / "market" / "bars"
-    assert not (bars / f"{bj}.parquet").exists()     # R22：BJ 未被拉取、不入账
-
-
-def test_full_cancelled_during_reconcile_keeps_staging(runtime, job_store,
-                                                       sync_store, fake_pro,
-                                                       monkeypatch):
-    """R23：对账窗口取消 → ctx.cancel 于换名/落账之前；staging/bars/账本零改动。"""
-    from trendradar.app.services.market_sync import service
-    from trendradar.domain.market.sync.spec import FailureKind
-    from trendradar.infrastructure.tushare.fetch import FetchResult
-    sync_store.insert_calendar_days(CAL)
-    bars = runtime / "storage" / "market" / "bars"
-    bars.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame({"date": [date(2020, 1, 2)], "close": [1.0]}).write_parquet(
-        bars / "OLD.parquet")
-    d24, d25, d26, d27 = CAL[:4]
-    fake_pro.code_days = {
-        "000001": [d24, d25, d26, d27],
-        "000002": [d24, d25, d26, d27],
-        "600000": [d24, d25, d27],          # 08-26 无 bar → 该日 2/3 触发断言①
-    }
-    # 拉取期正常完成（不注 cancel_after），进入对账窗口后首调即返回 cancelled
-    monkeypatch.setattr(service, "fetch_suspend_list",
-                        lambda *a, **k: FetchResult(None, FailureKind.ENV, "cancelled"))
-
-    ctx = run_worker(fake_pro, {"force": True}, job_store)
-
-    assert ctx.status == "cancelled"
-    assert "对账窗口取消" in ctx.error        # 关键：证明走新分支而非既有 R10 路径
-    assert (bars / "OLD.parquet").exists()     # 未换名
-    assert not (runtime / "storage" / "market" / "bars_prev").exists()
-    assert sync_store.done_days() == set()     # 账本零改动
-    staged = sorted(p.stem for p in
-                    (runtime / "storage" / "market" / "staging").glob("*.parquet"))
-    assert staged == sorted(CODES)             # staging 原地保留（R23 验收点，非恒真式）
 ```
 
 - [ ] **Step 4.5: 跑测试确认失败**
@@ -762,7 +727,7 @@ def _staging_day_rows(staging_dir: Path, allowed_codes: set[str]) -> dict:
 - [ ] **Step 4.8: 跑测试确认通过**
 
 Run: `.venv/bin/python -m pytest tests/app/test_market_sync_service.py -q`
-Expected: 全部 PASS
+Expected: 全部 PASS（600 只全量用例约 +3-5s；patching_sleep 屏蔽限频退避，套件总耗时预期 < 90s）
 
 - [ ] **Step 4.9: Commit**
 
@@ -807,9 +772,9 @@ git push origin feature
 
 ## Self-Review（v2.2，吸收复审三 P1-P10）
 
-- **P1**：patching_sleep 声明进所有 suspend_error 用例签名（r6c/r14/明细用例/r13/r17×4/full 两用例）；fixture 确认放 tests 根 conftest。
+- **P1**：patching_sleep 声明进**所有注水 suspend_error 的用例**（原始 r6 / r13 / r17 doubtful-survives ×4 / test_full_doubtful_detail_recorded / test_incremental_doubtful_detail_recorded / test_r6c_...，及链式调用它们的 test_r14、test_full_rebuild_exempts_...）；成功路径与 monkeypatch 用例不需要。fixture 确认放 tests 根 conftest。
 - **P2**：全量正向用例触发条件修正——从 code_days 剔除当日 bar（suspend_codes 不影响 actual），500/600 = 0.833 < 0.95 真触发。
-- **P3**：R22 拆独立 unit 用例 `test_staging_day_rows_excludes_codes_outside_allowed`（直接写 staging 文件验证过滤）；全量用例的 BJ 用 `meta_suffixes` 产出真 `.BJ` 后缀 → effective 剔除 → 断言 BJ 无 parquet。
+- **P3**：R22 拆独立 unit 用例 `test_staging_day_rows_excludes_codes_outside_allowed`（直接写 staging 文件验证过滤，复审 Q3 认可的准确覆盖方式）。
 - **P4**：全量取消用例改 monkeypatch `service.fetch_suspend_list` 返回 cancelled（绕开 progress 计数装置），断言 `"对账窗口取消"` 文案区分既有 R10 路径。
 - **P5**：全量正向用例升级 600 只（越过 et>250 量纲临界）。
 - **P6**：恒真断言替换为 staging 文件名精确断言。
@@ -817,5 +782,6 @@ git push origin feature
 - **P8**：`test_incremental_doubtful_detail_recorded` 统一为"小样本 + suspend_error"（验证明细格式，非对账判定），删除 BIG 指令冲突。
 - **P9**：正向用例注释容差数字修正为 6。
 - **P10**：suspend 注水统一带 `.SZ` 后缀。
+- **机械化名称核查**：本文档引用的全部既有 test_* 用例名已逐个 grep 仓库确认存在（r6/r13/r14/r17×5/r21/r7×2/full×4/incremental detail/orange×3）；新增用例名已标注新增。后续自查固定执行此步。
 - **类型一致性**：`reconciled_days: list[date]` 三处一致；`fetch_suspend_list` 签名一致；`_staging_day_rows(dir, allowed_codes)` 定义与调用一致；FakePro.suspend_d 返回 ts_code（.SZ 后缀）与 fetch_suspend_list 的 [:6] 切片匹配。
 - **回归面**（复审尾注）：`_eff` 真实 codes 波及 runner 全部用例（Step 3.1 已论证兼容）；FakePro.suspend_d 波及 service 全部 doubtful 用例（Step 4.2 表已逐用例注水/透传）。
