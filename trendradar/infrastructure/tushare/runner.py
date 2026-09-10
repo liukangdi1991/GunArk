@@ -9,11 +9,16 @@ from pathlib import Path
 
 import polars as pl
 
-from trendradar.domain.market.sync.selfcheck import doubtful_detail
+from trendradar.domain.market.sync.selfcheck import (
+    doubtful_detail,
+    expected_trading_count,
+    reconciliation_ok,
+)
 from trendradar.domain.market.sync.spec import FailureKind
 from trendradar.infrastructure.tushare.fetch import (
     fetch_code_range,
     fetch_day_by_date,
+    fetch_suspend_list,
     filter_excluded_boards,
     shard_ranges,
 )
@@ -29,6 +34,7 @@ class IncrementalResult:
     claimed_days: list[date] = field(default_factory=list)
     doubtful_days: list[date] = field(default_factory=list)
     doubtful_detail: list[dict] = field(default_factory=list)
+    reconciled_days: list[date] = field(default_factory=list)
     all_days: pl.DataFrame | None = None   # aborted 时为 None（丢弃，不写盘）
     aborted: bool = False
     cancelled: bool = False
@@ -44,10 +50,12 @@ def run_incremental(
     bucket=None,
     progress=None,
     cancel_check=None,
+    suspend_pacing: float = 0.35,
 ) -> IncrementalResult:
     """串行按日拉取（2 次调用/天）。任何非断言①异常立即中止整批（spec §3.5）。"""
     result = IncrementalResult()
     frames: list[pl.DataFrame] = []
+    effective_codes = list(effective.codes)   # R22：行数统计分子口径（复审 N8 提出循环外）
     total = len(missing_days)
     for idx, day in enumerate(missing_days, start=1):
         if cancel_check and cancel_check():
@@ -68,12 +76,29 @@ def run_incremental(
         # 含 doubtful 日：真实交易数据照常累积（INV-4 幂等）；空帧无列，不入 concat
         if df.width > 0:
             frames.append(df)
-        detail = doubtful_detail({day: df.height}, list(effective.rows))
-        if detail:
-            result.doubtful_days.extend(r["day"] for r in detail)
-            result.doubtful_detail.extend(detail)
-        else:
+        # R22：行数统计分子按 effective.codes 过滤（Tushare daily(trade_date=) 现会
+        # 返回 BJ 行，而分母剔 BJ，口径不统一会让阈值真实报警线被稀释）
+        in_eff = (df.filter(pl.col("code").is_in(effective_codes)).height
+                  if df.width > 0 else 0)
+        detail = doubtful_detail({day: in_eff}, list(effective.rows))
+        if not detail:
             result.claimed_days.append(day)
+            continue
+        # 断言①触发 → suspend_d 精确对账（spec v2 §D2）：一致则自动入账
+        alive = expected_trading_count(list(effective.rows), day)
+        rfr = fetch_suspend_list(pro, day, pacing=suspend_pacing,
+                                 cancel_check=cancel_check)
+        if rfr.error == "cancelled":
+            result.cancelled = True        # R23：对账窗口取消 → 终态 cancelled
+            return result
+        suspended_alive = (len(set(rfr.df["code"].to_list()) & set(effective.codes))
+                           if rfr.kind is None else 0)
+        if rfr.kind is None and reconciliation_ok(in_eff, alive, suspended_alive):
+            result.claimed_days.append(day)
+            result.reconciled_days.append(day)
+            continue
+        result.doubtful_days.extend(r["day"] for r in detail)
+        result.doubtful_detail.extend(detail)
     result.all_days = pl.concat(frames) if frames else pl.DataFrame()
     return result
 

@@ -15,9 +15,13 @@ from trendradar.infrastructure.tushare.stocklist import EffectiveList
 
 
 def _eff(expected_counts: dict[date, int]) -> EffectiveList:
-    # 各日 expected 相同（测试场景均如此）：行数取其一，而非逐日累加
-    rows = [(date(2010, 1, 1), None)] * max(expected_counts.values())
-    return EffectiveList((), tuple(rows), {})
+    # 各日 expected 相同（测试场景均如此）：行数取其一，而非逐日累加。
+    # 2026-09-09 v2：codes 必须为真实值——对账分母 suspended ∩ effective.codes
+    # 依赖它；空 codes 会让 suspend 结果被交集清零（假绿，复审 N1/N4）。
+    n = max(expected_counts.values())
+    codes = tuple(f"{i:06d}" for i in range(n))
+    rows = [(date(2010, 1, 1), None)] * n
+    return EffectiveList(codes, rows, {})
 
 
 def _day_resp(day: date, n_stocks: int) -> pd.DataFrame:
@@ -226,3 +230,49 @@ def test_run_backfill_merges_into_bars_and_never_touches_ledger(tmp_path):
     assert outcomes[0].ok
     out = pl.read_parquet(bars / "000001.parquet")
     assert out.height == 1
+
+
+def test_run_incremental_doubtful_reconciles_via_suspend_list():
+    # R19：D2 300/600 = 0.5 < 0.95 触发，但 suspend_d 证实缺的 300 只停牌 → 自动入账。
+    # 样本 600：百分比容差(6) 主导 abs(5)，反向用例才可区分（复审 N1）。
+    pro = DaySeqPro({D1: 600, D2: 300, D3: 600})
+    pro.suspend_d = lambda **kwargs: pd.DataFrame(
+        [{"ts_code": f"{i:06d}.SZ"} for i in range(300, 600)])  # 缺的 300 只停牌
+    result = run_incremental(pro, [D1, D2, D3], exclude_boards=None,
+                             effective=_eff({D1: 600, D2: 600, D3: 600}))
+    assert not result.aborted
+    assert result.claimed_days == [D1, D2, D3]
+    assert result.doubtful_days == []
+    assert result.reconciled_days == [D2]
+
+
+def test_run_incremental_doubtful_when_suspend_list_empty():
+    # R20 反向：停牌清单为空 → 缺口 300 > 容差 12 → 仍 doubtful
+    # （证明正向通过来自对账交集而非容差兜底；复审 N1 反证）
+    pro = DaySeqPro({D1: 600, D2: 300, D3: 600})
+    pro.suspend_d = lambda **kwargs: pd.DataFrame({"ts_code": []})
+    result = run_incremental(pro, [D1, D2, D3], exclude_boards=None,
+                             effective=_eff({D1: 600, D2: 600, D3: 600}))
+    assert result.claimed_days == [D1, D3]
+    assert result.doubtful_days == [D2]
+    assert result.reconciled_days == []
+
+
+def test_run_incremental_cancelled_during_reconcile_aborts_batch():
+    # R23（增量）：对账窗口取消 → result.cancelled → 整批中止、一行不写。
+    # cancel_check 计数：D1 拉取(1)、D2 拉取(2) 放行；D2 对账(3) 命中。
+    pro = DaySeqPro({D1: 600, D2: 300, D3: 600})
+    pro.suspend_d = lambda **kwargs: pd.DataFrame(
+        [{"ts_code": f"{i:06d}.SZ"} for i in range(300, 600)])
+    calls = {"n": 0}
+
+    def cancel_check():
+        calls["n"] += 1
+        return calls["n"] > 2
+
+    result = run_incremental(pro, [D1, D2, D3], exclude_boards=None,
+                             effective=_eff({D1: 600, D2: 600, D3: 600}),
+                             cancel_check=cancel_check)
+    assert result.cancelled
+    assert result.claimed_days == [D1]           # D2/D3 未入账
+    assert result.doubtful_days == []            # 中止路径不落 doubtful（重跑自愈）
