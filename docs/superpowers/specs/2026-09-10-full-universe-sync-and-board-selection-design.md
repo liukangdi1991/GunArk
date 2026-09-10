@@ -1,6 +1,9 @@
 # 全市场拉取（含北交所）与选股板块过滤设计
 
-> 版本：v3.1（2026-09-10）。**修订既有 spec**：取代 `2026-08-27-market-sync-redesign-design.md`
+> 版本：v3.2（2026-09-10）。v3.1→v3.2：吸收第九轮复审 N1-N5——R24/§3.2 转板股
+> OK_EMPTY 语义勘误（本 5 只不可达）、D3 校验落点定死提交前、§3.4 退市样本 252→257、
+> 清查表补 2 行、结果页列头改"所属行业"定案（撤销 market 改绑）；D5 增 A/B 收尾项。
+> **修订既有 spec**：取代 `2026-08-27-market-sync-redesign-design.md`
 > R16 的"`.BJ` 股永不进入拉取清单与 expected"条款（该条款的立论"Tushare daily 物理不提供
 > 北交所行情"已被实测证伪，详见 §3.1）。与 `2026-09-09-sync-doubtful-v2-design.md` 的联动
 > 见 §4-D6。
@@ -41,7 +44,7 @@
 
 | 编号 | 需求 |
 |---|---|
-| R24 | 全量拉取覆盖北交所：撤销 `build_effective_list` 的 `.BJ` 剔除。345 只在市 920x 正常拉取；3 只转板股（833x/832x → 已转创业板/科创板）在精选层时期有数据、转板后无数据（走 `OK_EMPTY` 语义：不写文件、不计失败）；见 §8 已知限制——转板双代码口径 |
+| R24 | 全量拉取覆盖北交所：撤销 `build_effective_list` 的 `.BJ` 剔除。345 只在市 920x 正常拉取；3 只转板股（833x/832x → 已转创业板/科创板）**正常拉取精选层段**（钳制窗口截断于转板日，窗口内 299~311 行可得，§3.1）。`OK_EMPTY` 仅适用于钳制窗口内确无数据的代码——**本 5 只（2 退市 + 3 转板）均不适用**；见 §8 已知限制——转板双代码口径 |
 | R25 | 涨跌停规则覆盖 920x 北交所（±30%）：`_limit_pct` 改用 `is_bse_code` 单一实现源，消除号段漂移风险 |
 | R26 | 选股板块过滤：请求新增 `boards`（主板/创业板/科创板/北交所）；默认不传 = 全宇宙（现状不变）；与 `codes` 白名单叠加为交集；非法板块值 400 |
 | R27 | 同步侧一致性收敛：撤销"北交所永久剔除"硬编码；`exclude_boards` 机制保留（默认关闭）但**无 bse 键——上线后北交所无法经此排除**（前端占位文案需说明该选项只对创业板/科创板生效） |
@@ -67,7 +70,7 @@
 
 ### 3.2 北交所代码族与退市/转板构成
 
-| 前缀 | 在市 920x | 2026 退市 920x | 2022 转板 833x/832x（.BJ 代码已无数据） |
+| 前缀 | 在市 920x | 2026 退市 920x | 2022 转板 833x/832x（转板后 .BJ 无新数据；转板前精选层段可拉） |
 |---|---|---|---|
 | 920 | 343 | 2（920680 广道退、920305 云创退） | — |
 | 833/832 | — | — | 3（832317→688287 已退、833874→301192、833994→301321） |
@@ -98,7 +101,9 @@
 | `fetch.py:EXCLUDE_BOARD_PREFIXES`（dict） `{"gem","star"}` | 可选的拉取排除 | 保留（R27；默认关闭；**无 bse 键——上线后北交所无法经此排除**） |
 | `service.py:54` `BSE_UNAVAILABLE_REASON` | 显式补齐的 BJ 拒绝理由 | **删除**（BJ 可拉后成死分支；`is_bse_code` 导入同步清理） |
 | `service.py:513` `is_bse_code` 三元 | 补齐跳过理由 | 同上 |
-| `scripts/check_delisted_adj_factor.py:161,163,173` | 运维诊断工具：调 `build_effective_list`、打印"已剔北交所"、算熔断阈值 | 更新文案 + 重跑（有效清单 5470→5818、退市样本 250→255、熔断阈值 273→290），新基线记入 review-backlog |
+| `scripts/check_delisted_adj_factor.py:161,163,173` | 运维诊断工具：调 `build_effective_list`、打印"已剔北交所"、算熔断阈值 | 更新文案 + 重跑（有效清单 5470→5818、退市样本 252→257、熔断阈值 273→290），新基线记入 review-backlog |
+| `scripts/check_delisted_adj_factor.py:66` 注释 | "92,4,8→.BJ"（复用 `_to_ts_code` 说明） | 无需改（R24 后语义仍正确） |
+| `tests/app/test_market_sync_service.py:661-667` `test_explicit_backfill_rejects_bse_code` | docstring"北交所行情物理不可得" + `"北交所" in ctx.error` 断言 | **R28④ 一并反转**（更名 accepts + docstring/断言改走成功路径） |
 | `.superpowers/handoff.md:57` | "北交所 30%（4/8 开头）" | 更新为"92/4/8 开头，单一实现源 `spec.BSE_PREFIXES`" |
 | 前端 MarketDataPage 占位文案 | "北交所永久剔除" | 更新（R27） |
 
@@ -176,13 +181,17 @@ boards + codes 同时  → 交集：白名单中 market ∈ boards 的子集
   ```
 
   仅在 if 分支加过滤会**静默丢弃交集语义**（白名单原样通过、无报错、无测试覆盖）。
-- **校验**：`validate_selection_request` 增加 boards 取值校验，非法值 → `ValueError` → 400
-  （与既有 group/strategy id 校验同风格）；boards 为空列表按"不传"处理。
+- **校验（落点在提交前，复审 N2）**：`validate_selection_request` 签名加 `market_store`
+  参数，承担 boards 取值校验（非法值 → `ValueError` → 400，与既有 group/strategy id
+  校验同风格；boards 为空列表按"不传"处理）**与 market 列可得性探测**。三个调用点
+  （presenters.py:885 / :946、routes/backtest.py:151）均在 enqueue 前执行且已握有
+  market_store，可直接传入。**不得**把该校验放进 `_run_selection`/worker——worker 内
+  raise 只会作业 failed，HTTP 早已 202 返回，前端拿不到 400。
 - **null market 边界**：`T600018`（2006 退市）在任何板块过滤下都不命中（`market ∉ boards`）；
   该符号在任何现代选股区间均无 bar，无实际影响，但语义在本文档定死。
 - **stock_meta 降级分支边界（复审 S14）**：`stock_meta()` 在 parquet 缺失/读取异常时回落
   扫描 bars 文件，仅返回 `code` 列（无 `market`）→ boards 过滤会抛 `ColumnNotFoundError`。
-  处置：market 列缺失时**raise ValueError 走 400**（静默放宽会让用户点"北交所"却拿到
+  处置：market 列缺失时**在提交前校验（见上条落点）raise ValueError 走 400**（静默放宽会让用户点"北交所"却拿到
   全宇宙 5900 只——结果看着正常但语义错误）；R26 测试计划补
   `test_selection_boards_without_market_column`。
 - **改动点（修正）**：单次/批量/选股+回测 **三个调用方**共用 `_run_selection`
@@ -192,11 +201,12 @@ boards + codes 同时  → 交集：白名单中 market ∈ boards 的子集
 
 1. **选股工作台**（`SelectionWorkspacePage`）：新增"板块"多选（主板/创业板/科创板/北交所，
    默认全选四板块），提交时随请求发送 `boards`。
-2. **结果页**："所属板块"列修正——现状 `dataIndex: "industry"` 渲染的是**行业**（银行/
-   软件服务等），并非板块。修正面（复审 I3）：`SelectionPick` 增加 `market` 字段
-   （presenters 的 meta 查找一并读 `market` 列——`_enrich_stock_info` 与
-   `_stock_meta_by_code` 两个助手同步），选股结果页"所属板块"列改绑 `market`；
-   **BacktestReportTables.tsx** 三处同名列表头（:116/:161/:187）同步改绑 `market`。
+2. **结果页**："所属板块"列头勘误——现状列头"所属板块"绑 `dataIndex: "industry"`，
+   渲染的是**行业**（银行/软件服务等），标题与数据不符。修正（复审 N5 裁定，撤销
+   v3.1 的 market 改绑方案）：**四处列表头改"所属行业"**（SelectionResultPage.tsx:88、
+   BacktestReportTables.tsx:116/:161/:187），`dataIndex` 保持 `industry` 不动——
+   不加列、不改宽、不动 presenter 与 `SelectionPick` 结构。板块信息经筛选上下文自明
+   （boards 过滤后的 picks 全部属于所选板块）。
 3. **同步页**（`MarketDataPage`）：`exclude_boards` 选项保留；占位文案
    "排除板块（默认不排除；北交所永久剔除）" → "排除板块（可选创业板/科创板；
    北交所随全市场拉取，不适用此选项）"。
@@ -210,6 +220,10 @@ boards + codes 同时  → 交集：白名单中 market ∈ boards 的子集
   - 直接 upsert 进 bars、INV-3 不碰日账本、不进全量自检②③④/换名/落账/
     accept_partial_baseline 闸门，失败逐只点名
   - 调用量：348 × 2 ≈ 700 次；TokenBucket(270/min) → **+2.6 分钟**
+- **上线后 A/B 对比（收尾项，防研究输出被静默改写）**：同策略同窗口各跑一次
+  boards 全 vs 排除北交所，记录 trade_count/胜率/ΣPnL 差异并记入 review-backlog。
+  依据：920x 流通市值中位 8.6 亿 → ≥50 亿市值门槛策略族 343 只中仅 12 只可能命中；
+  不设门槛的 9 个形态类策略会立即看到完整 BJ 集合，picks 集合将实际改变。
 - 现有 343 个北交所文件**无需清理**——backfill 即覆盖（INV-4 幂等），且增量路径
   本就在持续追加。回填前北交所数据"只有两天"属已知过渡态。
 - **选股侧影响**：宇宙只数不变（`stock_meta()` 全量 5900）；变的是 343 个文件由
@@ -233,10 +247,10 @@ boards + codes 同时  → 交集：白名单中 market ∈ boards 的子集
 |---|---|
 | R24 | `test_effective_list_includes_bse_codes`（920x 在 effective；3 只转板 833x/832x 钳制区间非空 → 同样进 codes/tasks，正常拉取精选层数据）；既有 BJ 排除用例改写（见 R28） |
 | R25 | 扩展既有 `test_backtest_execution.py::test_limit_up_price_bse`（430001 老号段保留）+ 新增 920x 断言（`limit_up_price(10.0, code="920001") == 13.0`）；+ `min_trading_shares(code="920001") == 100`（钉住默认档）；创业板/科创板 20% 与默认 10% 既有断言保持绿 |
-| R26 | `test_selection_boards_filter_universe`（验收断言 = picks 非空 且 pick.code 全 ∈ 当日 stock_meta 中 market=='北交所' 的在册只数集合，不硬编码 348）；`test_selection_boards_plus_codes_intersection`；`test_selection_invalid_board_400`；`test_selection_default_universe_unchanged`（不传 boards 行为不变）；`test_selection_boards_without_market_column`（降级分支：raise 400） |
+| R26 | `test_selection_boards_filter_universe`（验收断言 = picks 非空 且 pick.code 全 ∈ 当日 stock_meta 中 market=='北交所' 的在册只数集合，不硬编码 348）；`test_selection_boards_plus_codes_intersection`；`test_selection_invalid_board_400`；`test_selection_default_universe_unchanged`（不传 boards 行为不变）；`test_selection_boards_without_market_column`（降级分支：**提交前**校验 raise → 400，见 D3 校验落点） |
 | R26（选股回测入口） | `test_selection_backtest_boards_filter`（经 type=`selection_backtest` 提交含 boards 的请求 → 宇宙按板块过滤——否则 Critical 3 修复无法被证伪）；`test_selection_backtest_boards_codes_intersection` |
 | R27 | 前端文案人工走查；后端 `exclude_boards` 既有用例保持绿（R28 的用例改写对齐——见下方三条） |
-| R28 | ① `test_stocklist.py::test_effective_list_excludes_bj_and_future_listed` 改写（断言集改为 {000001,000004,300001,688001,920099}）；② `test_stocklist.py::test_effective_clamped_range` 改写（`clamped_range("920099") == (date(2020,7,27), LATEST)`）；③ `test_stocklist.py::test_effective_list_exclude_boards_gem_star` 改写（断言集加回 920099——**exclude_boards 无 bse 键，此用例名下 R24 后 920099 回归**）；④ `test_explicit_backfill_rejects_bse_code` 语义反转并更名 `test_explicit_backfill_accepts_bse_code`；⑤ `test_backfill_*` 两用例的 "920001" 换 "999999"（**可选语义清理**：R24 后走 NOT_IN_LIST_REASON 仍 failed + 名字在 error，不会翻红——标注为可选而非必改）；⑥ 过期字面量清理；⑦ 全量回归 |
+| R28 | ① `test_stocklist.py::test_effective_list_excludes_bj_and_future_listed` 改写（断言集改为 {000001,000004,300001,688001,920099}）；② `test_stocklist.py::test_effective_clamped_range` 改写（`clamped_range("920099") == (date(2020,7,27), LATEST)`）；③ `test_stocklist.py::test_effective_list_exclude_boards_gem_star` 改写（断言集加回 920099——**exclude_boards 无 bse 键，此用例名下 R24 后 920099 回归**）；④ `test_explicit_backfill_rejects_bse_code` 语义反转并更名 `test_explicit_backfill_accepts_bse_code`（docstring 与 `"北交所" in ctx.error` 断言同步反转，见 §3.4 清查表行）；⑤ `test_backfill_*` 两用例的 "920001" 换 "999999"（**可选语义清理**：R24 后走 NOT_IN_LIST_REASON 仍 failed + 名字在 error，不会翻红——标注为可选而非必改）；⑥ 过期字面量清理；⑦ 全量回归 |
 
 ## §6 前端影响
 
@@ -244,8 +258,8 @@ boards + codes 同时  → 交集：白名单中 market ∈ boards 的子集
 - 选股回测工作台：**不加**板块控件（复审 C2 裁定按 §7：后端 schema+透传补齐，前端不加
   ——该入口以策略+日期为核心，板块需求由选股工作台承接；但后端 boards/codes 透传
   已补齐，API 层面可用）。
-- 结果页："所属板块"列改绑 `market`，行业另立（或标题改"所属行业"）；BacktestReportTables
-  三处同步。
+- 结果页：四处"所属板块"列头改"所属行业"（`dataIndex` 保持 `industry`，不加列、
+  不改宽；BacktestReportTables 三处同步，见 D4-2）。
 - 同步页：仅文案修正。
 - 其余页面（K 线、行情数据）：零变更。北交所 K 线在 backfill 后自然可看（当前仅 3 根）。
 
@@ -283,3 +297,7 @@ boards + codes 同时  → 交集：白名单中 market ∈ boards 的子集
    如未来需合并视图（拼接 .BJ 旧段 + 新板块段），属独立需求。
 8. **检测灵敏度**：分母 +6.17%（5218→5561）后，0.95 线对应的"允许缺失绝对只数"
    从 261 升至 278（+17）——细截断的检测灵敏度等比例下降约 6%。
+9. **残余风险（显式接受，不阻塞本轮）**：① 板块值域双词表——选股侧中文展示值 vs
+   同步侧 `gem`/`star` 英文键，留待下次动 `exclude_boards` 时统一；② lineage.json 暂不
+   记录 boards 与宇宙规模——D5 前后同一策略同一天的 picks 差异解释依赖 D5 的 A/B
+   对比记录。
