@@ -298,11 +298,74 @@ def test_apply_qfq_grouped_legacy_guards_per_code():
 
 
 
+def _state_frame(state: str, code: str) -> pl.DataFrame:
+    """复审差分用例：5 根收盘、6 种守卫状态（与 apply_qfq 逐段参照对齐）。"""
+    closes = [10.0, 10.7, 11.4, 12.1, 12.8]
+    if state == "real":
+        factors = [1.0] * 5
+        pre_close = [None, 10.0, 10.7, 11.4, 12.1]          # 已重建：恒等式成立
+    elif state == "pre_absent":
+        factors = [1.2, 1.3, 1.4, 1.5, 1.6]                  # 存量：平稳因子 → 缩放
+        pre_close = None
+    elif state == "pre_1null":
+        factors = [1.0] * 5
+        pre_close = [None, 10.0, 10.7, 11.4, 12.1]           # 同 real（1 null 允许）
+    elif state == "pre_3null":
+        factors = [1.0, 1.3, 1.6, 1.9, 2.2]
+        pre_close = [None, None, None, 10.7, 11.4]           # 标志 False + 混合 1.0 → 退化
+    elif state == "mixed_1_0":
+        factors = [1.0, 1.0, 1.3, 1.3, 1.3]
+        pre_close = None                                      # 存量 + 混合 1.0 → 退化
+    elif state == "all_one":
+        factors = [1.0] * 5
+        pre_close = [None, 10.0, 10.7, 11.4, 12.1]           # 从未除权的合法形态
+    else:  # jump_4x
+        return pl.DataFrame({
+            "code": [code] * 2,
+            "date": [1, 2],
+            "close": [100.0, 26.0],
+            "adj_factor": [1.0, 4.0],
+            "pre_close": [99.0, 25.0],
+        })
+    df = pl.DataFrame({
+        "code": [code] * 5,
+        "date": list(range(1, 6)),
+        "close": closes,
+        "adj_factor": factors,
+    })
+    if pre_close is not None:
+        df = df.with_columns(pl.Series("pre_close", pre_close, dtype=pl.Float64))
+    return df
+
+
+@pytest.mark.parametrize("state", ["pre_absent", "pre_1null", "pre_3null", "mixed_1_0", "all_one", "jump_4x"])
+def test_apply_qfq_grouped_matches_per_segment_reference(state):
+    """段级语义等价的差分钉：任意守卫状态下，分组向量化结果必须与逐段
+    apply_qfq 参照一致（复审 Important：pre_3null 曾静默缩放）。"""
+    from trendradar.domain.market.adjust import apply_qfq, apply_qfq_grouped
+    seg = _state_frame(state, code="000001")
+    other = _state_frame("real", code="600519")
+    out, _ = apply_qfq_grouped(pl.concat([seg, other], how="diagonal").sort(["code", "date"]))
+    ref, _ = apply_qfq(seg)
+    assert out.filter(pl.col("code") == "000001")["close"].to_list() == pytest.approx(ref["close"].to_list())
+
+
+def test_apply_qfq_grouped_without_code_column_falls_back():
+    """复审 nit：无 code 列（单票帧）直接调 grouped → 回退单帧 apply_qfq。"""
+    from trendradar.domain.market.adjust import apply_qfq, apply_qfq_grouped
+    df = _grouped_fixture("000001", [100.0, 26.0], [1.0, 4.0], pre_close=[99.0, 25.0]).drop("code")
+    out_g, deg_g = apply_qfq_grouped(df)
+    out_s, deg_s = apply_qfq(df)
+    assert deg_g == deg_s
+    assert out_g["close"].to_list() == pytest.approx(out_s["close"].to_list())
+
+
 def test_apply_qfq_grouped_missing_factor_column_degrades():
     from trendradar.domain.market.adjust import apply_qfq_grouped
     df = _grouped_fixture("000001", [10.0, 10.1], [1.0, 1.0]).drop("adj_factor")
     out, degraded = apply_qfq_grouped(df)
     assert degraded is True and out["close"].to_list() == [10.0, 10.1]
+
 
 def test_build_empty_raises_bars_unavailable():
     df = _daily(dates=[date(2025, 3, 3)], closes=[10.0], factors=[1.0])

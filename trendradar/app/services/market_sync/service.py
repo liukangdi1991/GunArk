@@ -495,8 +495,7 @@ def _staging_day_rows(staging_dir: Path, allowed_codes: set[str]) -> dict:
     s = (
         pl.scan_parquet([str(p) for p in files])
         .group_by("date")
-        .agg(pl.len().alias("total"),
-             pl.col("code").is_in(sorted(allowed_codes)).cast(pl.UInt32).sum().alias("n"))
+        .agg(pl.col("code").is_in(sorted(allowed_codes)).cast(pl.UInt32).sum().alias("n"))
         .collect()
     )
     # 复审 W2：某日若只剩清单外码 → n=0（断言①触发 doubtful），不得整日消失静默入账

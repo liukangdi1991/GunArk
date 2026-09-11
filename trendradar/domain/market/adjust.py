@@ -84,9 +84,19 @@ def apply_qfq_grouped(df: pl.DataFrame, tolerance: float = 0.01) -> tuple[pl.Dat
     """
     if df.is_empty() or "adj_factor" not in df.columns:
         return df, True
+    if "code" not in df.columns:
+        return apply_qfq(df)   # 单票帧回退（复审 nit：公共函数自身兜底）
     f = pl.col("adj_factor")
     g = "code"
     factor_bad = (f.is_null() | f.is_nan() | (f <= 0)).any().over(g)
+    ratio = f / f.shift(1).over(g)
+    # 存量三守卫**无条件**计算（复审 Important）：pre_close 列存在但 null 多
+    # （增量合并形态）时 rebuild=False，仍须跑存量守卫——漏报方向是静默缩放，
+    # 比 apply_qfq 的「误报可见退化」更糟
+    legacy_bad = (
+        (f == 1.0).all().over(g)
+        | ((f == 1.0).any().over(g) & (f != 1.0).any().over(g))
+    ) | ((ratio > 3.0) | (ratio < 1.0 / 3.0)).any().over(g)
     if "pre_close" in df.columns:
         rebuild = (pl.col("pre_close").is_null().sum().over(g) <= 1)
         expected = pl.col("close").shift(1).over(g) * f.shift(1).over(g) / f
@@ -95,16 +105,9 @@ def apply_qfq_grouped(df: pl.DataFrame, tolerance: float = 0.01) -> tuple[pl.Dat
             & ((pl.col("pre_close") - expected).abs() / expected > tolerance)
         )
         identity_bad = row_bad.any().over(g)
-        legacy_bad = pl.lit(False)
     else:
         rebuild = pl.lit(False)
         identity_bad = pl.lit(False)
-        legacy_bad = (
-            (f == 1.0).all().over(g)
-            | ((f == 1.0).any().over(g) & (f != 1.0).any().over(g))
-        ) | (
-            ((f / f.shift(1).over(g)) > 3.0) | ((f / f.shift(1).over(g)) < 1.0 / 3.0)
-        ).any().over(g)
     seg_bad = factor_bad | pl.when(rebuild).then(identity_bad).otherwise(legacy_bad)
     degraded = bool(df.select(seg_bad.any().alias("any"))["any"][0])
     scale_eff = pl.when(seg_bad).then(pl.lit(1.0)).otherwise(f / f.last().over(g))
