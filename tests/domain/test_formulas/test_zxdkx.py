@@ -83,6 +83,17 @@ def test_compute_zx_lines_custom_windows():
     assert valid_long[0] == 10.0
 
 
+def test_compute_zx_lines_long_line_uses_ma14_and_ma28():
+    # 线性递增：四线平均（含 ma14/ma28）< 只取长线两条的均值（修复前）
+    df = pl.DataFrame({"close": [float(i) for i in range(1, 201)]})
+    _, long_line = compute_zx_lines(df)
+    ma14 = sum(range(187, 201)) / 14
+    ma28 = sum(range(173, 201)) / 28
+    ma57 = sum(range(144, 201)) / 57
+    ma114 = sum(range(87, 201)) / 114
+    assert long_line[-1] == pytest.approx((ma14 + ma28 + ma57 + ma114) / 4)
+
+
 def test_zx_stick_ratio():
     short = pl.Series("s", [10.0, 10.5, 11.0])
     long = pl.Series("l", [10.0, 10.0, 10.0])

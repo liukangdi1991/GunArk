@@ -228,7 +228,7 @@ def test_build_adjust_precedes_aggregate_literal_oracle():
 
 def test_build_zx_short_is_tdx_double_ema_and_long_is_ma_composite():
     # 短期趋势线 = 用户 TDX 原文公式 EMA(EMA(C,10),10)（Y=(2X+9Y')/11 递推）——
-    # 与策略侧 short_term_trend_line(MA14) 有意不同（spec §4.4 已知不一致清单）；
+    # 策略侧 short_term_trend_line 已同用该口径（2026-09-08 对齐，spec §4.4）；
     # 多空线 = MA(14/28/57/114) 均值组合，窗口不足为 null。
     closes = [10.0 + 0.1 * i for i in range(20)]
     df = _daily(

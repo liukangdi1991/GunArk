@@ -64,7 +64,7 @@ trendradar/interfaces/api/schemas/market.py   # 补 KlineResponse（response_mod
 - domain（`KlinePeriod`/`AdjustMode` 为 str Enum，定义于 `domain/market/kline.py`；
   前端 types 以 API 契约为镜像，F5）：
   - `apply_qfq(df: pl.DataFrame) -> tuple[pl.DataFrame, bool]`——守卫命中整列退化
-    原价；第二返回值 = degraded（F1：11 键闸门锁死 bars，标志必须走独立通道）
+    原价；第二返回值 = degraded（F1：bars 键集合闸门锁死 bars，标志必须走独立通道）
   - `aggregate_bars(df: pl.DataFrame, period: Literal["weekly","monthly"]) -> pl.DataFrame`
   - `build_kline_series(df, period: KlinePeriod, adjust: AdjustMode)
     -> tuple[pl.DataFrame, bool]`（bars, degraded）——编排：`sort("date")` → 0 行
@@ -95,16 +95,24 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
 → 200 裸对象（无 {"data":...} 包裹，仓库成文约定）:
   {code, name, industry, period, adjust, adjust_degraded, last_bar_date,
    bars: [{timestamp, date, open, high, low, close, pre_close,
-           volume, amount, zx_short, zx_long}]}
+           volume, amount, zx_short, zx_long, mt, mt_prev, mt_color,
+           xpsd_short, xpsd_long, xpsig_zero, xpsig_w20, xpsig_xlong,
+           xpsig_xmid, ...}]}——实现期随指标接入扩到 **22 键**
+   （EXPECTED_BAR_KEYS 为唯一闸门，见 §7）
 → 404 {detail: 中文} bars 文件不存在或存在但 0 行（真无数据）
 → 503 {detail: 中文} bars 目录缺失 / 读 IO 异常（疑似整目录换名窗口，可重试）
 → 422 code 不匹配 ^\d{6}$（str + Path(pattern=...)，禁 int：000001→1）/ period|adjust
       归一化后非法（后端收 str|None，小写归一，未知值 422）
+
+GET /api/stocks/{code}/snapshot
+→ 200 {circ_mv, turnover_rate, ...}（最新交易日快照：流通市值/换手率等；
+  无 token / 接口异常时字段 null；GET 无写副作用）
 ```
 
 字段语义：
 - `timestamp`：毫秒，**后端按 Asia/Shanghai 午夜计算**（M11+N19：前端零转换、消时区歧义）；
-  `date`：`YYYY-MM-DD` 字符串（可读性）。bars 元素**键集合精确为上述 11 键**（§7 唯一闸门）
+  `date`：`YYYY-MM-DD` 字符串（可读性）。bars 元素键集合随指标接入扩至 **22 键**
+  （设计稿初版为 11 键；`EXPECTED_BAR_KEYS` 为唯一闸门，见 §7）
 - `adjust_degraded`：仅 adjust=qfq 时有意义——守卫命中（含 1.0 特征守卫，仅在重建
   标志不成立时启用，判据见 4.3.1）⇒ true + 后端 warn（B1②：禁止把降级伪装成正常）；
   adjust=none 时恒 false
@@ -162,7 +170,8 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
    - **短期趋势线（zx_short）**：用户 TDX 原文公式 **EMA(EMA(C,10),10)**
      （Y=(2X+9Y')/11 ⟺ polars `ewm_mean(alpha=2/11, adjust=False)` 双重平滑），
      实证 300274@2026-09-07 = 101.9066 ≈ 通达信 101.91。**与策略侧
-     `short_term_trend_line`(MA14) 有意不同**（见 §4.4）。EMA 自首根收敛，
+     `short_term_trend_line` 已对齐**（2026-09-08 用户拍板策略口径同用 TDX 双重
+     EMA，§4.4 清单已销）。EMA 自首根收敛，
      无 null 预热。**ZX 参数 v1 不可调**（M17）
 4. **涨跌幅（前端）**：qfq 档由序列相邻 close 比值计算（等价性来自因子比相消
    f_t/f_{t−1} = c_{t−1}/pre_close_t）。**none 档**优先 (close−pre_close)/pre_close
@@ -313,7 +322,7 @@ GET /api/stocks/{code}/kline?period=daily|weekly|monthly&adjust=qfq|none
     增量合并（旧行 pre_close=null、新行真因子 F）→ 标志判「未重建」→ 1.0 特征
     守卫仍触发、degraded=true（现有 fixture 是「列整体缺失」，此状态原清单未盖到）
 - `tests/interfaces/test_kline_api.py`（模块内私有 helper，随现有目录惯例）：
-  200 形状 + **bars 键集合精确等于 11 键**（N21 唯一闸门）+ `type(close) is float`
+  200 形状 + **bars 键集合精确等于 EXPECTED_BAR_KEYS（22 键）**（唯一闸门）+ `type(close) is float`
   + 严格 JSON 可解析（NaN→null，N6）；404（空帧）/503（目录缺失、读异常两 fixture，
   F2 机制）/422（Path 校验，F3）分支；adjust_degraded 顶层字段断言（degraded
   fixture vs 正常 fixture，F1 落钉后可写）；meta 缺文件/缺列降级（M9）；2 行极短

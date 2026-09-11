@@ -13,7 +13,7 @@ from __future__ import annotations
 import polars as pl
 
 
-def _rsv(close: pl.Series, low: pl.Series, high_close: pl.Series, n: int) -> pl.Series:
+def _rsv(close: pl.Series, low: pl.Series, n: int) -> pl.Series:
     """100*(C−LLV(L,N))/(HHV(C,N)−LLV(L,N))；HHV 取收盘、LLV 取最低（TDX 原文）。
 
     min_samples=1：TDX 窗口按可用根数收缩（首根即有值），与通达信行为一致。
@@ -37,10 +37,10 @@ def compute_wash_lines(df: pl.DataFrame, n1: int = 3, n2: int = 21) -> dict[str,
     close = df["close"]
     low = df["low"]
 
-    short = _rsv(close, low, close, n1)
-    mid = _rsv(close, low, close, 10)
-    mid_long = _rsv(close, low, close, 20)
-    long_ = _rsv(close, low, close, n2)
+    short = _rsv(close, low, n1)
+    mid = _rsv(close, low, 10)
+    mid_long = _rsv(close, low, 20)
+    long_ = _rsv(close, low, n2)
 
     out = df.select(
         short.alias("xpsd_short"),
