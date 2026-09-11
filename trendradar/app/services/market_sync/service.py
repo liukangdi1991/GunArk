@@ -294,6 +294,7 @@ def _run_incremental(ctx, pro, store, effective, exclude_boards, plan,
                     f"expected={r['expected']} ratio={r['ratio']}", level="WARN")
         return False, (f"{len(res.doubtful_days)} 个交易日行数异常（doubtful）："
                        f"{_fmt_days(res.doubtful_days)}，未入账，可自愈或人工确认入账"), False
+    store.set_meta("doubtful_detail", "[]")   # 成功即清陈旧审计键（与全量路径对齐，复审 W2）
     return True, None, False
 
 
@@ -394,6 +395,18 @@ def _run_full(ctx, pro, store, effective, request, plan,
         _staging_day_rows(staging_dir, allowed_codes), list(effective.rows),
         already_booked=store.done_days(),
     )
+    # ---- 带缺口提交约束（§3.7）：卡在对账与换名/落账之前（复审 W2）——
+    # 注定 failed 的轮次不白烧 N 次 suspend_d 调用（含 pacing/退避），也少一个取消窗口
+    skipped = store.skipped_rows()
+    if skipped:
+        if not request.get("accept_partial_baseline"):
+            ctx.fail(f"sync_skipped 非空（{len(skipped)} 只），"
+                     f"带缺口提交需显式 accept_partial_baseline=true；staging 保留续传")
+            return
+        if any(r.get("kind") == FailureKind.ENV.value for r in skipped):
+            ctx.fail("sync_skipped 含 env 残留，拒绝带缺口提交，等下轮")
+            return
+
     reconciled: list[date] = []
     doubtful: list[date] = []
     doubtful_detail_rows: list[dict] = []
@@ -412,17 +425,6 @@ def _run_full(ctx, pro, store, effective, request, plan,
         else:
             doubtful.append(r["day"])
             doubtful_detail_rows.append(r)
-
-    # ---- 带缺口提交约束（§3.7）：卡在换名/落账之前 ----
-    skipped = store.skipped_rows()
-    if skipped:
-        if not request.get("accept_partial_baseline"):
-            ctx.fail(f"sync_skipped 非空（{len(skipped)} 只），"
-                     f"带缺口提交需显式 accept_partial_baseline=true；staging 保留续传")
-            return
-        if any(r.get("kind") == FailureKind.ENV.value for r in skipped):
-            ctx.fail("sync_skipped 含 env 残留，拒绝带缺口提交，等下轮")
-            return
 
     # ---- 单向换名（§3.6）→ ④ → 单事务落账 ----
     swap_in_bars(market_dir)
@@ -445,6 +447,8 @@ def _run_full(ctx, pro, store, effective, request, plan,
         return
     store.set_meta("reconciled_days", json.dumps(
         [d.isoformat() for d in reconciled]))
+    for day in reconciled:
+        ctx.log(f"reconciled {day}：行数触发但 suspend_d 对账一致，自动入账")
     if doubtful:
         _persist_doubtful_detail(store, doubtful_detail_rows)
         for r in doubtful_detail_rows:
@@ -491,11 +495,17 @@ def _staging_day_rows(staging_dir: Path, allowed_codes: set[str]) -> dict:
         return {}
     s = (
         pl.scan_parquet([str(p) for p in files])
-        .filter(pl.col("code").is_in(sorted(allowed_codes)))   # R22：分子剔 BJ/清单外
+        .group_by("date").agg(pl.len().alias("total")).collect()
+    )
+    covered = {row["date"] for row in s.iter_rows(named=True)}
+    s2 = (
+        pl.scan_parquet([str(p) for p in files])
+        .filter(pl.col("code").is_in(sorted(allowed_codes)))   # R22：分子剔清单外（BJ 已随 R24 入清单）
         .group_by("date").agg(pl.len().alias("n")).collect()
     )
-    return {row["date"]: row["n"] for row in s.iter_rows(named=True)}
-
+    rows = {row["date"]: row["n"] for row in s2.iter_rows(named=True)}
+    # 复审 W2：某日若只剩清单外码 → 记 0（断言①触发 doubtful），不得整日消失静默入账
+    return {d: rows.get(d, 0) for d in covered}
 
 def _run_backfill_batch(ctx, pro, store, effective, codes, bars_dir,
                         bucket, progress, cancel_check) -> tuple[bool, list[dict]]:

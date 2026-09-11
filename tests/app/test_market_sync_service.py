@@ -1070,6 +1070,19 @@ def test_staging_day_rows_excludes_codes_outside_allowed(tmp_path):
     assert rows == {d: 2}                            # BJ 那行被过滤掉
 
 
+
+def test_staging_day_rows_zero_fills_day_with_only_outside_codes(tmp_path):
+    """复审 W2：某日若只剩清单外码 → 该日记 0（断言①按 0 触发 doubtful），
+    不得整日从键域消失而静默入账。"""
+    from trendradar.app.services.market_sync.service import _staging_day_rows
+    d1, d2 = date(2026, 8, 26), date(2026, 8, 27)
+    pl.DataFrame({"code": ["000001"], "date": [d1], "close": [1.0]}).write_parquet(
+        tmp_path / "000001.parquet")
+    pl.DataFrame({"code": ["920001"], "date": [d2], "close": [1.0]}).write_parquet(
+        tmp_path / "920001.parquet")
+    rows = _staging_day_rows(tmp_path, {"000001"})
+    assert rows == {d1: 1, d2: 0}
+
 def test_full_doubtful_reconciles_via_suspend_list(runtime, job_store, sync_store,
                                                    fake_pro, patching_sleep,
                                                    fast_bucket):
