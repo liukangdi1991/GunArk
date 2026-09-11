@@ -271,13 +271,16 @@ def _run_selection(
                 selector = selectors[defn.strategy_id]
                 # 只判当日有行情的股票：停牌股（最后 bar 早于选股日）不参与判定
                 day_warmup = _filter_warmup(warmup, candidate_codes, trade_date, dates_by_code)
+                _t0 = time.time()
                 result = selector.select_day(context, day_warmup)
+                _elapsed = time.time() - _t0
                 if result.selected_codes:
                     all_signals.append(StrategySignal(
                         strategy_id=result.strategy_id,
                         strategy_name=result.strategy_name,
                         signal_date=result.trade_date,
                         codes=result.selected_codes,
+                        elapsed_seconds=_elapsed,
                     ))
             except Exception as e:
                 ctx.log(f"Error in strategy {defn.strategy_id} on {trade_date}: {e}", level="WARN")

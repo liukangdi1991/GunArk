@@ -1,7 +1,7 @@
 import { ArrowLeftOutlined } from "@ant-design/icons";
 import { Alert, Button, Card, Col, Row, Space, Statistic, Table, Typography, message } from "antd";
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { ParamsSnapshot, StrategySnapshots } from "../../components/StrategySnapshots";
 import { getBacktestReport } from "../../services/backtests";
 import type { BacktestReportResponse, BacktestSummary } from "../../types/backtest";
@@ -147,7 +147,12 @@ export function BacktestReportPage() {
                     {run.selection_from || run.selection_to ? (
                       <div className="metric-range-row">
                         <Text className="metric-range-label">选股</Text>
-                        <Text className="metric-range-value">{formatDateRange(run.selection_from, run.selection_to)}</Text>
+                        <Text className="metric-range-value">
+                          {formatDateRange(run.selection_from, run.selection_to)}
+                          {run.selection_execution_keys?.map((k) => (
+                            <Link key={k} to={`/selections/${k}`} style={{ marginLeft: 8 }}>查看选股</Link>
+                          ))}
+                        </Text>
                       </div>
                     ) : null}
                   </div>

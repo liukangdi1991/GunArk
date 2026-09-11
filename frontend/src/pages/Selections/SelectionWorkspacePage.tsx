@@ -115,7 +115,7 @@ export function SelectionWorkspacePage() {
       const result = await deleteSelectionResults(runIds);
       messageApi.success(`已删除 ${result.deleted} 条选股历史`);
       if (result.file_errors?.length) {
-        messageApi.warning(`有 ${result.file_errors.length} 个本地文件未能删除，请检查日志或手动清理。`);
+        messageApi.warning(`有 ${result.file_errors.length} 个本地文件未能删除：${result.file_errors[0]}`);
       }
       setSelectedRunIds([]);
       if (!runIds) {

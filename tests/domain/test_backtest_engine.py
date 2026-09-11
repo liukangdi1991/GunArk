@@ -1024,3 +1024,50 @@ class TestMinimumLotForHighPrice:
         )
         assert result.trades == []
         assert [s.reason for s in result.skips] == ["资金预算不足"]
+
+
+class _CountingCalendarStore(FakeMarketStore):
+    """统计 get_calendar 调用次数——复审 E2E #1 的性能回归观测点。"""
+
+    def __init__(self, rows):
+        super().__init__(rows)
+        self.get_calendar_calls = 0
+
+    def get_calendar(self):
+        self.get_calendar_calls += 1
+        return super().get_calendar()
+
+
+
+class TestZxForceSellCalendarCost:
+    def test_zx_force_sell_does_not_rescan_calendar_per_position(self):
+        """复审 E2E #1：ZX 强平判定不得逐持仓重扫日历。旧行为每持仓日 3 次
+        get_calendar（每次 glob+stat 全部 bars 文件）→ 全市场回测按天卡死。"""
+        start = date(2026, 1, 1)
+        n = 120
+        rows = []
+        for i in range(n):
+            close = 10.0 if i < 112 else (9.9 if i == 112 else 9.8)
+            rows.append({"date": start + timedelta(days=i), "open": close,
+                         "high": close * 1.01, "low": close * 0.99,
+                         "close": close, "volume": 1000000})
+        store = _CountingCalendarStore({"000001": rows, "000002": rows})
+
+        signal_set = _make_signal_set("test", "Test", {start: ["000001", "000002"]})
+        config = _make_config(
+            capital={"initial_cash": 100000, "mode": "unlimited_cash",
+                     "fixed_cash_per_trade": 50000},
+            execution={"fixed_hold_n_days": 115,
+                       "force_sell_on_two_day_close_below_long_term_bull_bear_line": True},
+        )
+        result = BacktestEngine(config).run(signal_set, store)
+
+        # ZX 强平确已触发：两票都在 i=114（连续两根收在 114 窗均线下方）被强平，
+        # hold 目标在 i=116——卖出的唯一原因是 ZX 判定
+        assert len(result.trades) == 2
+        assert all(t.sell_date == start + timedelta(days=114) for t in result.trades)
+        # 旧行为：~113 持仓日 × 3 次 ≈ 数百次；修后仅 run() 入口 1 次
+        assert store.get_calendar_calls == 1
+
+
+

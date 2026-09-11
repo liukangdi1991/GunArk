@@ -654,13 +654,23 @@ def test_bulk_delete_selection_results(client, tmp_path):
 
 
 def test_delete_selection_blocked_by_backtest_reference(client, tmp_path):
+    """引用保护（复审 E2E #2 更新契约）：被**仍存在**的回测引用 → 删除被拒。
+    悬空引用（回测目录已删）不再阻断——见 test_delete_backtest_heals_dangling_selection_reference。"""
     import sqlite3
+
+    bt_root = tmp_path / "storage" / "objects" / "executions" / "bt_xyz"
+    (bt_root / "backtest").mkdir(parents=True)
+    (bt_root / "backtest" / "metrics.json").write_text("{}")
 
     db = tmp_path / "storage" / "app.db"
     conn = sqlite3.connect(str(db))
     conn.execute(
         "INSERT INTO executions (execution_key, execution_type) VALUES (?, ?)",
         ("20260820_100000_selection_a2b3", "selection"),
+    )
+    conn.execute(
+        "INSERT INTO executions (execution_key, execution_type) VALUES (?, ?)",
+        ("bt_xyz", "backtest"),
     )
     conn.execute(
         "INSERT INTO execution_links (source_execution_key, target_execution_key, link_type) "
@@ -682,6 +692,52 @@ def test_delete_selection_blocked_by_backtest_reference(client, tmp_path):
     assert (
         tmp_path / "storage" / "objects" / "executions" / "20260820_100000_selection_a2b3"
     ).is_dir()
+
+
+def test_delete_backtest_heals_dangling_selection_reference(client, tmp_path):
+    """复审 E2E #2：删除回测后 links 残留不得永久锁死其选股——
+    引用检查过滤已不存在的回测目录（自愈），且删回测时清理 links 行。"""
+    import sqlite3
+
+    db = tmp_path / "storage" / "app.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "INSERT INTO executions (execution_key, execution_type) VALUES (?, ?)",
+        ("20260820_100000_selection_a2b3", "selection"),
+    )
+    conn.execute(
+        "INSERT INTO executions (execution_key, execution_type) VALUES (?, ?)",
+        ("20260820_100100_backtest_c3d4", "backtest"),
+    )
+    conn.execute(
+        "INSERT INTO execution_links (source_execution_key, target_execution_key, link_type) "
+        "VALUES (?, ?, 'backtest_uses_selection')",
+        ("20260820_100000_selection_a2b3", "20260820_100100_backtest_c3d4"),
+    )
+    conn.commit()
+    conn.close()
+
+    # 引用保护先生效：回测目录存在时，选股必须删不掉
+    resp = client.request(
+        "DELETE", "/api/selection-results",
+        json={"execution_keys": ["20260820_100000_selection_a2b3"]},
+    )
+    assert resp.json()["deleted"] == 0
+
+    # 删回测（真实删除目录 + 清理 links 行）
+    resp = client.request(
+        "DELETE", "/api/backtest-results",
+        json={"execution_keys": ["20260820_100100_backtest_c3d4"]},
+    )
+    assert resp.json()["deleted"] == 1
+
+    # 选股不再被悬空引用锁死 → 可删
+    resp = client.request(
+        "DELETE", "/api/selection-results",
+        json={"execution_keys": ["20260820_100000_selection_a2b3"]},
+    )
+    assert resp.json()["deleted"] == 1
+    assert not (tmp_path / "storage" / "objects" / "executions" / "20260820_100000_selection_a2b3").exists()
 
 
 def test_delete_backtest_result_rejects_dot(client, tmp_path):

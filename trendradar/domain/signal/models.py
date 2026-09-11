@@ -12,6 +12,7 @@ class StrategySignal:
     primary_group_id: str = ""
     signal_date: date | None = None
     codes: list[str] = field(default_factory=list)
+    elapsed_seconds: float = 0.0   # 该策略当日 select_day 耗时（复审 E2E #4：原选股器算出后未持久化）
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,7 @@ class SignalSet:
                     "primary_group_id": s.primary_group_id,
                     "signal_date": str(s.signal_date) if s.signal_date else None,
                     "codes": s.codes,
+                    "elapsed_seconds": s.elapsed_seconds,
                 }
                 for s in self.signals
             ],

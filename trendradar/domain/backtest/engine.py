@@ -80,7 +80,7 @@ class BacktestEngine:
             if progress:
                 progress(idx - start_idx + 1, total)
 
-            self._process_exits(cur_date, state, trades, cal_index, market_store)
+            self._process_exits(cur_date, state, trades, cal_index, market_store, calendar)
             self._process_entries(cur_date, signals_by_date.get(cur_date, []), state, skips, market_store)
 
             if tracks_nav:
@@ -393,12 +393,8 @@ class BacktestEngine:
         return None, 0
 
     def _process_exits(
-        self,
-        cur_date: date,
-        state: PortfolioState,
-        trades: list[TradeRecord],
-        cal_index: dict[date, int],
-        market_store: MarketDataStore,
+        self, cur_date, state, trades, cal_index: dict[date, int],
+        market_store: MarketDataStore, calendar: list,
     ) -> None:
         to_close: list[tuple[PositionKey, Position]] = []
         for key, pos in state.positions.items():
@@ -413,7 +409,8 @@ class BacktestEngine:
             trigger_by_hold = cur_date >= pos.target_sell_date
             trigger_by_zx = (
                 self.config.execution.force_sell_on_two_day_close_below_long_term_bull_bear_line
-                and self._is_two_day_close_below_long_term_bull_bear_line(market_store, code, cur_date)
+                and self._is_two_day_close_below_long_term_bull_bear_line(
+                    market_store, code, cur_date, calendar, cal_index)
             )
             trigger_by_recent_low = self._is_close_below_recent_low_stop(market_store, code, cur_date, pos)
             if not (trigger_by_hold or trigger_by_zx or trigger_by_recent_low):
@@ -465,15 +462,14 @@ class BacktestEngine:
             )
 
     def _is_two_day_close_below_long_term_bull_bear_line(
-        self, market_store: MarketDataStore, code: str, cur_date: date
+        self, market_store: MarketDataStore, code: str, cur_date: date,
+        calendar: list, cal_index: dict,
     ) -> bool:
         today_row = market_store.get_row(code, cur_date)
         if today_row is None:
             return False
         today_close = float(today_row.get("close", 0))
-        calendar = market_store.get_calendar()
-        idx_map = {d: i for i, d in enumerate(calendar)}
-        today_idx = idx_map.get(cur_date)
+        today_idx = cal_index.get(cur_date)
         if today_idx is None or today_idx < 1:
             return False
         yesterday = calendar[today_idx - 1]
@@ -482,18 +478,19 @@ class BacktestEngine:
             return False
         yesterday_close = float(yesterday_row.get("close", 0))
 
-        long_term_line_today = self._calc_long_term_bull_bear_line(market_store, code, cur_date)
-        long_term_line_yesterday = self._calc_long_term_bull_bear_line(market_store, code, yesterday)
+        long_term_line_today = self._calc_long_term_bull_bear_line(
+            market_store, code, cur_date, calendar, cal_index)
+        long_term_line_yesterday = self._calc_long_term_bull_bear_line(
+            market_store, code, yesterday, calendar, cal_index)
         if long_term_line_today is None or long_term_line_yesterday is None:
             return False
         return today_close < long_term_line_today and yesterday_close < long_term_line_yesterday
 
     def _calc_long_term_bull_bear_line(
-        self, market_store: MarketDataStore, code: str, ref_date: date
+        self, market_store: MarketDataStore, code: str, ref_date: date,
+        calendar: list, cal_index: dict,
     ) -> Optional[float]:
-        calendar = market_store.get_calendar()
-        idx_map = {d: i for i, d in enumerate(calendar)}
-        ref_idx = idx_map.get(ref_date)
+        ref_idx = cal_index.get(ref_date)
         if ref_idx is None or ref_idx < 113:
             return None
         start_idx = max(0, ref_idx - 113)

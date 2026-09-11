@@ -120,6 +120,11 @@ def _selection_summary(signals: dict) -> list[dict]:
                 "elapsed_seconds": 0.0,
             }
         by_strategy[key]["count"] += count
+        # 复审 E2E #4：选择器算出的 select_day 耗时现在随信号持久化，此处聚合同
+        # 策略同日各段（旧文件无该键 → 恒 0.0，与历史行为一致）
+        by_strategy[key]["elapsed_seconds"] += sig.get("elapsed_seconds") or 0.0
+    for row in by_strategy.values():
+        row["elapsed_seconds"] = round(row["elapsed_seconds"], 3)
     return list(by_strategy.values())
 
 
@@ -1058,10 +1063,15 @@ def console_payload(executor, job_id: str, offset: int = 0) -> dict:
 
 
 def _referencing_backtests(selection_key: str) -> list[str]:
-    """execution_links backtest keys that consume this selection."""
+    """execution_links backtest keys that consume this selection.
+
+    仅返回回测目录仍存在的 key——回测被删而 links 行未清理的历史脏数据，
+    不得永久锁死选股删除（复审 E2E #2，按目录存在性自愈）。
+    """
     import sqlite3
 
     db = _storage_root() / "app.db"
+    root = _executions_root()
     try:
         conn = sqlite3.connect(str(db))
         rows = conn.execute(
@@ -1070,9 +1080,29 @@ def _referencing_backtests(selection_key: str) -> list[str]:
             (selection_key,),
         ).fetchall()
         conn.close()
-        return [r[0] for r in rows]
     except Exception:
         return []
+    return [
+        key for key in (r[0] for r in rows)
+        if (root / key / "backtest" / "metrics.json").exists()
+    ]
+
+
+def _delete_execution_links(target_execution_key: str) -> None:
+    """删除回测时同步清掉它的 links 行（防悬空引用，复审 E2E #2）。"""
+    import sqlite3
+
+    db = _storage_root() / "app.db"
+    try:
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "DELETE FROM execution_links WHERE target_execution_key = ?",
+            (target_execution_key,),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 
 def bulk_delete_selections(execution_keys: list[str] | None = None) -> dict:
@@ -1164,6 +1194,7 @@ def bulk_delete_backtests(execution_keys: list[str] | None = None) -> dict:
         try:
             shutil.rmtree(d)
             deleted += 1
+            _delete_execution_links(d.name)   # 复审 E2E #2：防悬空引用锁死选股删除
         except Exception:
             pass
     return {
