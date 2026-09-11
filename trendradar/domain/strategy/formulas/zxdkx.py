@@ -1,7 +1,6 @@
 import logging
 
-from trendradar.domain.market.adjust import apply_qfq
-
+from trendradar.domain.market.adjust import apply_qfq, apply_qfq_grouped
 import polars as pl
 
 
@@ -44,16 +43,18 @@ def compute_zx_lines_adjusted(
     m3: int = 57,
     m4: int = 114,
 ) -> tuple[pl.Series, pl.Series]:
-    """前复权口径：先按守卫缩放（复用 market/adjust.apply_qfq），再算双线。
+    """前复权口径：先按守卫缩放（复用 market/adjust.apply_qfq_grouped），再算双线。
 
-    复权按 code 分组逐段执行（复审 I1）：选股侧送入的是全市场拼接帧，整帧
+    复权按 code 分域执行（复审 I1）：选股侧送入的是全市场拼接帧，整帧
     全局 shift 会跨票边界破恒等式 → 恒退化原价，同一票的线值随 universe
-    大小漂移。分组后守卫/缩放都以单票为域，一段污染不毒化其他段。
-    无 code 列的单票帧（图表路径）整帧一次，行为不变。
+    大小漂移。分域后守卫/缩放都以单票为域，一段污染不毒化其他段。
+    向量化实现（复审性能项）：多票帧走 apply_qfq_grouped 一次成列，要求
+    入参按 (code, date) 排序（唯一选股入口已保证）；无 code 列的单票帧
+    （图表路径）整帧一次 apply_qfq，行为不变。
 
     守卫任一命中（因子缺失/null/≤0/NaN/未重建形态恒1.0或混合/相邻比越带/
-    恒等式校验失败）→ 该段退化原价；守卫失败的段记 WARNING（数据问题需可见），
-    因子列缺失的段按存量口径静默走原价。
+    恒等式校验失败）→ 该段退化原价；任一段退化记 WARNING（数据问题需可见），
+    因子列缺失按存量口径静默走原价。
     """
 
     if "code" not in df.columns:
@@ -62,21 +63,11 @@ def compute_zx_lines_adjusted(
             logger.warning("qfq 守卫未过，整帧退化原价")
         return compute_zx_lines(df_qfq, m1=m1, m2=m2, m3=m3, m4=m4)
 
-    parts = []
-    guard_failed: list[str] = []
-    for part in df.partition_by("code", as_dict=False):
-        qfq, degraded = apply_qfq(part)
-        parts.append(qfq)
-        if degraded and "adj_factor" in part.columns:
-            guard_failed.append(str(part["code"][0]))
-    if parts:
-        df_qfq = pl.concat(parts).sort(["code", "date"])
-    else:
-        df_qfq = df
-    if guard_failed:
-        logger.warning("qfq 守卫未过 %d 段（退化原价）：%s",
-                       len(guard_failed), ", ".join(guard_failed[:5]))
+    df_qfq, degraded = apply_qfq_grouped(df)
+    if degraded:
+        logger.warning("qfq 守卫未过：部分段退化原价（按段隔离，详见 adjust 守卫语义）")
     return compute_zx_lines(df_qfq, m1=m1, m2=m2, m3=m3, m4=m4)
+
 
 
 

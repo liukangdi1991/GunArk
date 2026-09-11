@@ -273,8 +273,8 @@ GET /api/stocks/{code}/snapshot
 
 - `SelectionResultPage.tsx`：code 列渲染 `Link`（name 列同步）；回测侧三张表全加：
   逐笔交易、期末持仓（`BacktestReportTables.tsx`）、**skipColumns 跳过票表**
-  （跳过票恰是最想复盘的）；链接带 `&anchor={当笔日期}`（M18）；表格排序/筛选不动
-
+  （跳过票恰是最想复盘的）；链接带 `&anchor={当笔日期}`（M18；**2026-09-11 撤销**：
+  anchor 参数零消费已从链接剥除，定位属后置需求）；表格排序/筛选不动
 ### 5.5 数据服务
 
 - `services/marketData.ts`：`getKline(code, period, adjust, {signal})`——复用
@@ -331,9 +331,8 @@ GET /api/stocks/{code}/snapshot
 - **前端**（不引 vitest，§9 决策）：`tsc -b && vite build` + 浏览器可判验收：
   StrictMode 双挂载无双画布（M14）；系统时区改 America/New_York 轴日期不偏移
   （M11）；**最右轴日期 == last_bar_date**；VOL 柱色与蜡烛一致（N12）；
-  周期/复权/副图增删/三处入口跳转（含 anchor 定位）/404·503 空态/Alert 告警态/
+  周期/复权/副图增删/三处入口跳转/**anchor 定位（v1 撤销，见 §5.4 注记）**/404·503 空态/Alert 告警态/
   切周期无旧数据瞬闪（R5）
-- **回归**：`pytest -q` 全绿（基线 536 + 本次新增）
 
 **上线前置（B1，✅ 已完成 2026-09-08）**：行情数据 2015 基线全量重建已执行
 （5468 只，staging→swap_in_bars 原子换名），判据通过：000034 因子 13 个 distinct

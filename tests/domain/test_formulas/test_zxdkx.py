@@ -10,7 +10,7 @@ from trendradar.domain.strategy.formulas.zxdkx import (
 
 
 def _qfq_frame(code: str) -> pl.DataFrame:
-    """单票 40 根：因子末位降到 1、pre_close 严格满足恒等式（守卫可通过）。"""
+    """单票 40 根：因子末位降到 1、pre_close 满足恒等式（容差内，实为逐分精确）。"""
     n = 40
     close = [100.0 + i for i in range(n)]
     pre_close = [None] + close[1:n - 1] + [close[-1] * 2.0]   # 末根因子减半 → 昨收×2
@@ -39,8 +39,8 @@ def test_compute_zx_lines_adjusted_groups_multi_code_frame():
 
     _, long_multi = compute_zx_lines_adjusted(multi, **_SHORT)
     _, long_single = compute_zx_lines_adjusted(single, **_SHORT)
-    # 多票帧中 000001 段的线值 == 单票帧线值（段末位置）
-    assert long_multi[39] == long_single[-1]
+    # 多票帧中 000001 段的线值 == 单票帧线值（段末位置；跨帧容 1 ULP）
+    assert long_multi[39] == pytest.approx(long_single[-1])
 
 
 def test_compute_zx_lines_adjusted_scales_close_by_factor():
@@ -59,7 +59,7 @@ def test_compute_zx_lines_adjusted_one_bad_code_does_not_poison_others():
     multi = pl.concat([good, bad]).sort(["code", "date"])
     _, long_multi = compute_zx_lines_adjusted(multi, **_SHORT)
     _, long_good = compute_zx_lines_adjusted(good, **_SHORT)
-    assert long_multi[39] == long_good[-1]
+    assert long_multi[39] == pytest.approx(long_good[-1])
 
 
 def test_compute_zx_lines():

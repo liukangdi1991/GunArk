@@ -69,3 +69,47 @@ def apply_qfq(df: pl.DataFrame) -> tuple[pl.DataFrame, bool]:
         if c in df.columns
     )
     return scaled, False
+
+
+def apply_qfq_grouped(df: pl.DataFrame, tolerance: float = 0.01) -> tuple[pl.DataFrame, bool]:
+    """多票拼接帧的向量化前复权（选股侧专用）：守卫/缩放以 code 为域一次成列。
+
+    性能契约（复审性能项）：O(1) 次 polars 调用替代 O(N_code) 次逐段
+    apply_qfq——5000 票全市场帧逐段版 ~6.6s/次，本版毫秒级。段级语义与
+    apply_qfq 完全一致（基础守卫/重建标志/恒等式/存量三守卫），任一段守卫
+    命中 → 该段整段退化原价，段间互不影响；degraded=任一段退化。
+
+    行序契约：输入须按 (code, date) 排序——组内 shift(1)/last 的行序依赖它
+    （唯一选股入口 _run_selection 已 sort(["code","date"])）；返回帧保持该序。
+    """
+    if df.is_empty() or "adj_factor" not in df.columns:
+        return df, True
+    f = pl.col("adj_factor")
+    g = "code"
+    factor_bad = (f.is_null() | f.is_nan() | (f <= 0)).any().over(g)
+    if "pre_close" in df.columns:
+        rebuild = (pl.col("pre_close").is_null().sum().over(g) <= 1)
+        expected = pl.col("close").shift(1).over(g) * f.shift(1).over(g) / f
+        row_bad = (
+            (expected.is_not_null() & (expected > 0) & pl.col("pre_close").is_not_null())
+            & ((pl.col("pre_close") - expected).abs() / expected > tolerance)
+        )
+        identity_bad = row_bad.any().over(g)
+        legacy_bad = pl.lit(False)
+    else:
+        rebuild = pl.lit(False)
+        identity_bad = pl.lit(False)
+        legacy_bad = (
+            (f == 1.0).all().over(g)
+            | ((f == 1.0).any().over(g) & (f != 1.0).any().over(g))
+        ) | (
+            ((f / f.shift(1).over(g)) > 3.0) | ((f / f.shift(1).over(g)) < 1.0 / 3.0)
+        ).any().over(g)
+    seg_bad = factor_bad | pl.when(rebuild).then(identity_bad).otherwise(legacy_bad)
+    degraded = bool(df.select(seg_bad.any().alias("any"))["any"][0])
+    scale_eff = pl.when(seg_bad).then(pl.lit(1.0)).otherwise(f / f.last().over(g))
+    out = df.with_columns(scale_eff.alias("_scale")).with_columns(
+        (pl.col(c) * pl.col("_scale")).alias(c)
+        for c in ("open", "high", "low", "close", "pre_close") if c in df.columns
+    ).drop("_scale")
+    return out, degraded

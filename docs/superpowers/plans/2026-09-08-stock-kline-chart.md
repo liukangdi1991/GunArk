@@ -1835,7 +1835,7 @@ cd frontend && npm run dev
 3. 复权切换 前复权→不复权：URL query 同步；未重建时 degraded Alert 常亮（B1）
 4. 副图加 KDJ → 再删掉：pane 出现与消失（N12）
 5. 十字光标跨 pane 联动；滚轮缩放/拖拽平移；**切周期无旧数据瞬闪**
-6. 回测报告逐笔/持仓/跳过三表 code 链接跳转且 anchor 定位
+6. 回测报告逐笔/持仓/跳过三表 code 链接跳转（anchor 定位 v1 撤销——参数零消费，2026-09-11 剥除）
 7. 访问 `/stocks/abc123` → 错误态（不发请求）；`/stocks/999999` → 404 Result
 8. 系统时区切 America/New_York（或以 TZ 环境重启 dev）：轴日期不偏移（M11）
 9. StrictMode（dev 默认开）：无两张画布（M14）

@@ -488,24 +488,21 @@ def _first_structurally_bad_file(staging_dir: Path) -> str | None:
             return p.name
     return None
 
-
 def _staging_day_rows(staging_dir: Path, allowed_codes: set[str]) -> dict:
     files = sorted(Path(staging_dir).glob("*.parquet"))
     if not files:
         return {}
     s = (
         pl.scan_parquet([str(p) for p in files])
-        .group_by("date").agg(pl.len().alias("total")).collect()
+        .group_by("date")
+        .agg(pl.len().alias("total"),
+             pl.col("code").is_in(sorted(allowed_codes)).cast(pl.UInt32).sum().alias("n"))
+        .collect()
     )
-    covered = {row["date"] for row in s.iter_rows(named=True)}
-    s2 = (
-        pl.scan_parquet([str(p) for p in files])
-        .filter(pl.col("code").is_in(sorted(allowed_codes)))   # R22：分子剔清单外（BJ 已随 R24 入清单）
-        .group_by("date").agg(pl.len().alias("n")).collect()
-    )
-    rows = {row["date"]: row["n"] for row in s2.iter_rows(named=True)}
-    # 复审 W2：某日若只剩清单外码 → 记 0（断言①触发 doubtful），不得整日消失静默入账
-    return {d: rows.get(d, 0) for d in covered}
+    # 复审 W2：某日若只剩清单外码 → n=0（断言①触发 doubtful），不得整日消失静默入账
+    # 复审 nit：一次 group_by 同时取 total/n，不扫两遍 staging
+    return {row["date"]: int(row["n"]) for row in s.iter_rows(named=True)}
+
 
 def _run_backfill_batch(ctx, pro, store, effective, codes, bars_dir,
                         bucket, progress, cancel_check) -> tuple[bool, list[dict]]:

@@ -261,6 +261,49 @@ def test_build_tolerates_missing_pre_close_column():
     assert bars["close"].to_list() == [10.0, 10.1]
 
 
+
+def _grouped_fixture(code: str, closes, factors, pre_close="real"):
+    df = _daily(dates=[date(2025, 3, 3) + timedelta(days=i) for i in range(len(closes))],
+                closes=closes, factors=factors, pre_close=pre_close)
+    return df.with_columns(pl.lit(code).alias("code"))
+
+
+def test_apply_qfq_grouped_scales_per_code():
+    """复审性能项：分组向量化前复权——每段以自身最新因子为基，段间互不影响。"""
+    from trendradar.domain.market.adjust import apply_qfq_grouped
+    a = _grouped_fixture("000001", [100.0, 26.0], [1.0, 4.0], pre_close=[99.0, 25.0])
+    b = _grouped_fixture("600519", [100.0, 26.0], [1.0, 4.0], pre_close=[99.0, 25.0])
+    out, degraded = apply_qfq_grouped(pl.concat([a, b]).sort(["code", "date"]))
+    assert degraded is False
+    assert out["close"].to_list() == pytest.approx([25.0, 26.0, 25.0, 26.0])
+
+
+def test_apply_qfq_grouped_one_bad_code_degrades_only_itself():
+    from trendradar.domain.market.adjust import apply_qfq_grouped
+    good = _grouped_fixture("000001", [100.0, 26.0], [1.0, 4.0], pre_close=[99.0, 25.0])
+    bad = _grouped_fixture("600519", [10.0, 10.1], [1.0, 4.0])   # 恒等式破（占位形态）
+    out, degraded = apply_qfq_grouped(pl.concat([good, bad]).sort(["code", "date"]))
+    assert degraded is True
+    assert out["close"].to_list() == pytest.approx([25.0, 26.0, 10.0, 10.1])
+
+
+
+def test_apply_qfq_grouped_legacy_guards_per_code():
+    """无 pre_close 列（未重建形态）：守卫逐段判定——恒 1.0 段退化、健康段缩放。"""
+    from trendradar.domain.market.adjust import apply_qfq_grouped
+    stuck = _grouped_fixture("000001", [10.0, 10.1], [1.0, 1.0], pre_close=None)   # 恒 1.0 → 退化
+    healthy = _grouped_fixture("600519", [10.0, 10.1], [1.2, 1.44], pre_close=None)  # 无 1.0、越带内 → 缩放
+    out, degraded = apply_qfq_grouped(pl.concat([stuck, healthy]).sort(["code", "date"]))
+    assert out["close"].to_list() == pytest.approx([10.0, 10.1, 10.0 * 1.2 / 1.44, 10.1])
+
+
+
+def test_apply_qfq_grouped_missing_factor_column_degrades():
+    from trendradar.domain.market.adjust import apply_qfq_grouped
+    df = _grouped_fixture("000001", [10.0, 10.1], [1.0, 1.0]).drop("adj_factor")
+    out, degraded = apply_qfq_grouped(df)
+    assert degraded is True and out["close"].to_list() == [10.0, 10.1]
+
 def test_build_empty_raises_bars_unavailable():
     df = _daily(dates=[date(2025, 3, 3)], closes=[10.0], factors=[1.0])
     with pytest.raises(BarsUnavailable):
