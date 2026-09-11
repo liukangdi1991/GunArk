@@ -90,13 +90,6 @@ def apply_qfq_grouped(df: pl.DataFrame, tolerance: float = 0.01) -> tuple[pl.Dat
     g = "code"
     factor_bad = (f.is_null() | f.is_nan() | (f <= 0)).any().over(g)
     ratio = f / f.shift(1).over(g)
-    # 存量三守卫**无条件**计算（复审 Important）：pre_close 列存在但 null 多
-    # （增量合并形态）时 rebuild=False，仍须跑存量守卫——漏报方向是静默缩放，
-    # 比 apply_qfq 的「误报可见退化」更糟
-    legacy_bad = (
-        (f == 1.0).all().over(g)
-        | ((f == 1.0).any().over(g) & (f != 1.0).any().over(g))
-    ) | ((ratio > 3.0) | (ratio < 1.0 / 3.0)).any().over(g)
     if "pre_close" in df.columns:
         rebuild = (pl.col("pre_close").is_null().sum().over(g) <= 1)
         expected = pl.col("close").shift(1).over(g) * f.shift(1).over(g) / f
@@ -105,9 +98,24 @@ def apply_qfq_grouped(df: pl.DataFrame, tolerance: float = 0.01) -> tuple[pl.Dat
             & ((pl.col("pre_close") - expected).abs() / expected > tolerance)
         )
         identity_bad = row_bad.any().over(g)
+        # 快路径（复审验证等价）：全段已重建时 when() 的 otherwise 支路不可达，
+        # 跳过存量守卫表达式（生产数据全走此路径，~0.65s/1.3M 行）。
+        # 注意：非快路径下存量守卫必须无条件计算——pre_close 列在但段内 null>1
+        # （增量合并形态）时 rebuild=False，漏跑即静默缩放（上上轮 Important）。
+        if bool(df.select(rebuild.all().alias("x"))["x"][0]):
+            legacy_bad = pl.lit(False)
+        else:
+            legacy_bad = (
+                (f == 1.0).all().over(g)
+                | ((f == 1.0).any().over(g) & (f != 1.0).any().over(g))
+            ) | ((ratio > 3.0) | (ratio < 1.0 / 3.0)).any().over(g)
     else:
         rebuild = pl.lit(False)
         identity_bad = pl.lit(False)
+        legacy_bad = (
+            (f == 1.0).all().over(g)
+            | ((f == 1.0).any().over(g) & (f != 1.0).any().over(g))
+        ) | ((ratio > 3.0) | (ratio < 1.0 / 3.0)).any().over(g)
     seg_bad = factor_bad | pl.when(rebuild).then(identity_bad).otherwise(legacy_bad)
     degraded = bool(df.select(seg_bad.any().alias("any"))["any"][0])
     scale_eff = pl.when(seg_bad).then(pl.lit(1.0)).otherwise(f / f.last().over(g))
