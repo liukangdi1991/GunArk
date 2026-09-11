@@ -33,3 +33,4 @@ select_results.log
 .superpowers/
 trendradar.egg-info/
 .fk-scratch/
+.qoder/
