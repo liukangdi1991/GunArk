@@ -76,8 +76,8 @@ def run_incremental(
         # 含 doubtful 日：真实交易数据照常累积（INV-4 幂等）；空帧无列，不入 concat
         if df.width > 0:
             frames.append(df)
-        # R22：行数统计分子按 effective.codes 过滤（Tushare daily(trade_date=) 现会
-        # 返回 BJ 行，而分母剔 BJ，口径不统一会让阈值真实报警线被稀释）
+        # R22：行数统计分子按 effective.codes 过滤（防按日帧含清单外码；
+        # BJ 已随 R24 入 effective，此过滤为纯防御）
         in_eff = (df.filter(pl.col("code").is_in(effective_codes)).height
                   if df.width > 0 else 0)
         detail = doubtful_detail({day: in_eff}, list(effective.rows))

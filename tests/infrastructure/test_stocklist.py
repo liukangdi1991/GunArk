@@ -9,12 +9,12 @@ from trendradar.infrastructure.tushare.stocklist import (
 )
 
 META = pl.DataFrame({
-    "ts_code": ["000001.SZ", "000004.SZ", "920099.BJ", "300001.SZ", "688001.SH", "301999.SZ"],
-    "code": ["000001", "000004", "920099", "300001", "688001", "301999"],
-    "name": ["平安银行", "国华网安", "瑞华技术", "特锐德", "华兴源创", "未来上市"],
+    "ts_code": ["000001.SZ", "000004.SZ", "920099.BJ", "833171.BJ", "300001.SZ", "688001.SH", "301999.SZ"],
+    "code": ["000001", "000004", "920099", "833171", "300001", "688001", "301999"],
+    "name": ["平安银行", "国华网安", "瑞华技术", "转板样本", "特锐德", "华兴源创", "未来上市"],
     "list_date": [date(1991, 4, 3), date(1991, 1, 14), date(2020, 7, 27),
-                  date(2009, 10, 30), date(2019, 7, 22), date(2027, 1, 1)],
-    "delist_date": [None, date(2026, 7, 13), None, None, None, None],
+                  date(2020, 7, 27), date(2009, 10, 30), date(2019, 7, 22), date(2027, 1, 1)],
+    "delist_date": [None, date(2026, 7, 13), None, date(2022, 5, 25), None, None, None],
 })
 
 LATEST = date(2026, 8, 27)
@@ -25,12 +25,12 @@ def test_effective_list_includes_bse_codes():
     eff = build_effective_list(META, exclude_boards=[], latest_tradeable=LATEST)
     assert "920099" in eff.codes
     assert "301999" not in eff.codes          # list_date > latest 仍剔
-    assert set(eff.codes) == {"000001", "000004", "920099", "300001", "688001"}
+    assert set(eff.codes) == {"000001", "000004", "920099", "833171", "300001", "688001"}
 
 
 def test_effective_list_exclude_boards_gem_star():
     eff = build_effective_list(META, exclude_boards=["gem", "star"], latest_tradeable=LATEST)
-    assert set(eff.codes) == {"000001", "000004", "920099"}   # exclude_boards 无 bse 键，920099 回归
+    assert set(eff.codes) == {"000001", "000004", "920099", "833171"}   # exclude_boards 无 bse 键，BJ 回归
 
 
 def test_effective_clamped_range():
@@ -38,6 +38,7 @@ def test_effective_clamped_range():
     assert eff.clamped_range("000001") == (date(2015, 1, 1), LATEST)      # BASELINE 钳制
     assert eff.clamped_range("000004") == (date(2015, 1, 1), date(2026, 7, 13))  # 退市钳制
     assert eff.clamped_range("920099") == (date(2020, 7, 27), LATEST)     # list_date 钳制
+    assert eff.clamped_range("833171") == (date(2020, 7, 27), date(2022, 5, 25))  # 转板日钳制（精选层段）
 
 
 def test_normalize_meta_parses_dates_and_empty_delist():
