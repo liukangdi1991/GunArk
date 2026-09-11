@@ -63,8 +63,21 @@ def _store(tmp_path):
     return sc
 
 
+
 _REQ = {"start_date": "2026-01-01", "end_date": "2026-01-10",
         "strategies": ["big_bullish_volume"]}
+
+def test_whitelist_order_independent(tmp_path):
+    """复审 W3 排序回归：同一白名单不同传入顺序 → load_bars 收到同一排序
+    （跨输入确定性，performance-optimization plan 承诺）。"""
+    from trendradar.app.services.selection_service import _run_selection
+    from trendradar.domain.strategy.selectors import register_all
+    register_all()
+    market, received1 = _make_market()
+    _run_selection(_make_ctx(), market, {**_REQ, "codes": ["600519", "000001"]}, _store(tmp_path))
+    market2, received2 = _make_market()
+    _run_selection(_make_ctx(), market2, {**_REQ, "codes": ["000001", "600519"]}, _store(tmp_path))
+    assert received1["codes"] == received2["codes"] == ["000001", "600519"]
 
 
 def test_boards_filter_universe(tmp_path):

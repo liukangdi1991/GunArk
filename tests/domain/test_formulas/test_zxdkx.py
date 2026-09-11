@@ -1,11 +1,65 @@
 import polars as pl
 import pytest
+
 from trendradar.domain.strategy.formulas.zxdkx import (
     compute_zx_lines,
     compute_zx_lines_adjusted,
-    zx_stick_ratio,
     zx_stick_condition,
+    zx_stick_ratio,
 )
+
+
+def _qfq_frame(code: str) -> pl.DataFrame:
+    """单票 40 根：因子末位降到 1、pre_close 严格满足恒等式（守卫可通过）。"""
+    n = 40
+    close = [100.0 + i for i in range(n)]
+    pre_close = [None] + close[1:n - 1] + [close[-1] * 2.0]   # 末根因子减半 → 昨收×2
+    return pl.DataFrame({
+        "code": [code] * n,
+        "date": list(range(1, n + 1)),
+        "close": close,
+        "pre_close": pre_close,
+        "adj_factor": [2.0] * (n - 1) + [1.0],
+    })
+
+
+_SHORT = dict(m1=3, m2=5, m3=7, m4=10)   # 40 根下四条 MA 均有值
+
+
+def test_compute_zx_lines_adjusted_groups_multi_code_frame():
+    """复审 I1：多票拼接帧按 code 分组逐段前复权——整帧全局 shift 会跨票边界
+    破恒等式导致恒退化（原价），同一票的线值不得随 universe 大小漂移。"""
+    multi = pl.concat([_qfq_frame("000001"), _qfq_frame("600519")]).sort(["code", "date"])
+    single = _qfq_frame("000001")
+
+    # 佐证退化机制存在：整帧直接 apply_qfq 必退化（守卫被跨票边界击穿）
+    from trendradar.domain.market.adjust import apply_qfq
+    _, whole_degraded = apply_qfq(multi)
+    assert whole_degraded is True
+
+    _, long_multi = compute_zx_lines_adjusted(multi, **_SHORT)
+    _, long_single = compute_zx_lines_adjusted(single, **_SHORT)
+    # 多票帧中 000001 段的线值 == 单票帧线值（段末位置）
+    assert long_multi[39] == long_single[-1]
+
+
+def test_compute_zx_lines_adjusted_scales_close_by_factor():
+    """前复权真实生效：线值 == 显式按 scale=adj_factor/最新因子 缩放后的线值。"""
+    df = _qfq_frame("000001")
+    _, long_line = compute_zx_lines_adjusted(df, **_SHORT)
+    scaled = df.with_columns((pl.col("close") * pl.col("adj_factor")).alias("close"))
+    _, expected = compute_zx_lines(scaled, **_SHORT)
+    assert long_line[-1] == pytest.approx(expected[-1])
+
+
+def test_compute_zx_lines_adjusted_one_bad_code_does_not_poison_others():
+    """一只票因子污染（恒等式破）→ 该段退化原价，另一段照常缩放。"""
+    good = _qfq_frame("000001")
+    bad = _qfq_frame("600519").with_columns(pl.lit(100.0).alias("pre_close"))  # 恒等式破
+    multi = pl.concat([good, bad]).sort(["code", "date"])
+    _, long_multi = compute_zx_lines_adjusted(multi, **_SHORT)
+    _, long_good = compute_zx_lines_adjusted(good, **_SHORT)
+    assert long_multi[39] == long_good[-1]
 
 
 def test_compute_zx_lines():

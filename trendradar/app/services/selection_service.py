@@ -187,18 +187,19 @@ def _run_selection(
     if codes:
         if boards:
             allowed = set(meta["code"].to_list()) if not meta.is_empty() else set()
-            codes = sorted(c for c in codes if c in allowed)
+            codes = [c for c in codes if c in allowed]
             ctx.log(f"Boards {boards} ∩ whitelist: {len(codes)} stocks")
         else:
             ctx.log(f"Using {len(codes)} specified stocks")
     else:
-        codes = sorted(meta["code"].to_list()) if not meta.is_empty() else []
+        codes = meta["code"].to_list() if not meta.is_empty() else []
         if boards:
             ctx.log(f"Boards {boards}: universe {len(codes)} stocks")
         else:
             ctx.log(f"Using all {len(codes)} available stocks")
     if boards and not codes:
         ctx.log(f"板块过滤后宇宙为空（boards={boards}）——正常返回 0 信号")
+    codes = sorted(codes)   # 跨输入确定性：白名单原始顺序不改变 picks 顺序
 
     market_data = market_store.load_bars(codes, extended_start, trading_dates[-1])
     if market_data.is_empty():
