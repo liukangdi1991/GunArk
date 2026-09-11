@@ -280,6 +280,29 @@ def test_each_tushare_call_consumes_one_token():
     assert bucket.acquires == 2
 
 
+def test_each_tushare_call_consumes_one_token_by_date():
+    """复审 I6：按日路径同一洞——daily+adj_factor 每日 2 次真实调用须各耗 1 令牌。
+    缺第二次 acquire 时实际提交速率翻倍，大补拉走增量路径会越限 → ENV → 整批中止。"""
+
+    class DayPro:
+        def daily(self, **kwargs):
+            return pd.DataFrame([{
+                "ts_code": "000001.SZ", "trade_date": "20260827",
+                "open": 10.0, "high": 11.0, "low": 9.5, "close": 10.5,
+                "vol": 100000, "amount": 1000000,
+            }])
+
+        def adj_factor(self, **kwargs):
+            return pd.DataFrame([{
+                "ts_code": "000001.SZ", "trade_date": "20260827", "adj_factor": 3.5,
+            }])
+
+    bucket = _CountingBucket()
+    fr = fetch_day_by_date(DayPro(), date(2026, 8, 27), bucket=bucket)
+    assert fr.kind is None, fr.error
+    assert bucket.acquires == 2
+
+
 def test_fetch_suspend_list_collects_codes(patching_sleep):
     class Pro:
         def suspend_d(self, trade_date=None):

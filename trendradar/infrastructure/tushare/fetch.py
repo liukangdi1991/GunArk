@@ -272,6 +272,10 @@ def fetch_day_by_date(
             ):
                 return FetchResult(pl.DataFrame(), FailureKind.OK_EMPTY, None)
             df = _normalize_day_df(resp)
+            # 每次真实 API 调用各耗 1 令牌（同 fetch_code_range，cae0db2e 语义）：
+            # 一日 2 个调用（daily+adj_factor），只扣 1 个会使实际速率翻倍。
+            if bucket is not None and not bucket.acquire(timeout=60.0, cancel_check=cancel_check):
+                return FetchResult(None, FailureKind.ENV, "令牌桶超时或被取消")
             adj = pro.adj_factor(trade_date=day_s)
             return FetchResult(_attach_adj_factor(df, adj), None)
         except AdjFactorUnavailable as e:
