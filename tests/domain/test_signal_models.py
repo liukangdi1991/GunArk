@@ -48,6 +48,7 @@ def test_signal_set_roundtrip():
                 primary_group_id="default",
                 signal_date=date(2026, 7, 9),
                 codes=["000001", "600519"],
+                elapsed_seconds=0.123,
             ),
         ],
     )
@@ -57,6 +58,8 @@ def test_signal_set_roundtrip():
     assert len(parsed.signals) == 1
     assert parsed.signals[0].codes == ["000001", "600519"]
     assert parsed.signals[0].strategy_id == "bbi_kdj_b1"
+    # 复审 E2E #4：select_day 耗时随信号持久化，load→save 往返不丢
+    assert parsed.signals[0].elapsed_seconds == pytest.approx(0.123)
 
 
 def test_empty_signal_set():

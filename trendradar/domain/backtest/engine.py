@@ -393,8 +393,8 @@ class BacktestEngine:
         return None, 0
 
     def _process_exits(
-        self, cur_date, state, trades, cal_index: dict[date, int],
-        market_store: MarketDataStore, calendar: list,
+        self, cur_date: date, state: PortfolioState, trades: list[TradeRecord],
+        cal_index: dict[date, int], market_store: MarketDataStore, calendar: list[date],
     ) -> None:
         to_close: list[tuple[PositionKey, Position]] = []
         for key, pos in state.positions.items():

@@ -57,6 +57,7 @@ class SignalSet:
                 primary_group_id=s.get("primary_group_id", ""),
                 signal_date=date.fromisoformat(s["signal_date"]) if s.get("signal_date") else None,
                 codes=s.get("codes", []),
+                elapsed_seconds=s.get("elapsed_seconds", 0.0),
             )
             for s in data.get("signals", [])
         ]
