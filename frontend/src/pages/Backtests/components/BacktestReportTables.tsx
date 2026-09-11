@@ -108,7 +108,7 @@ export const tradeColumns: ColumnsType<BacktestTrade> = [
     key: "code",
     width: 100,
     render: (_, record) => (
-      <Link to={`/stocks/${record.code}?anchor=${record.buy_date}`}>{record.code}</Link>
+      <Link to={`/stocks/${record.code}`}>{record.code}</Link>
     ),
   },
   { title: "名称", dataIndex: "name", key: "name", width: 110, render: (value) => value || "-" },
@@ -153,7 +153,7 @@ export const skipColumns: ColumnsType<BacktestSkip> = [
     key: "code",
     width: 100,
     render: (_, record) => (
-      <Link to={`/stocks/${record.code}?anchor=${record.signal_date}`}>{record.code}</Link>
+      <Link to={`/stocks/${record.code}`}>{record.code}</Link>
     ),
   },
   { title: "名称", dataIndex: "name", key: "name", width: 110, render: (value) => value || "-" },
@@ -179,7 +179,7 @@ export const openPositionColumns: ColumnsType<BacktestOpenPosition> = [
     key: "code",
     width: 100,
     render: (_, record) => (
-      <Link to={`/stocks/${record.code}?anchor=${record.buy_date}`}>{record.code}</Link>
+      <Link to={`/stocks/${record.code}`}>{record.code}</Link>
     ),
   },
   { title: "名称", dataIndex: "name", key: "name", width: 110, render: (value) => value || "-" },

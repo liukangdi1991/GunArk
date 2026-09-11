@@ -72,7 +72,7 @@ const pickColumns: ColumnsType<SelectionPick> = [
     key: "code",
     width: 110,
     render: (_, record) => (
-      <Link to={`/stocks/${record.code}?anchor=${record.date}`}>{record.code}</Link>
+      <Link to={`/stocks/${record.code}`}>{record.code}</Link>
     ),
   },
   {
@@ -81,7 +81,7 @@ const pickColumns: ColumnsType<SelectionPick> = [
     key: "name",
     width: 140,
     render: (_, record) => (
-      <Link to={`/stocks/${record.code}?anchor=${record.date}`}>{record.name}</Link>
+      <Link to={`/stocks/${record.code}`}>{record.name}</Link>
     ),
   },
   {

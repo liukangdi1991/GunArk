@@ -174,6 +174,7 @@ export default function StockKlinePage() {
 
   const lastBar = payload?.bars.length ? payload.bars[payload.bars.length - 1] : null;
   const up = pct != null && pct >= 0;
+  const priceColor = pct == null ? "rgba(0,0,0,0.45)" : up ? "#ef232a" : "#14b143";
   const circYi =
     snapshot?.circ_mv != null ? (snapshot.circ_mv / 1e4).toFixed(0) : null; // 万元 → 亿元
 
@@ -186,7 +187,7 @@ export default function StockKlinePage() {
         </Title>
         <Text type="secondary">{payload?.industry ?? "-"}</Text>
         {lastBar?.close != null && (
-          <Text style={{ color: up ? "#ef232a" : "#14b143", fontSize: 18 }}>
+          <Text style={{ color: priceColor, fontSize: 18 }}>
             {formatNumber(lastBar.close, 2)}
           </Text>
         )}

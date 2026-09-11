@@ -219,6 +219,7 @@ function toKlineData(bars: KlineBar[]): KLineData[] {
         high: b.high,
         low: b.low,
         close: b.close,
+        pre_close: b.pre_close,
         volume: b.volume,
         amount: b.amount,
         zx_short: b.zx_short,
@@ -292,8 +293,10 @@ function applySymbolAndPeriod(chart: Chart, payload: KlineResponse) {
 }
 
 /* ---- 组件 ---- */
-/** 窗口化适配：副图窗格高度按容器高度比例分配。
- *  klinecharts 窗格高度是固定 px 不随容器缩放——小窗下多个副图把主图压成缝。 */
+/** 窗口化适配：副图窗格高度按容器高度比例分配（含总量约束）。
+ *  klinecharts 窗格高度是固定 px 不随容器缩放——小窗下多个副图会把主图挤压；
+ *  且库把 candle pane 当 flexible：副图先按各自高度抢占、主图拿剩余。
+ *  故副图总预算封顶 55% 容器高，均分到各副图并 clamp 到 [36, 110]。 */
 function applySubPaneHeights(chart: Chart, container: HTMLElement) {
   const paneIds = [
     ...new Set(
@@ -304,8 +307,12 @@ function applySubPaneHeights(chart: Chart, container: HTMLElement) {
     ),
   ];
   if (paneIds.length === 0) return;
-  const h = Math.max(56, Math.min(110, Math.round(container.clientHeight * 0.16)));
-  for (const id of paneIds) chart.setPaneOptions({ id, height: h });
+  const budget = Math.floor(container.clientHeight * 0.55) / paneIds.length;
+  const h = Math.max(36, Math.min(110, Math.round(budget)));
+  for (const id of paneIds) {
+    const pane = chart.getPaneOptions(id) as { height?: number } | null;
+    if (pane?.height !== h) chart.setPaneOptions({ id, height: h });   // 无变化不触发全量 layout
+  }
 }
 
 export interface KlineChartProps {
@@ -350,10 +357,11 @@ export function KlineChart({ payload, mainOverlays, subIndicators }: KlineChartP
       },
       indicator: {
         tooltip: { showRule: "follow_cross", showType: "rect" },
+        // 量柱与蜡烛同一套红涨绿跌（库默认 bars[0] 是绿涨红跌，复审 I3）
+        bars: [{ upColor: UP, downColor: DOWN, noChangeColor: NEUTRAL }],
       },
     });
     chart.setFormatter({ formatBigNumber: formatVol });
-    chart.setDecimalFold({ threshold: 10000, format: formatVol });
 
     for (const overlay of MAIN_OVERLAYS) {
       chart.createIndicator(
