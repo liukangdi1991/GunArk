@@ -463,7 +463,7 @@ class BacktestEngine:
 
     def _is_two_day_close_below_long_term_bull_bear_line(
         self, market_store: MarketDataStore, code: str, cur_date: date,
-        calendar: list, cal_index: dict,
+        calendar: list[date], cal_index: dict[date, int],
     ) -> bool:
         today_row = market_store.get_row(code, cur_date)
         if today_row is None:
@@ -488,7 +488,7 @@ class BacktestEngine:
 
     def _calc_long_term_bull_bear_line(
         self, market_store: MarketDataStore, code: str, ref_date: date,
-        calendar: list, cal_index: dict,
+        calendar: list[date], cal_index: dict[date, int],
     ) -> Optional[float]:
         ref_idx = cal_index.get(ref_date)
         if ref_idx is None or ref_idx < 113:
