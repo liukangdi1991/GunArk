@@ -186,3 +186,118 @@ def test_warm_indexes_builds_missing_and_skips_broken(tmp_path):
 
     assert warm_indexes(root) == 0  # 幂等：已就绪的不重建
     assert warm_indexes(tmp_path / "nope") == 0  # 目录不存在时安全返回
+
+
+def _write_backtest(
+    bt_dir: Path, *, trades, skips=(), open_positions=(), equity=(), mtime: float | None = None
+) -> Path:
+    bt_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "metrics": {"trade_count": len(trades), "total_return_pct": 1.5},
+        "trade_count": len(trades),
+        "skip_count": len(skips),
+        "trades": list(trades),
+        "skips": list(skips),
+        "open_positions": list(open_positions),
+        "equity_curve": list(equity),
+    }
+    path = bt_dir / "result.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+    return path
+
+
+def test_ensure_backtest_index_builds_summary(tmp_path):
+    """回测索引：机器事实（窗口/计数/每策略聚合）与来源签名。"""
+    from trendradar.infrastructure.storage.artifact_index import ensure_backtest_index
+
+    bt_dir = tmp_path / "backtest"
+    _write_backtest(
+        bt_dir,
+        trades=[
+            {"strategy": "b1", "code": "000001", "buy_date": "2026-08-01", "sell_date": "2026-08-05",
+             "buy_price": 10.0, "shares": 100, "profit": 50.0, "return_pct": 5.0},
+            {"strategy": "b1", "code": "000002", "buy_date": "2026-08-02", "sell_date": "2026-08-06",
+             "buy_price": 20.0, "shares": 50, "profit": -10.0, "return_pct": -1.0},
+        ],
+        skips=[{"strategy": "pk", "code": "000333", "buy_date": "2026-08-03"}],
+        open_positions=[
+            {"strategy": "b1", "code": "600519", "buy_date": "2026-08-07", "unrealized_pnl": 12.0}
+        ],
+    )
+
+    index = ensure_backtest_index("k1", bt_dir)
+
+    assert index is not None
+    s = index.summary
+    assert (s["window_from"], s["window_to"]) == ("2026-08-01", "2026-08-07")
+    assert (s["trade_count"], s["skip_count"], s["open_position_count"]) == (2, 1, 1)
+    by = {row["strategy"]: row for row in s["by_strategy"]}
+    assert by["b1"]["trade_count"] == 2 and by["b1"]["wins"] == 1
+    assert by["b1"]["realized_profit_sum"] == 40.0
+    assert by["b1"]["invested_notional_sum"] == 2000.0
+    assert by["b1"]["open_positions"] == 1 and by["b1"]["unrealized_pnl"] == 12.0
+    assert by["pk"]["skip_count"] == 1
+    assert s["source_signature"] == {
+        "result.json": (bt_dir / "result.json").stat().st_mtime_ns
+    }
+
+
+def test_ensure_backtest_index_prefers_equity_window(tmp_path):
+    """有净值曲线时窗口取曲线首尾（与旧实现同口径）。"""
+    from trendradar.infrastructure.storage.artifact_index import ensure_backtest_index
+
+    bt_dir = tmp_path / "backtest"
+    _write_backtest(
+        bt_dir,
+        trades=[{"strategy": "b1", "code": "000001", "buy_date": "2026-08-01",
+                 "sell_date": "2026-08-05", "buy_price": 1.0, "shares": 1,
+                 "profit": 0.0, "return_pct": 0.0}],
+        equity=[{"date": "2026-07-30", "value": 1.0}, {"date": "2026-08-10", "value": 1.1}],
+    )
+
+    assert ensure_backtest_index("k1", bt_dir).summary["window_from"] == "2026-07-30"
+    assert ensure_backtest_index("k1", bt_dir).summary["window_to"] == "2026-08-10"
+
+
+def test_ensure_backtest_index_rebuilds_after_source_change(tmp_path):
+    from trendradar.infrastructure.storage.artifact_index import ensure_backtest_index
+
+    bt_dir = tmp_path / "backtest"
+    path = _write_backtest(
+        bt_dir,
+        trades=[{"strategy": "b1", "code": "000001", "buy_date": "2026-08-01",
+                 "sell_date": "2026-08-05", "buy_price": 1.0, "shares": 1,
+                 "profit": 0.0, "return_pct": 0.0}],
+    )
+    assert ensure_backtest_index("k1", bt_dir).summary["trade_count"] == 1
+
+    _write_backtest(bt_dir, trades=[])
+    future = time.time() + 10
+    os.utime(path, (future, future))
+
+    assert ensure_backtest_index("k1", bt_dir).summary["trade_count"] == 0
+
+
+def test_ensure_backtest_index_degrades_on_broken_json(tmp_path):
+    from trendradar.infrastructure.storage.artifact_index import ensure_backtest_index
+
+    bt_dir = tmp_path / "backtest"
+    bt_dir.mkdir(parents=True)
+    (bt_dir / "result.json").write_text("{not json", encoding="utf-8")
+
+    assert ensure_backtest_index("k1", bt_dir) is None
+
+
+def test_warm_indexes_covers_backtests_too(tmp_path):
+    """启动预热同时覆盖回测产物（两类索引同构）。"""
+    from trendradar.infrastructure.storage.artifact_index import warm_indexes
+
+    root = tmp_path / "objects" / "executions"
+    _write_signals(root / "s1" / "selection")
+    _write_backtest(root / "b1" / "backtest", trades=[])
+
+    assert warm_indexes(root) == 2
+    assert (root / "s1" / "selection" / ".index" / "summary.json").is_file()
+    assert (root / "b1" / "backtest" / ".index" / "summary.json").is_file()
