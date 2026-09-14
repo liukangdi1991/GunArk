@@ -24,7 +24,10 @@ def _identity_holds(df: pl.DataFrame, tolerance: float = 0.01) -> bool:
     因子真实时对送转/配股等任意大比例跳变都成立（002747 实测 3.02× 配股跳变，
     恒等式误差 0.03%）；1.0 占位污染则必破。首根及 pre_close ≤ 0 / null 的
     相邻对跳过（已重建数据 pre_close 零空值，跳过面仅首根）。tolerance=1%：
-    Tushare pre_close 精确到分，实际误差 <0.05%。
+    Tushare pre_close 精确到分，绝大多数股票误差 <0.05%；极少数票（~0.1%，
+    如 000545 三处、002713）因子与交易所昨收存在 6%~22% 的孤立矛盾（疑似
+    回购注销等非除权股本事件被计入因子）——守卫检出后整列退化原价，前端
+    横幅可见，属设计内安全行为而非数据缺陷。
     """
     prev_close = df["close"].shift(1)
     prev_f = df["adj_factor"].shift(1)
