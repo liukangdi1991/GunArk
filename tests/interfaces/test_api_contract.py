@@ -72,7 +72,7 @@ def _write_selection_artifacts(storage: Path, key: str, signal_date: str = "2026
                         "group_ids": ["default"],
                         "primary_group_id": "default",
                         "signal_date": signal_date,
-                        "codes": ["000001", "600519"],
+                        "codes": ["000001", "000002", "600519"],
                     },
                     {
                         "strategy_id": "peak_kdj",
@@ -206,11 +206,11 @@ def _write_bars(storage: Path) -> None:
 def _write_stock_meta(storage: Path) -> None:
     meta = pl.DataFrame(
         {
-            "ts_code": ["000001.SZ", "600519.SH", "000333.SZ"],
-            "code": ["000001", "600519", "000333"],
-            "name": ["平安银行", "贵州茅台", "美的集团"],
-            "industry": ["银行", "白酒", "家用电器"],
-            "market": ["主板", "主板", "主板"],
+            "ts_code": ["000001.SZ", "600519.SH", "000333.SZ", "000002.SZ"],
+            "code": ["000001", "600519", "000333", "000002"],
+            "name": ["平安银行", "贵州茅台", "美的集团", "万科A"],
+            "industry": ["银行", "白酒", "家用电器", "全国地产"],
+            "market": ["主板", "主板", "主板", "主板"],
         }
     )
     meta.write_parquet(storage / "market" / "stock_meta.parquet")
@@ -281,33 +281,63 @@ def test_selection_results_list_shape(client):
     assert set(run["strategies"]) == {"B1战法", "填坑战法"}
     assert isinstance(run["strategy_snapshots"], list)
     assert run["summary"][0]["strategy"] == "B1战法"
-    assert run["summary"][0]["count"] == 2
+    assert run["summary"][0]["count"] == 3
     assert run["summary"][0]["date"] == "2026-08-30"
 
 
 def test_selection_result_detail_shape(client):
     payload = _selection_result_payload(client, "20260820_100000_selection_a1b2")
-    assert set(payload) == {"result", "artifacts", "picks"}
+    # P1：详情端点瘦身——picks 移到分页端点，改回 counts
+    assert set(payload) == {"result", "artifacts", "counts"}
     result = payload["result"]
     assert result["execution_key"] == "20260820_100000_selection_a1b2"
     assert result["summary"][1]["strategy"] == "填坑战法"
     assert result["summary"][1]["count"] == 1
     assert isinstance(payload["artifacts"], list)
     assert len(payload["artifacts"]) == 3
-    picks = payload["picks"]
-    assert len(picks) == 3
-    for pick in picks:
-        assert {"execution_key", "strategy", "date", "code"} <= set(pick)
-    assert picks[0]["strategy"] == "B1战法"
-    assert picks[0]["code"] == "000001"
-    # stock names and industries come from stock_meta.parquet
-    assert picks[0]["name"] == "平安银行"
-    assert picks[0]["industry"] == "银行"
-    by_code = {p["code"]: p for p in picks}
-    assert by_code["600519"]["name"] == "贵州茅台"
-    assert by_code["600519"]["industry"] == "白酒"
-    assert by_code["000333"]["name"] == "美的集团"
-    assert by_code["000333"]["industry"] == "家用电器"
+    assert payload["counts"] == {"total_picks": 4, "unique_codes": 4, "trade_days": 1}
+
+
+def test_selection_picks_page_contract(client):
+    """分页契约：items/total/offset/limit；默认全序 strategy→date→code。"""
+    key = "20260820_100000_selection_a1b2"
+    resp = client.get(f"/api/selection-results/{key}/picks?limit=2&offset=0")
+    assert resp.status_code == 200
+    page = resp.json()
+    assert set(page) == {"items", "total", "offset", "limit"}
+    assert page["total"] == 4 and page["offset"] == 0 and page["limit"] == 2
+    assert [p["code"] for p in page["items"]] == ["000001", "000002"]
+    # 展示字段在分页端点补全（stock_meta 关联只作用于当页）
+    assert page["items"][0]["name"] == "平安银行"
+    assert page["items"][0]["industry"] == "银行"
+    assert page["items"][1]["name"] == "万科A"
+
+    tail = client.get(f"/api/selection-results/{key}/picks?limit=2&offset=2").json()
+    assert [p["code"] for p in tail["items"]] == ["600519", "000333"]
+    assert client.get(f"/api/selection-results/{key}/picks?offset=99").json()["items"] == []
+
+
+def test_selection_picks_page_filters_and_sort(client):
+    key = "20260820_100000_selection_a1b2"
+    only_b1 = client.get(f"/api/selection-results/{key}/picks?strategies=B1战法").json()
+    assert only_b1["total"] == 3
+    both = client.get(f"/api/selection-results/{key}/picks?strategies=B1战法&strategies=填坑战法").json()
+    assert both["total"] == 4
+    day = client.get(f"/api/selection-results/{key}/picks?dates=2026-08-30").json()
+    assert day["total"] == 4
+    empty_day = client.get(f"/api/selection-results/{key}/picks?dates=1999-01-01").json()
+    assert empty_day["total"] == 0 and empty_day["items"] == []
+    desc = client.get(f"/api/selection-results/{key}/picks?sort_by=code&sort_dir=desc&limit=1").json()
+    assert desc["items"][0]["code"] == "600519"
+
+
+def test_selection_picks_page_rejects_bad_params(client):
+    key = "20260820_100000_selection_a1b2"
+    assert client.get(f"/api/selection-results/{key}/picks?sort_by=drop_table").status_code == 400
+    assert client.get(f"/api/selection-results/{key}/picks?limit=0").status_code == 422
+    assert client.get(f"/api/selection-results/{key}/picks?limit=201").status_code == 422
+    assert client.get("/api/selection-results/nope/picks").status_code == 404
+    assert client.get("/api/selection-results/..%2Fetc/picks").status_code in (400, 404)
 
 
 def test_selection_result_not_found(client):
@@ -912,20 +942,48 @@ def test_bulk_delete_backtest_results_no_body_deletes_all(client, tmp_path):
     assert (tmp_path / "storage" / "objects" / "executions" / "20260820_100000_selection_a1b2").is_dir()
 
 
-def test_market_bars_sync_submit_accepts_new_schema(client):
+def test_market_bars_sync_submit_accepts_new_schema(client, monkeypatch):
+    """路由接受新 schema 并把参数原样交给 executor。
+
+    必须替身 executor：真作业会去拉真实 Tushare（凭证在本机 ~/tk.csv、网络可用时
+    就是整市场全量同步，TestClient 关闭会一直等它跑完——整个测试文件随即挂死）。
+    """
+    captured: dict = {}
+
+    def _capture(job_type, run_fn, request):
+        captured.update(job_type=job_type, request=request)
+        return "job-sync-test"
+
+    monkeypatch.setattr(client.app.state.executor, "submit", _capture)
     resp = client.post(
         "/api/market-data/sync",
         json={"force": True, "exclude_boards": ["gem"], "accept_partial_baseline": True},
     )
-    # token 缺失会让 worker 失败，但提交本身必须成功并给出 job_id
     assert resp.status_code == 200
-    assert resp.json()["data"]["job_id"]
+    assert resp.json()["data"]["job_id"] == "job-sync-test"
+    assert captured["job_type"] == "market_bars_sync"
+    assert captured["request"] == {
+        "force": True,
+        "exclude_boards": ["gem"],
+        "accept_partial_baseline": True,
+        "codes": None,
+    }
 
 
-def test_market_backfill_submit(client):
+def test_market_backfill_submit(client, monkeypatch):
+    """同上：替身 executor，只验提交契约（真作业会打真实 Tushare）。"""
+    captured: dict = {}
+
+    def _capture(job_type, run_fn, request):
+        captured.update(job_type=job_type, request=request)
+        return "job-backfill-test"
+
+    monkeypatch.setattr(client.app.state.executor, "submit", _capture)
     resp = client.post("/api/market-data/backfill", json={})
     assert resp.status_code == 200
-    assert resp.json()["data"]["job_id"]
+    assert resp.json()["data"]["job_id"] == "job-backfill-test"
+    assert captured["job_type"] == "market_backfill_codes"
+    assert captured["request"] == {"codes": None, "exclude_boards": []}
 
 
 def test_submit_execution_conflict_returns_409(client, monkeypatch):
@@ -983,7 +1041,16 @@ def test_confirm_doubtful_books_when_on_disk(client):
     assert store2.doubtful_days() == []
 
 
-def test_submit_execution_dispatch_market_bars_sync(client):
+def test_submit_execution_dispatch_market_bars_sync(client, monkeypatch):
+    """dispatch 到 market_bars_sync；替身 executor——真作业会去拉真实 Tushare
+    （网络可用 + 本机已存凭证时等于启动整市场同步，测试随即挂死）。"""
+    captured: dict = {}
+
+    def _capture(job_type, run_fn, request):
+        captured.update(job_type=job_type, request=request)
+        return "job-dispatch-sync"
+
+    monkeypatch.setattr(client.app.state.executor, "submit", _capture)
     resp = client.post(
         "/api/executions",
         json={"type": "market_bars_sync", "params": {"force": False}},

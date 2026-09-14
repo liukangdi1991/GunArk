@@ -166,16 +166,56 @@ def _selection_snapshots(lineage: dict) -> list[dict]:
     return snapshots
 
 
+PICKS_SORT_KEYS = {
+    "strategy": ("strategy", "date", "code"),
+    "date": ("date", "strategy", "code"),
+    "code": ("code", "strategy", "date"),
+}
+
+
+def _selection_index_or_signals(key: str):
+    """索引优先：命中则 (summary, None)，未命中退回 (None, signals)——调用方自行降级。"""
+    from trendradar.infrastructure.storage.artifact_index import ensure_selection_index
+
+    sel_dir = _executions_root() / key / "selection"
+    index = ensure_selection_index(key, sel_dir)
+    if index is not None:
+        return index.summary, None
+    return None, _read_json(sel_dir / "signals.json", {})
+
+
+def _selection_counts(summary: dict | None, signals: dict | None) -> dict:
+    """计数口径（spec §9.1）：索引优先；索引不可用时由 signals 现算。"""
+    if summary is not None:
+        return {
+            "total_picks": summary["total_picks"],
+            "unique_codes": summary["unique_codes"],
+            "trade_days": summary["trade_days"],
+        }
+    signals = signals or {}
+    codes = [str(c) for sig in signals.get("signals", []) for c in (sig.get("codes") or [])]
+    days = {sig.get("signal_date") for sig in signals.get("signals", []) if sig.get("signal_date")}
+    return {"total_picks": len(codes), "unique_codes": len(set(codes)), "trade_days": len(days)}
+
+
 def selection_result_payload(key: str, include_detail: bool = False) -> dict:
     sel_dir = _executions_root() / key / "selection"
     manifest = _read_json(sel_dir / "manifest.json", {})
     lineage = _read_json(sel_dir / "lineage.json", {})
-    signals = _read_json(sel_dir / "signals.json", {})
+
+    index_summary, signals = _selection_index_or_signals(key)
 
     strategies = [s.get("name") for s in lineage.get("resolved_strategies", [])]
-    signal_from = signals.get("signal_from")
-    signal_to = signals.get("signal_to")
+    if index_summary is not None:
+        summary_rows = index_summary["by_strategy_date"]
+        signal_from = index_summary.get("signal_from")
+        signal_to = index_summary.get("signal_to")
+    else:
+        summary_rows = _selection_summary(signals or {})
+        signal_from = (signals or {}).get("signal_from")
+        signal_to = (signals or {}).get("signal_to")
 
+    counts = _selection_counts(index_summary, signals)
     result = {
         "execution_key": key,
         "created_at": manifest.get("created_at"),
@@ -184,10 +224,10 @@ def selection_result_payload(key: str, include_detail: bool = False) -> dict:
         "strategies": strategies,
         "strategy_snapshots": _selection_snapshots(lineage),
         "status": manifest.get("status", "success"),
-        "summary": _selection_summary(signals),
+        "summary": summary_rows,
         "selection_from": signal_from,
         "selection_to": signal_to,
-        "trade_days": 1 if (signal_from and signal_from == signal_to) else None,
+        "trade_days": counts["trade_days"] or None,
     }
 
     if not include_detail:
@@ -196,8 +236,82 @@ def selection_result_payload(key: str, include_detail: bool = False) -> dict:
     return {
         "result": result,
         "artifacts": _selection_artifacts(key),
-        "picks": _selection_picks(key, signals),
+        "counts": counts,
     }
+
+
+def _picks_lazy_filtered(path: Path, strategies: list[str] | None, dates: list[str] | None):
+    """picks.parquet 的惰性帧 + 过滤（过滤必须先于切片生效）。"""
+    import polars as pl
+
+    frame = pl.scan_parquet(path)
+    if strategies:
+        frame = frame.filter(pl.col("strategy").is_in(strategies))
+    if dates:
+        frame = frame.filter(pl.col("date").is_in(dates))
+    return frame
+
+
+def _picks_matches(row: dict, strategies: list[str] | None, dates: list[str] | None) -> bool:
+    if strategies and row["strategy"] not in strategies:
+        return False
+    if dates and row["date"] not in dates:
+        return False
+    return True
+
+
+def selection_picks_page(
+    key: str,
+    *,
+    offset: int = 0,
+    limit: int = 50,
+    strategies: list[str] | None = None,
+    dates: list[str] | None = None,
+    sort_by: str | None = None,
+    sort_dir: str = "asc",
+) -> dict | None:
+    """选股明细分页（spec §3/§4）。索引缺失或写入失败时降级直读 signals.json。
+
+    返回 None 表示该 key 没有选股产物（路由据此 404）。
+    """
+    import polars as pl
+
+    from trendradar.infrastructure.storage.artifact_index import ensure_selection_index
+
+    sel_dir = _executions_root() / key / "selection"
+    index = ensure_selection_index(key, sel_dir)
+
+    if index is not None:
+        frame = _picks_lazy_filtered(index.picks_path, strategies, dates)
+        total = int(frame.select(pl.len()).collect().item())
+        if sort_by:  # 默认（None）= 产物固有全序 (strategy,date,code)，免排序
+            keys = list(PICKS_SORT_KEYS[sort_by])
+            frame = frame.sort(keys, descending=[sort_dir == "desc"] + [False] * (len(keys) - 1))
+        rows = frame.slice(offset, limit).collect().to_dicts()
+    else:
+        signals = _read_json(sel_dir / "signals.json")
+        if signals is None:
+            return None
+        rows_all = [
+            row for row in _selection_picks(key, signals) if _picks_matches(row, strategies, dates)
+        ]
+        keys = list(PICKS_SORT_KEYS[sort_by or "strategy"])
+        # 稳定排序：先按 tiebreaker 升序，再按主键（stable）——与 parquet 分支同序
+        rows_all.sort(key=lambda r: tuple(r[k] for k in keys[1:]))
+        rows_all.sort(key=lambda r: r[keys[0]], reverse=sort_dir == "desc")
+        total = len(rows_all)
+        rows = rows_all[offset : offset + limit]
+
+    meta = _stock_meta_by_code()
+    items = [
+        {
+            **row,
+            "name": meta.get(row["code"], ("", ""))[0],
+            "industry": meta.get(row["code"], ("", ""))[1],
+        }
+        for row in rows
+    ]
+    return {"items": items, "total": total, "offset": offset, "limit": limit}
 
 
 def list_selection_results_payload(limit: int | None = None) -> dict:

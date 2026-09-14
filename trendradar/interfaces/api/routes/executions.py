@@ -28,6 +28,11 @@ def _store(request: FastAPIRequest):
     return request.app.state.store
 
 
+def _invalid_execution_key(key: str) -> bool:
+    """路径遍历防护：/、\\、.. 一律拒绝（路由侧唯一实现源）。"""
+    return "/" in key or "\\" in key or ".." in key
+
+
 @router.post("/executions", response_model=dict)
 def submit_execution(body: ExecutionRequest, request: FastAPIRequest):
     from trendradar.interfaces.api.presenters import submit_execution_payload
@@ -82,7 +87,7 @@ def get_selection_result(execution_key: str, request: FastAPIRequest):
     from trendradar.infrastructure.runtime import runtime_root
     from trendradar.interfaces.api.presenters import selection_result_payload
 
-    if "/" in execution_key or "\\" in execution_key or ".." in execution_key:
+    if _invalid_execution_key(execution_key):
         raise HTTPException(status_code=400, detail="Invalid execution_key")
     signals_file = (
         Path(runtime_root())
@@ -91,6 +96,41 @@ def get_selection_result(execution_key: str, request: FastAPIRequest):
     if not signals_file.exists():
         raise HTTPException(status_code=404, detail=f"Selection result not found for '{execution_key}'")
     return selection_result_payload(execution_key, include_detail=True)
+
+
+@router.get("/selection-results/{execution_key}/picks")
+def get_selection_picks(
+    execution_key: str,
+    request: FastAPIRequest,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    strategies: list[str] | None = Query(default=None),
+    dates: list[str] | None = Query(default=None),
+    sort_by: str | None = Query(default=None),
+    sort_dir: str = Query(default="asc", pattern="^(asc|desc)$"),
+):
+    """选股明细分页（spec §3）：筛选/排序/切片在服务端完成，响应只含当前页。"""
+    from trendradar.interfaces.api.presenters import PICKS_SORT_KEYS, selection_picks_page
+
+    if _invalid_execution_key(execution_key):
+        raise HTTPException(status_code=400, detail="Invalid execution_key")
+    if sort_by is not None and sort_by not in PICKS_SORT_KEYS:
+        raise HTTPException(status_code=400, detail=f"非法 sort_by: {sort_by}")
+
+    payload = selection_picks_page(
+        execution_key,
+        offset=offset,
+        limit=limit,
+        strategies=strategies,
+        dates=dates,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    if payload is None:
+        raise HTTPException(
+            status_code=404, detail=f"Selection result not found for '{execution_key}'"
+        )
+    return payload
 
 
 @router.delete("/selection-results")
@@ -105,7 +145,7 @@ def delete_selection_results(body: DeleteKeysRequest | None = None, request: Fas
 def delete_selection_result(execution_key: str, request: FastAPIRequest):
     from trendradar.interfaces.api.presenters import bulk_delete_selections
 
-    if "/" in execution_key or "\\" in execution_key or ".." in execution_key:
+    if _invalid_execution_key(execution_key):
         raise HTTPException(status_code=400, detail="Invalid execution_key")
     from pathlib import Path
     from trendradar.infrastructure.runtime import runtime_root
