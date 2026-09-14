@@ -266,7 +266,7 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
           trade_strategy: values.trade_strategy || "long_term_bull_bear_stop",
         },
       });
-      window.location.href = execution.console_url;
+      navigate(execution.console_url); // SPA 内跳转：保留历史栈，可随时回看
     } catch (error) {
       const text = error instanceof Error ? error.message : "提交历史选股回测任务失败。";
       setErrorMessage(text);
@@ -290,7 +290,7 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
           trade_strategy: values.trade_strategy || "long_term_bull_bear_stop",
         },
       });
-      window.location.href = execution.console_url;
+      navigate(execution.console_url); // SPA 内跳转：保留历史栈，可随时回看
     } catch (error) {
       const text = error instanceof Error ? error.message : "提交回测任务失败。";
       setErrorMessage(text);

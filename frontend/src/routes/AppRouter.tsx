@@ -53,6 +53,10 @@ const router = createBrowserRouter([
         element: <MarketDataPage />,
       },
       {
+        path: "console/:executionId",
+        element: <ExecutionConsolePage />,
+      },
+      {
         path: "stocks/:code",
         element: (
           <Suspense fallback={<Spin style={{ display: "block", margin: "80px auto" }} />}>
@@ -64,7 +68,7 @@ const router = createBrowserRouter([
   },
   {
     path: "/console/:executionId",
-    element: <ExecutionConsolePage />,
+    element: <Navigate to="/selections" replace />,
   },
 ]);
 

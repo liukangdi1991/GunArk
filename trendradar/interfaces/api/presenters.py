@@ -1294,6 +1294,52 @@ def result_url_for(job_type: str, status: str, job_id: str) -> str | None:
     return None
 
 
+def active_executions_payload() -> dict:
+    """运行中任务（侧边栏徽标）：jobs 表 + 日志里的 `[PROGRESS]` 行。
+
+    只反映本进程存活期间的作业——重启时 lifespan 会把 queued/running 一律标 failed，
+    因此不会出现幽灵任务（spec §8）。进度解析复用 console 的同一实现。
+    """
+    import sqlite3
+
+    from trendradar.app.jobs.persistence import JobStore
+    from trendradar.infrastructure.storage.connection import StorageConnection
+
+    store_root = _storage_root()
+    db_path = store_root / "app.db"
+    if not db_path.exists():
+        return {"executions": []}
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT job_id, job_type, status, created_at, started_at FROM jobs "
+            "WHERE status IN ('queued', 'running', 'cancelling') ORDER BY id DESC"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    store = JobStore(StorageConnection(store_root).db_path)
+    executions = []
+    for row in rows:
+        progress = parse_progress(store.get_logs(row["job_id"]))
+        executions.append(
+            {
+                "execution_id": row["job_id"],
+                "job_type": row["job_type"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "started_at": row["started_at"],
+                "progress_current": progress["progress_current"],
+                "progress_total": progress["progress_total"],
+                "progress_message": progress["progress_message"],
+                "console_url": f"/console/{row['job_id']}",
+            }
+        )
+    return {"executions": executions}
+
+
 def console_payload(executor, job_id: str, offset: int = 0) -> dict:
     from trendradar.infrastructure.runtime import runtime_root
     from trendradar.infrastructure.storage.connection import StorageConnection

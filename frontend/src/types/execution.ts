@@ -41,3 +41,21 @@ export interface ExecutionRequest {
 export interface ExecutionSubmitResponse extends Execution {
   console_url: string;
 }
+
+/** 运行中任务（侧边栏徽标）：只含 queued/running/cancelling。 */
+export interface ActiveExecution {
+  execution_id: string;
+  job_type: string;
+  status: ExecutionStatus;
+  created_at?: string | null;
+  started_at?: string | null;
+  progress_current: number;
+  progress_total: number;
+  progress_message: string;
+  /** 控制台站内路径（SPA 内跳转，不再整页刷新） */
+  console_url: string;
+}
+
+export interface ActiveExecutionsResponse {
+  executions: ActiveExecution[];
+}

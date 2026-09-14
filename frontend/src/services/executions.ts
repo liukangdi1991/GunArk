@@ -1,6 +1,7 @@
 
 import { requestJson } from "./apiClient";
 import type {
+  ActiveExecutionsResponse,
   ExecutionConsoleResponse,
   ExecutionRequest,
   ExecutionSubmitResponse,
@@ -33,4 +34,9 @@ export function cancelExecution(executionId: string): Promise<CancelExecutionRes
     `/api/executions/${encodeURIComponent(executionId)}/cancel`,
     { method: "POST" },
   );
+}
+
+/** 运行中任务列表（侧边栏徽标轮询用）。 */
+export function listActiveExecutions(signal?: AbortSignal): Promise<ActiveExecutionsResponse> {
+  return requestJson<ActiveExecutionsResponse>("/api/executions/active", { signal });
 }

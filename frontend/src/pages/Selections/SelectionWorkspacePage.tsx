@@ -161,7 +161,7 @@ export function SelectionWorkspacePage() {
         params.boards = values.boards;
       }
       const execution = await submitExecution({ type, params });
-      window.location.href = execution.console_url;
+      navigate(execution.console_url); // SPA 内跳转：保留历史栈，可随时回看
     } catch (error) {
       const text = error instanceof Error ? error.message : "提交选股任务失败。";
       setErrorMessage(text);

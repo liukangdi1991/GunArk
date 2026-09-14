@@ -6,9 +6,12 @@ import {
   MenuUnfoldOutlined,
   OrderedListOutlined,
 } from "@ant-design/icons";
-import { Button, Layout, Menu, Space, Tooltip, Typography } from "antd";
+import SyncOutlined from "@ant-design/icons/SyncOutlined";
+import { Badge, Button, Dropdown, Layout, Menu, Space, Tooltip, Typography } from "antd";
 import { useEffect, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
+import { useActiveExecutions } from "../hooks/useActiveExecutions";
+import { executionPercent } from "../utils/execution";
 
 const { Content, Sider } = Layout;
 const { Text } = Typography;
@@ -26,8 +29,23 @@ function selectedKey(pathname: string) {
   if (pathname.startsWith("/stocks")) {
     return ""; // 个股K线页不归属任何菜单（N11），不高亮「选股」
   }
+  if (pathname.startsWith("/console")) {
+    return ""; // 控制台从徽标进入，不冒充「选股」高亮（P5）
+  }
   return "selections";
 }
+
+/** 作业类型 → 中文标签（静态查表）。 */
+const JOB_TYPE_LABELS: Record<string, string> = {
+  selection_latest: "最新选股",
+  selection_single: "单日选股",
+  selection_batch: "批量选股",
+  selection_backtest: "选股回测",
+  backtest: "回测",
+  backtest_from_selection: "选股历史回测",
+  market_bars_sync: "行情同步",
+  market_backfill_codes: "行情补齐",
+};
 
 function TrendRadarLogo() {
   return (
@@ -62,6 +80,7 @@ export function AppShell() {
   const [openKeys, setOpenKeys] = useState<string[]>(
     location.pathname.startsWith("/backtests") ? ["backtests"] : [],
   );
+  const activeExecutions = useActiveExecutions();
 
   useEffect(() => {
     if (location.pathname.startsWith("/backtests")) {
@@ -134,6 +153,32 @@ export function AppShell() {
             },
           ]}
         />
+
+        {activeExecutions.length ? (
+          <>
+            <div className="sider-section-title">运行中任务</div>
+            <Dropdown
+              trigger={["click"]}
+              menu={{
+                items: activeExecutions.map((item) => ({
+                  key: item.execution_id,
+                  label: `${
+                    JOB_TYPE_LABELS[item.job_type] || item.job_type
+                  } · ${executionPercent(item)}%${
+                    item.progress_message ? ` · ${item.progress_message}` : ""
+                  }`,
+                })),
+                onClick: ({ key }) => navigate(`/console/${key}`),
+              }}
+            >
+              <Button type="text" className="active-jobs-button" aria-label="查看运行中任务">
+                <Badge count={activeExecutions.length} size="small" />
+                {collapsed ? null : <span className="active-jobs-label">查看进度</span>}
+                {collapsed ? null : <SyncOutlined spin />}
+              </Button>
+            </Dropdown>
+          </>
+        ) : null}
 
         <div className="sider-foot">
           <Space direction="vertical" size={4}>

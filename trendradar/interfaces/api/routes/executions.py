@@ -54,6 +54,15 @@ def submit_execution(body: ExecutionRequest, request: FastAPIRequest):
         raise HTTPException(status_code=500, detail="提交失败，请查看执行控制台日志")
 
 
+@router.get("/executions/active")
+def list_active_executions():
+    """运行中任务（侧边栏徽标）。**必须声明在 /executions/{execution_id} 之前**，
+    否则 "active" 会被当作 execution_id 捕获。"""
+    from trendradar.interfaces.api.presenters import active_executions_payload
+
+    return active_executions_payload()
+
+
 @router.get("/executions/{execution_id}", response_model=JobStatusResponse)
 def get_execution_status(execution_id: str, request: FastAPIRequest):
     state = _executor(request).get_state(execution_id)

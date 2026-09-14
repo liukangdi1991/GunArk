@@ -704,6 +704,48 @@ def test_backtest_skips_and_positions_pages(client):
     assert client.get(f"/api/backtest-results/{key}/open-positions?sort_by=entry_price").status_code == 400
 
 
+def test_active_executions_reports_running_jobs(client, tmp_path):
+    """侧边栏徽标数据源：只列运行中任务，进度复用 console 的解析口径。"""
+    import sqlite3
+
+    conn = sqlite3.connect(str(tmp_path / "storage" / "app.db"))
+    conn.execute(
+        "INSERT INTO jobs (job_id, job_type, status, request_json, created_at) VALUES (?,?,?,?,?)",
+        ("job-active-1", "selection_latest", "running", "{}", "2026-09-14T00:00:00"),
+    )
+    conn.execute(
+        "INSERT INTO jobs (job_id, job_type, status, request_json, created_at) VALUES (?,?,?,?,?)",
+        ("job-done-1", "selection_latest", "success", "{}", "2026-09-14T00:00:00"),
+    )
+    conn.execute(
+        "INSERT INTO job_logs (job_id, sequence, message) VALUES (?,?,?)",
+        ("job-active-1", 1, "Starting selection job"),
+    )
+    conn.execute(
+        "INSERT INTO job_logs (job_id, sequence, message) VALUES (?,?,?)",
+        ("job-active-1", 2, "[PROGRESS] 3/10 (30%) 拉取行情"),
+    )
+    conn.commit()
+    conn.close()
+
+    payload = client.get("/api/executions/active").json()
+
+    assert [item["execution_id"] for item in payload["executions"]] == ["job-active-1"]
+    row = payload["executions"][0]
+    assert (row["progress_current"], row["progress_total"]) == (3, 10)
+    assert row["progress_message"] == "拉取行情"
+    assert row["console_url"] == "/console/job-active-1"
+    assert row["job_type"] == "selection_latest"
+    assert row["status"] == "running"
+
+
+def test_active_executions_is_empty_and_not_shadowed(client):
+    """空态正常；且 /executions/active 不会被 /executions/{id} 抢先匹配。"""
+    resp = client.get("/api/executions/active")
+    assert resp.status_code == 200
+    assert resp.json() == {"executions": []}
+
+
 def test_backtest_report_etag_carries_representation_version(client):
     """响应形状版本必须进 ETag：否则改了返回结构，浏览器仍复用旧缓存体（实测踩过）。"""
     from trendradar.interfaces.api.routes.backtest import BACKTEST_REPORT_ETAG_VERSION
