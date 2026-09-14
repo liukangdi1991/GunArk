@@ -417,6 +417,7 @@ def submit_selection_backtest(
             _register_selection_metadata,
             _run_selection,
             _write_selection_manifest,
+            build_selection_index,
         )
         from trendradar.infrastructure.runtime import runtime_root
         from trendradar.infrastructure.storage.artifact_store import ArtifactStore
@@ -440,6 +441,7 @@ def submit_selection_backtest(
 
         _write_selection_manifest(ctx.job_id, signal_set)
         _register_selection_metadata(ctx.job_id, execution_type="selection_backtest")
+        build_selection_index(ctx.job_id)
 
         ctx.log("Phase 2: Running backtest")
         backtest_request = request.get("backtest", {})

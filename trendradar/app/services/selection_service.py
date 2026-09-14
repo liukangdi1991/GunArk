@@ -362,6 +362,21 @@ def _register_selection_metadata(
         conn.commit()
 
 
+def build_selection_index(execution_key: str) -> None:
+    """落盘后建索引（picks.parquet / summary.json）。
+
+    索引是派生物：生成失败只记日志、不影响作业终态——分页与详情端点在索引缺失时
+    会退回直读 signals.json（慢但不 5xx）。
+    """
+    from trendradar.infrastructure.runtime import runtime_root
+    from trendradar.infrastructure.storage.artifact_index import ensure_selection_index
+
+    selection_dir = (
+        runtime_root() / "storage" / "objects" / "executions" / execution_key / "selection"
+    )
+    ensure_selection_index(execution_key, selection_dir)
+
+
 def submit_selection(
     executor: JobExecutor,
     market_store: MarketDataStore,
@@ -398,6 +413,8 @@ def submit_selection(
         _write_selection_manifest(ctx.job_id, signal_set)
 
         _register_selection_metadata(ctx.job_id)
+
+        build_selection_index(ctx.job_id)
 
         summary = {
             "execution_key": signal_set.execution_key,
@@ -451,6 +468,8 @@ def submit_batch_selection(
         _write_selection_manifest(ctx.job_id, signal_set)
 
         _register_selection_metadata(ctx.job_id)
+
+        build_selection_index(ctx.job_id)
 
         result = {
             "execution_key": signal_set.execution_key,
