@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query, Request as FastAPIRequest
+from fastapi import APIRouter, HTTPException, Query, Request as FastAPIRequest, Response
+from fastapi.responses import JSONResponse
 
 from trendradar.interfaces.api.schemas.execution import (
     BacktestRequest as BacktestSubmitRequest,
@@ -55,7 +56,33 @@ def get_backtest_report(execution_key: str, request: FastAPIRequest):
     result_file = root / execution_key / "backtest" / "result.json"
     if not result_file.exists():
         raise HTTPException(status_code=404, detail=f"Backtest result not found for '{execution_key}'")
-    return backtest_result_payload(execution_key, include_report=True)
+
+    # 产物级不变数据：ETag 直接取文件身份（mtime_ns + size），无需读盘算哈希。
+    # 条件请求命中即 304——报告重达 15MB，重复打开不该重算也不该重传。
+    stat = result_file.stat()
+    etag = f'"{stat.st_mtime_ns}-{stat.st_size}"'
+    headers = {"ETag": etag, "Cache-Control": "private, max-age=0, must-revalidate"}
+    if _etag_matches(request.headers.get("if-none-match"), etag):
+        return Response(status_code=304, headers=headers)
+
+    return JSONResponse(
+        backtest_result_payload(execution_key, include_report=True), headers=headers
+    )
+
+
+def _etag_matches(header: str | None, etag: str) -> bool:
+    """RFC 9110 If-None-Match：`*` 匹配一切；逗号列表逐项比；弱校验前缀 W/ 忽略。"""
+    if not header:
+        return False
+    if header.strip() == "*":
+        return True
+    for candidate in header.split(","):
+        token = candidate.strip()
+        if token.startswith("W/"):
+            token = token[2:]
+        if token == etag:
+            return True
+    return False
 
 
 @router.delete("/backtest-results/{execution_key}")

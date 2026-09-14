@@ -116,9 +116,11 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     # M8：全站无压缩中间件；重建后单股 JSON ~470KB，GZip 为交付项
+    # compresslevel=6：实测 12MB JSON 压缩 405ms(级别9) vs 170ms(级别6)，
+    # 传输只差 60KB（1.50 vs 1.56MB）——本地/局域网下这一档明显更划算
     from fastapi.middleware.gzip import GZipMiddleware
 
-    app.add_middleware(GZipMiddleware, minimum_size=1024)
+    app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
 
     from trendradar.interfaces.api.routes.strategies import router as strategies_router
     from trendradar.interfaces.api.routes.executions import router as executions_router

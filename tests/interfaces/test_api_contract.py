@@ -412,6 +412,60 @@ def test_backtest_report_shape(client):
     assert payload["open_positions"][0]["blocked_reason"] == "跌停封死"
 
 
+def test_backtest_report_conditional_get(client):
+    """报告是产物级不变数据：带 ETag 的条件请求命中直接 304，不重建大响应体。"""
+    key = "20260820_100100_backtest_c3d4"
+    url = f"/api/backtest-results/{key}/report"
+
+    first = client.get(url)
+    assert first.status_code == 200
+    etag = first.headers.get("etag")
+    assert etag and etag.startswith('"') and etag.endswith('"')
+    assert first.headers.get("cache-control") == "private, max-age=0, must-revalidate"
+
+    hit = client.get(url, headers={"If-None-Match": etag})
+    assert hit.status_code == 304
+    assert hit.content == b""
+    assert hit.headers.get("etag") == etag
+
+    # 弱校验前缀与多值列表形态都要认（RFC 9110 的 If-None-Match 语义）
+    weak = client.get(url, headers={"If-None-Match": f'W/{etag}, "other"'})
+    assert weak.status_code == 304
+
+    miss = client.get(url, headers={"If-None-Match": '"deadbeef-1"'})
+    assert miss.status_code == 200
+    assert miss.json()["result"]["execution_key"] == key
+
+
+def test_backtest_report_etag_tracks_artifact_change(client, tmp_path):
+    """产物被改写必须换 ETag，否则浏览器会一直拿旧报告。"""
+    key = "20260820_100100_backtest_c3d4"
+    url = f"/api/backtest-results/{key}/report"
+    etag_before = client.get(url).headers["etag"]
+
+    result_file = (
+        tmp_path / "storage" / "objects" / "executions" / key / "backtest" / "result.json"
+    )
+    result_file.write_text(result_file.read_text(encoding="utf-8"), encoding="utf-8")
+    future = time.time() + 10
+    os.utime(result_file, (future, future))
+
+    resp = client.get(url, headers={"If-None-Match": etag_before})
+    assert resp.status_code == 200
+    assert resp.headers["etag"] != etag_before
+
+
+def test_backtest_report_is_gzipped(client):
+    """大响应保持 gzip 传输（中间件档位调整不得关掉压缩）。"""
+    resp = client.get(
+        "/api/backtest-results/20260820_100100_backtest_c3d4/report",
+        headers={"Accept-Encoding": "gzip"},
+    )
+    assert resp.status_code == 200
+    assert resp.headers.get("content-encoding") == "gzip"
+    assert len(resp.content) < 10_000
+
+
 # ---------------------------------------------------------------------------
 # market data
 # ---------------------------------------------------------------------------
