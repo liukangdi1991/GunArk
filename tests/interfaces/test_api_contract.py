@@ -417,6 +417,58 @@ def test_selection_endpoints_report_corrupt_source(client, tmp_path):
         assert "损坏" in resp.json()["detail"], url
 
 
+def test_selection_source_signature_is_race_safe(tmp_path, monkeypatch):
+    """is_file 与 stat 之间文件被删（产物删除与预热并发）→ 返回 None 而非抛异常。"""
+    import trendradar.infrastructure.storage.artifact_index as index_mod
+
+    sel_dir = tmp_path / "selection"
+    sel_dir.mkdir()
+    (sel_dir / "signals.json").write_text("{}", encoding="utf-8")
+
+    real_stat = Path.stat
+
+    def flaky_stat(self, *args, **kwargs):
+        if self.name == "signals.json":
+            raise FileNotFoundError(self)
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", flaky_stat)
+    assert index_mod.selection_source_signature(sel_dir) is None
+
+
+def test_warm_indexes_survives_signature_race(tmp_path, monkeypatch):
+    """预热是尽力而为：单项异常不得逃逸（并发删除会触发 TOCTOU）。"""
+    import trendradar.infrastructure.storage.artifact_index as index_mod
+
+    root = tmp_path / "objects" / "executions"
+    (root / "k1" / "selection").mkdir(parents=True)
+    (root / "k1" / "selection" / "signals.json").write_text("{}", encoding="utf-8")
+
+    def boom(_selection_dir):
+        raise FileNotFoundError("signals.json")
+
+    monkeypatch.setattr(index_mod, "selection_source_signature", boom)
+    assert index_mod.warm_indexes(root) == 0  # 不抛异常
+
+
+def test_bulk_delete_reports_failure_instead_of_silence(client, monkeypatch):
+    """删除失败必须如实上报（原先 except: pass 导致「返回 0 条但没人知道为什么」）。"""
+    import shutil
+
+    def boom(_path):
+        raise OSError("directory not empty")
+
+    monkeypatch.setattr(shutil, "rmtree", boom)
+    resp = client.request(
+        "DELETE", "/api/selection-results", json={"execution_keys": ["20260820_100000_selection_a1b2"]}
+    )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["deleted"] == 0
+    assert payload["file_errors"] and "删除失败" in payload["file_errors"][0]
+
+
 def test_selection_picks_page_rejects_bad_params(client):
     key = "20260820_100000_selection_a1b2"
     assert client.get(f"/api/selection-results/{key}/picks?sort_by=drop_table").status_code == 400

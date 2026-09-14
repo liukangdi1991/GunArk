@@ -1240,6 +1240,8 @@ def _delete_execution_links(target_execution_key: str) -> None:
 def bulk_delete_selections(execution_keys: list[str] | None = None) -> dict:
     import shutil
 
+    from trendradar.infrastructure.storage.artifact_index import INDEX_WRITE_LOCK
+
     root = _executions_root()
     if execution_keys is None:
         targets = [
@@ -1272,10 +1274,11 @@ def bulk_delete_selections(execution_keys: list[str] | None = None) -> dict:
             )
             continue
         try:
-            shutil.rmtree(d)
+            with INDEX_WRITE_LOCK:  # 与索引写入互斥：避免遍历删除期间目录被写导致删不干净
+                shutil.rmtree(d)
             deleted += 1
-        except Exception:
-            pass
+        except Exception as exc:
+            file_errors.append(f"选股 {d.name} 删除失败：{exc}")
     return {
         "result_type": "selection",
         "requested": len(execution_keys) if execution_keys is not None else deleted,
@@ -1294,6 +1297,8 @@ def bulk_delete_backtests(execution_keys: list[str] | None = None) -> dict:
     never misreported as missing).
     """
     import shutil
+
+    from trendradar.infrastructure.storage.artifact_index import INDEX_WRITE_LOCK
 
     root = _executions_root()
 
@@ -1321,17 +1326,19 @@ def bulk_delete_backtests(execution_keys: list[str] | None = None) -> dict:
                 missing.append(key)
 
     deleted = 0
+    file_errors: list[str] = []
     for d in targets:
         try:
-            shutil.rmtree(d)
+            with INDEX_WRITE_LOCK:  # 与索引写入互斥（同选股删除）
+                shutil.rmtree(d)
             deleted += 1
             _delete_execution_links(d.name)   # 复审 E2E #2：防悬空引用锁死选股删除
-        except Exception:
-            pass
+        except Exception as exc:
+            file_errors.append(f"回测 {d.name} 删除失败：{exc}")
     return {
         "result_type": "backtest",
         "requested": len(execution_keys) if execution_keys is not None else deleted,
         "deleted": deleted,
         "missing": missing,
-        "file_errors": [],
+        "file_errors": file_errors,
     }
