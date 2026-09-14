@@ -104,6 +104,13 @@ def _make_crashing_market(days):
     return FakeMarket()
 
 
+def _rows(key, dataset):
+    """P2 起明细走分页端点；测试直接调 presenter 取一页。"""
+    from trendradar.interfaces.api.presenters import backtest_rows_page
+
+    return backtest_rows_page(key, dataset, offset=0, limit=200)["items"]
+
+
 def _init_storage(tmp_path) -> None:
     """建运行时目录与库表：worker 落盘后会写作业元数据。"""
     from trendradar.infrastructure.storage.connection import StorageConnection
@@ -303,10 +310,8 @@ def test_report_payload_reads_blocked_positions_from_disk(tmp_path, monkeypatch)
     from trendradar.interfaces.api.presenters import backtest_result_payload
 
     payload = backtest_result_payload(BLOCKED_KEY, include_report=True)
-    assert set(payload) == {
-        "result", "artifacts", "trades", "equity", "skips", "open_positions",
-    }
-    rows = payload["open_positions"]
+    assert set(payload) == {"result", "trend", "counts"}
+    rows = _rows(BLOCKED_KEY, "open-positions")
     assert [r["blocked_reason"] for r in rows] == ["跌停封死"]
     assert rows[0]["mark_date"] == out["open_positions"][0]["mark_date"]
     assert payload["result"]["summary"][0]["open_positions"] == 1
@@ -314,9 +319,10 @@ def test_report_payload_reads_blocked_positions_from_disk(tmp_path, monkeypatch)
     legacy = json.loads((bt_dir / "result.json").read_text(encoding="utf-8"))
     legacy.pop("open_positions")
     (bt_dir / "result.json").write_text(json.dumps(legacy), encoding="utf-8")
+    (bt_dir / "open_positions.parquet").unlink()  # P2：明细走 parquet，legacy 产物两者都没有
 
     legacy_payload = backtest_result_payload(BLOCKED_KEY, include_report=True)
-    assert legacy_payload["open_positions"] == []
+    assert _rows(BLOCKED_KEY, "open-positions") == []
     assert legacy_payload["result"]["summary"] == []
 
 
@@ -349,7 +355,7 @@ def test_unlimited_summary_rows_carry_money_not_copied_nav(tmp_path, monkeypatch
     assert row["realized_profit_sum"] == 0.0            # 一笔都没成交
     assert row["invested_notional_sum"] == 0.0
     assert row["unrealized_pnl"] == pytest.approx(
-        payload["open_positions"][0]["unrealized_pnl"])
+        _rows(BLOCKED_KEY, "open-positions")[0]["unrealized_pnl"])
     assert row["unrealized_pnl"] < 0
 
 
@@ -436,13 +442,14 @@ def test_report_summary_and_trades_carry_strategy_name(tmp_path, monkeypatch):
             BacktestConfig(execution=ExecutionConfig(fixed_hold_n_days=1)),
         )
         payload = backtest_result_payload(BLOCKED_KEY, include_report=True)
+        trade_rows = _rows(BLOCKED_KEY, "trades")
 
     row = payload["result"]["summary"][0]
     assert row["strategy"] == "s1"
     assert row["strategy_name"] == "测试策略"
     assert payload["result"]["strategies"] == ["测试策略"]
-    assert payload["trades"][0]["strategy"] == "s1"
-    assert payload["trades"][0]["strategy_name"] == "测试策略"
+    assert trade_rows[0]["strategy"] == "s1"
+    assert trade_rows[0]["strategy_name"] == "测试策略"
 
 
 def test_report_open_positions_carry_strategy_name(tmp_path, monkeypatch):
@@ -452,9 +459,10 @@ def test_report_open_positions_carry_strategy_name(tmp_path, monkeypatch):
     with _strategy_s1_registered():
         _run_blocked_backtest(tmp_path, monkeypatch)
         payload = backtest_result_payload(BLOCKED_KEY, include_report=True)
+        position_rows = _rows(BLOCKED_KEY, "open-positions")
 
-    assert payload["open_positions"][0]["strategy"] == "s1"
-    assert payload["open_positions"][0]["strategy_name"] == "测试策略"
+    assert position_rows[0]["strategy"] == "s1"
+    assert position_rows[0]["strategy_name"] == "测试策略"
 
 
 def test_report_strategy_name_falls_back_to_id_when_unregistered(tmp_path, monkeypatch):
@@ -466,7 +474,7 @@ def test_report_strategy_name_falls_back_to_id_when_unregistered(tmp_path, monke
 
     assert payload["result"]["summary"][0]["strategy_name"] is None
     assert payload["result"]["strategies"] == ["s1"]
-    assert payload["open_positions"][0]["strategy_name"] is None
+    assert _rows(BLOCKED_KEY, "open-positions")[0]["strategy_name"] is None
 
 
 # ---------------------------------------------------------------------------
