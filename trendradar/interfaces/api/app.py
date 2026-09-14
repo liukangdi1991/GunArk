@@ -81,6 +81,19 @@ async def _lifespan(app: FastAPI):
 
     ensure_default_group(store)
 
+    # 启动预热：后台补齐存量产物索引（幂等、有界、失败静默），
+    # 把存量自愈成本移出请求路径（spec §4.2.7）
+    import threading
+
+    from trendradar.infrastructure.storage.artifact_index import warm_indexes
+
+    threading.Thread(
+        target=warm_indexes,
+        args=(storage_root / "objects" / "executions",),
+        name="artifact-index-warmup",
+        daemon=True,
+    ).start()
+
     artifact_store = ArtifactStore(storage_root)
     signal_repo = SignalRepository(artifact_store)
 
