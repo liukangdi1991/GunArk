@@ -1058,7 +1058,9 @@ def test_submit_execution_dispatch_market_bars_sync(client, monkeypatch):
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["execution_type"] == "market_bars_sync"
-    assert payload["console_url"].startswith("/console/")
+    assert payload["console_url"] == "/console/job-dispatch-sync"
+    assert captured["job_type"] == "market_bars_sync"
+    assert captured["request"]["force"] is False
 
 
 def test_ultra_short_trade_strategy_maps_to_execution():
