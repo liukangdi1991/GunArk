@@ -48,7 +48,7 @@ def list_backtest_results(
 
 @router.get("/backtest-results/{execution_key}/report")
 def get_backtest_report(execution_key: str, request: FastAPIRequest):
-    from trendradar.interfaces.api.presenters import backtest_result_payload
+    from trendradar.interfaces.api.presenters import BacktestSourceUnreadable, backtest_result_payload
 
     if "/" in execution_key or "\\" in execution_key or ".." in execution_key:
         raise HTTPException(status_code=400, detail="Invalid execution_key")
@@ -65,9 +65,11 @@ def get_backtest_report(execution_key: str, request: FastAPIRequest):
     if _etag_matches(request.headers.get("if-none-match"), etag):
         return Response(status_code=304, headers=headers)
 
-    return JSONResponse(
-        backtest_result_payload(execution_key, include_report=True), headers=headers
-    )
+    try:
+        payload = backtest_result_payload(execution_key, include_report=True)
+    except BacktestSourceUnreadable as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return JSONResponse(payload, headers=headers)
 
 
 def _etag_matches(header: str | None, etag: str) -> bool:

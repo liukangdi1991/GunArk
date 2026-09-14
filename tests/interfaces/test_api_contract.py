@@ -417,6 +417,51 @@ def test_selection_endpoints_report_corrupt_source(client, tmp_path):
         assert "损坏" in resp.json()["detail"], url
 
 
+def test_backtest_run_is_identical_with_and_without_index(client, monkeypatch):
+    """索引路径与回落路径必须产出**完全一致**的列表（同一 facts→展示行实现）。"""
+    key = "20260820_100100_backtest_c3d4"
+    with_index = client.get("/api/backtest-results?limit=10").json()
+
+    import trendradar.infrastructure.storage.artifact_index as index_mod
+
+    monkeypatch.setattr(index_mod, "ensure_backtest_index", lambda *_a, **_k: None)
+    without_index = client.get("/api/backtest-results?limit=10").json()
+
+    assert without_index == with_index
+    assert any(r["execution_key"] == key for r in with_index["results"])
+
+
+def test_backtest_run_matches_between_list_and_report(client):
+    """同一 run 段在列表与报告里逐字段一致。"""
+    listed = client.get("/api/backtest-results?limit=10").json()["results"]
+    run = next(r for r in listed if r["execution_key"] == "20260820_100100_backtest_c3d4")
+
+    report = client.get("/api/backtest-results/20260820_100100_backtest_c3d4/report").json()
+
+    assert run == report["result"]
+
+
+def test_backtest_list_does_not_parse_result_json(client, monkeypatch):
+    """列表走索引：不再解析大产物 result.json。"""
+    key = "20260820_100100_backtest_c3d4"
+    assert client.get("/api/backtest-results?limit=10").status_code == 200  # 建索引
+
+    import trendradar.interfaces.api.presenters as presenters
+
+    reads: list[str] = []
+    real = presenters._read_json
+
+    def spy(path, default=None):
+        reads.append(Path(path).name)
+        return real(path, default)
+
+    monkeypatch.setattr(presenters, "_read_json", spy)
+    listed = client.get("/api/backtest-results?limit=10").json()["results"]
+
+    assert any(r["execution_key"] == key for r in listed)
+    assert "result.json" not in reads, f"列表不应解析大产物：{reads}"
+
+
 def test_selection_source_signature_is_race_safe(tmp_path, monkeypatch):
     """is_file 与 stat 之间文件被删（产物删除与预热并发）→ 返回 None 而非抛异常。"""
     import trendradar.infrastructure.storage.artifact_index as index_mod

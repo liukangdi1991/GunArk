@@ -108,12 +108,28 @@ def _artifact_row(path: Path, scope: str) -> dict:
     }
 
 
-class SelectionSourceUnreadable(RuntimeError):
-    """选股源产物存在但无法解析（文件损坏）。路由据此回 500 并给出明确文案。"""
+class ArtifactSourceUnreadable(RuntimeError):
+    """产物存在但无法解析（文件损坏）。路由据此回 500 并给出明确文案。"""
+
+    def __init__(self, scope: str, execution_key: str, filename: str) -> None:
+        super().__init__(
+            f"{scope}产物损坏：{execution_key}/{filename} 无法解析，可删除该记录后重跑"
+        )
+        self.execution_key = execution_key
+
+
+class SelectionSourceUnreadable(ArtifactSourceUnreadable):
+    """选股源产物（signals.json）损坏。"""
 
     def __init__(self, execution_key: str) -> None:
-        super().__init__(f"选股产物损坏：{execution_key}/selection/signals.json 无法解析，可删除该记录后重跑")
-        self.execution_key = execution_key
+        super().__init__("选股", execution_key, "selection/signals.json")
+
+
+class BacktestSourceUnreadable(ArtifactSourceUnreadable):
+    """回测源产物（result.json）损坏。"""
+
+    def __init__(self, execution_key: str) -> None:
+        super().__init__("回测", execution_key, "backtest/result.json")
 
 
 def _selection_summary_fields(key: str) -> dict:
@@ -515,86 +531,6 @@ def _selection_provenance(selection_keys: list[str]) -> dict:
     }
 
 
-def _backtest_summary(result: dict, metrics: dict) -> list[dict]:
-    trades = result.get("trades", [])
-    skips = result.get("skips", [])
-    open_positions = result.get("open_positions", [])
-    by_strategy: dict[str, dict] = {}
-
-    def row_for(strat: str) -> dict:
-        return by_strategy.setdefault(
-            strat,
-            {
-                "strategy": strat,
-                "trade_count": 0,
-                "skip_count": 0,
-                "win_rate_pct": 0.0,
-                "total_return_pct": 0.0,
-                "realized_profit_sum": 0.0,
-                "invested_notional_sum": 0.0,
-                "unrealized_pnl": 0.0,
-                # 组合级净值原样透传：unlimited_cash 模式下它们是 N-A，
-                # 用 `or 0.0` 兜底等于把"没有定义"改成"不赚不亏"
-                "annual_return_pct": metrics.get("annual_return_pct"),
-                "max_drawdown_pct": metrics.get("max_drawdown_pct"),
-                "sharpe": metrics.get("sharpe"),
-                "final_cash": metrics.get("final_cash"),
-                "initial_cash": metrics.get("initial_cash"),
-                "open_positions": 0,
-                "capital_mode": "",
-                "fixed_cash_per_trade": 0.0,
-                "start_date": "",
-                "end_date": "",
-            },
-        )
-
-    for t in trades:
-        row = row_for(t.get("strategy") or "未知")
-        row["trade_count"] += 1
-        # 按投入资金加权的策略收益率（sum(profit)/sum(buy_price*shares)），
-        # 避免"每笔收益率简单相加"产生误导性的巨大数值
-        row["realized_profit_sum"] += float(t.get("profit") or 0.0)
-        row["invested_notional_sum"] += (
-            float(t.get("buy_price") or 0.0) * float(t.get("shares") or 0)
-        )
-        if float(t.get("return_pct") or 0.0) > 0:
-            row["win_rate_pct"] = (
-                (row["win_rate_pct"] * (row["trade_count"] - 1) + 100.0)
-                / row["trade_count"]
-            )
-        else:
-            row["win_rate_pct"] = (
-                (row["win_rate_pct"] * (row["trade_count"] - 1)) / row["trade_count"]
-            )
-    for s in skips:
-        row_for(s.get("strategy") or "未知")["skip_count"] += 1
-    for p in open_positions:
-        row = row_for(p.get("strategy") or "未知")
-        row["open_positions"] += 1
-        row["unrealized_pnl"] += float(p.get("unrealized_pnl") or 0.0)
-    for row in by_strategy.values():
-        invested = row["invested_notional_sum"]
-        # 一笔都没成交 ⇒ 收益率无定义，不是 0.00%
-        row["total_return_pct"] = (
-            (row["realized_profit_sum"] / invested * 100.0) if invested > 0 else None
-        )
-    return list(by_strategy.values())
-
-
-def _backtest_window(result: dict, equity: list[dict]) -> tuple[str | None, str | None]:
-    """回测区间。曲线的收发两端原来就是它，但 unlimited_cash 模式不产曲线。"""
-    if equity:
-        return equity[0].get("date"), equity[-1].get("date")
-    dates: list[str] = []
-    for t in result.get("trades", []):
-        dates += [d for d in (t.get("buy_date"), t.get("sell_date")) if d]
-    for p in result.get("open_positions", []):
-        dates += [d for d in (p.get("buy_date"),
-                              p.get("mark_date") or p.get("target_sell_date")) if d]
-    dates += [s.get("buy_date") for s in result.get("skips", []) if s.get("buy_date")]
-    return (min(dates), max(dates)) if dates else (None, None)
-
-
 def _backtest_artifacts(key: str) -> list[dict]:
     bt_dir = _executions_root() / key / "backtest"
     artifacts = []
@@ -640,29 +576,77 @@ def _with_strategy_names(rows: list[dict]) -> list[dict]:
     return rows
 
 
+def _backtest_facts(key: str, bt_dir: Path) -> dict:
+    """回测机器事实（窗口/计数/每策略聚合）：索引优先，回落解析 result.json。
+
+    两条路径都经 `summarize_backtest_result`，因此**事实层只有一份实现**
+    （spec §4.4 不变式 1）；索引缺失/损坏时行为退回改造前，不会算错。
+    """
+    from trendradar.infrastructure.storage.artifact_index import (
+        ensure_backtest_index,
+        summarize_backtest_result,
+    )
+
+    index = ensure_backtest_index(key, bt_dir)
+    if index is not None:
+        return index.summary
+
+    result = _read_json(bt_dir / "result.json")
+    if result is None:
+        raise BacktestSourceUnreadable(key)
+    return summarize_backtest_result(result)
+
+
+def _backtest_summary_rows(
+    facts: dict, metrics: dict, config: dict, start_date: str | None, end_date: str | None
+) -> list[dict]:
+    """事实 → 展示行（列表与报告共用）。比率在此现算，事实里只存分子分母。"""
+    rows = []
+    for fact in facts["by_strategy"]:
+        trade_count = fact["trade_count"]
+        invested = fact["invested_notional_sum"]
+        rows.append(
+            {
+                "strategy": fact["strategy"],
+                "strategy_name": _strategy_display_name(fact["strategy"]),
+                "trade_count": trade_count,
+                "skip_count": fact["skip_count"],
+                "win_rate_pct": (fact["wins"] / trade_count * 100.0) if trade_count else 0.0,
+                # 一笔都没成交 ⇒ 收益率无定义，不是 0.00%
+                "total_return_pct": (
+                    (fact["realized_profit_sum"] / invested * 100.0) if invested > 0 else None
+                ),
+                "realized_profit_sum": fact["realized_profit_sum"],
+                "invested_notional_sum": invested,
+                "unrealized_pnl": fact["unrealized_pnl"],
+                # 组合级净值原样透传：unlimited_cash 模式下它们是 N-A，
+                # 用 `or 0.0` 兜底等于把"没有定义"改成"不赚不亏"
+                "annual_return_pct": metrics.get("annual_return_pct"),
+                "max_drawdown_pct": metrics.get("max_drawdown_pct"),
+                "sharpe": metrics.get("sharpe"),
+                "final_cash": metrics.get("final_cash"),
+                "initial_cash": metrics.get("initial_cash"),
+                "open_positions": fact["open_positions"],
+                "capital_mode": config["capital_mode"],
+                "fixed_cash_per_trade": config["cash_per_trade"],
+                "start_date": start_date or "",
+                "end_date": end_date or "",
+            }
+        )
+    return rows
+
+
 def backtest_result_payload(key: str, include_report: bool = False) -> dict:
     bt_dir = _executions_root() / key / "backtest"
-    result = _read_json(bt_dir / "result.json", {})
+    facts = _backtest_facts(key, bt_dir)
     metrics = _read_json(bt_dir / "metrics.json", {})
-    equity = result.get("equity_curve", [])
 
     config = _backtest_config(key)
-    start_date, end_date = _backtest_window(result, equity)
-    strategies = sorted(
-        {t.get("strategy") for t in result.get("trades", [])}
-        | {s.get("strategy") for s in result.get("skips", [])}
-        | {p.get("strategy") for p in result.get("open_positions", [])}
-    )
+    start_date, end_date = facts["window_from"], facts["window_to"]
+    strategies = [row["strategy"] for row in facts["by_strategy"]]
     selection_keys = _backtest_selection_keys(key)
     provenance = _selection_provenance(_backtest_selection_sources(key, selection_keys))
     mtime_iso = _file_mtime_iso(bt_dir) if bt_dir.exists() else None
-
-    summaries = _with_strategy_names(_backtest_summary(result, metrics))
-    for row in summaries:
-        row["capital_mode"] = config["capital_mode"]
-        row["fixed_cash_per_trade"] = config["cash_per_trade"]
-        row["start_date"] = start_date or ""
-        row["end_date"] = end_date or ""
 
     run = {
         "execution_key": key,
@@ -677,7 +661,7 @@ def backtest_result_payload(key: str, include_report: bool = False) -> dict:
         # 产物存在即视为跑完：查不到 jobs 行的历史产物回落 success，与时间字段的 mtime 回落同理
         "status": config["status"] or "success",
         "strategy_snapshots": provenance["strategy_snapshots"],
-        "summary": summaries,
+        "summary": _backtest_summary_rows(facts, metrics, config, start_date, end_date),
         "selection_execution_keys": selection_keys,
         "selection_from": provenance["selection_from"],
         "selection_to": provenance["selection_to"],
@@ -685,6 +669,10 @@ def backtest_result_payload(key: str, include_report: bool = False) -> dict:
 
     if not include_report:
         return run
+
+    result = _read_json(bt_dir / "result.json")
+    if result is None:
+        raise BacktestSourceUnreadable(key)
 
     # 交易/跳过明细补股票名称与板块（前端"名称"列）
     meta_map = _stock_meta_map()
