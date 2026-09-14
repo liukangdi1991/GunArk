@@ -14,7 +14,7 @@ import {
   StopOutlined,
   SyncOutlined,
 } from "@ant-design/icons";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { cancelExecution, getExecutionConsole } from "../../services/executions";
 import { ApiError } from "../../services/apiClient";
 import type { Execution } from "../../types/execution";
@@ -43,6 +43,7 @@ function splitConsoleText(pendingText: string, text: string) {
 
 export function ExecutionConsolePage() {
   const { executionId = "" } = useParams();
+  const navigate = useNavigate();
   const [execution, setExecution] = useState<Execution | null>(null);
   const [lines, setLines] = useState<string[]>([]);
   const [pendingText, setPendingText] = useState("");
@@ -155,11 +156,11 @@ export function ExecutionConsolePage() {
 
     redirectedRef.current = true;
     const timer = window.setTimeout(() => {
-      window.location.href = execution.result_url || "/";
+      navigate(execution.result_url || "/"); // SPA 内跳转：控制台已在主框架内（P5）
     }, 2000);
 
     return () => window.clearTimeout(timer);
-  }, [execution]);
+  }, [execution, navigate]);
 
   const renderedLines = pendingText ? lines.concat(pendingText) : lines;
 

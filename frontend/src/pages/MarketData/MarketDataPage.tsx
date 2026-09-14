@@ -4,6 +4,7 @@ import {
   Statistic, Tag, Typography, message,
 } from "antd";
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { submitExecution } from "../../services/executions";
 import { ApiError } from "../../services/apiClient";
 import {
@@ -23,6 +24,7 @@ const STATUS_TEXT: Record<string, string> = {
 };
 
 export function MarketDataPage() {
+  const navigate = useNavigate();
   const [messageApi, contextHolder] = message.useMessage();
   const [modal, modalContextHolder] = Modal.useModal();
   const [status, setStatus] = useState<MarketDataStatus | null>(null);
@@ -63,7 +65,7 @@ export function MarketDataPage() {
           accept_partial_baseline: acceptPartialBaseline,
         },
       });
-      window.location.href = execution.console_url;
+      navigate(execution.console_url); // SPA 内跳转（P5）
     } catch (error) {
       // 409 = 互斥拒绝（已有同步在跑），属良性冲突，不当错误染红
       if (error instanceof ApiError && error.status === 409) {
@@ -104,7 +106,7 @@ export function MarketDataPage() {
     setBackfilling(true);
     try {
       const resp = await submitMarketBackfill();
-      window.location.href = `/console/${resp.data.job_id}`;
+      navigate(`/console/${resp.data.job_id}`); // SPA 内跳转（P5）
     } catch (error) {
       // 409 = 互斥拒绝（主同步运行中）
       if (error instanceof ApiError && error.status === 409) {
