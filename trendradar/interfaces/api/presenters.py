@@ -646,14 +646,18 @@ def _stock_meta_frame():
 
 
 def _backtest_dataset_frame(key: str, dataset: str, bt_dir: Path):
-    """取明细帧（惰性）：parquet 优先（快），缺失/读坏时回落 result.json。"""
+    """取明细帧（惰性）：parquet 优先（快），缺失/读坏时回落 result.json。
+
+    统一挂 `_row`（读取序行号）：排序时作为**最后的并列兜底键**，使任何排序都是全序——
+    否则并列值之间的顺序不构成契约，翻页可能重复/漏行（spec §3.3）。
+    """
     import polars as pl
 
     _, parquet_name = BACKTEST_DATASETS[dataset]
     parquet_path = bt_dir / parquet_name
     if parquet_path.is_file():
         try:
-            return pl.scan_parquet(parquet_path)
+            return pl.scan_parquet(parquet_path).with_row_index("_row")
         except Exception as exc:
             logger.warning("backtest %s unreadable for %s: %s", parquet_name, key, exc)
 
@@ -665,8 +669,8 @@ def _backtest_dataset_frame(key: str, dataset: str, bt_dir: Path):
     field, _ = BACKTEST_DATASETS[dataset]
     rows = result.get(field) or []
     if not rows:
-        return pl.LazyFrame()
-    return pl.DataFrame(rows, infer_schema_length=None).lazy()
+        return None  # 该数据集没有明细（前端按空页处理）
+    return pl.DataFrame(rows, infer_schema_length=None).lazy().with_row_index("_row")
 
 
 def backtest_rows_page(
@@ -681,23 +685,21 @@ def backtest_rows_page(
 ) -> dict | None:
     """明细分页（trades/skips/open-positions 共用一套查询语义）。
 
-    返回 None 表示该 key 没有回测产物（路由据此 404）。
+    返回 None 表示该 key 没有回测产物（路由据此 404）；产物存在但数据集为空 → 空页。
     """
     import polars as pl
 
     bt_dir = _executions_root() / key / "backtest"
     frame = _backtest_dataset_frame(key, dataset, bt_dir)
     if frame is None:
-        return None
+        if not (bt_dir / "result.json").is_file():
+            return None
+        return {"items": [], "total": 0, "offset": offset, "limit": limit}
 
     if strategies:
         frame = frame.filter(pl.col("strategy").is_in(strategies))
 
-    # 总数为**过滤后**行数（前端分页器据此渲染）
-    try:
-        total = int(frame.select(pl.len()).collect().item())
-    except Exception:
-        total = 0
+    total = int(frame.select(pl.len()).collect().item())
     if total == 0:
         return {"items": [], "total": 0, "offset": offset, "limit": limit}
 
@@ -708,16 +710,25 @@ def backtest_rows_page(
         frame = frame.join(meta_frame.lazy(), on="code", how="left")
 
     if sort_keys:
-        keys = list(sort_keys)
+        keys = [*sort_keys, "_row"]  # `_row` 兜底 → 全序（并列值顺序不再靠引擎的稳定性）
         descending = [sort_dir == "desc"] + [False] * (len(keys) - 1)
         frame = frame.sort(keys, descending=descending, nulls_last=True)
 
     page = frame.slice(offset, limit).collect()
     if sort_by != "industry" and meta_frame is not None:
+        # 补齐字段的 join 发生在切片之后 → 行序可能被 join 打乱；按同一全序再规范化一次
+        # （页内 ≤200 行，代价可忽略；不这么做等于把「顺序正确」寄望于 join 的实现细节）
         page = page.join(meta_frame, on="code", how="left")
+    order_keys = [*(sort_keys or ()), "_row"]
+    page = page.sort(
+        order_keys,
+        descending=[sort_dir == "desc"] + [False] * (len(order_keys) - 1)
+        if sort_keys
+        else [False] * len(order_keys),
+    )
 
     items = []
-    for row in page.to_dicts():
+    for row in page.drop("_row").to_dicts():
         row["name"] = row.get("name") or ""
         row["industry"] = row.get("industry") or ""
         row["strategy_name"] = _strategy_display_name(row.get("strategy"))

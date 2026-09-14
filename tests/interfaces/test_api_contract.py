@@ -1425,3 +1425,84 @@ def test_backtest_from_selection_injects_ultra_short_execution(monkeypatch):
     }
 
 
+
+
+def test_backtest_trades_paging_is_stable_with_tied_sort_keys(client, tmp_path):
+    """排序键并列时也必须全序：否则翻页会重复/漏行（spec §3.3 的前提）。
+
+    构造两条除 sell_date 外完全相同的成交（同策略、同代码、同盈亏），按 profit 排序；
+    翻两遍必须得到完全一致的顺序，且与全量一致。
+    """
+    import json as _json
+
+    key = "20260820_100100_backtest_ties"
+    bt_dir = tmp_path / "storage" / "objects" / "executions" / key / "backtest"
+    bt_dir.mkdir(parents=True)
+    base = {
+        "strategy": "bbi_kdj_b1", "code": "000001", "signal_date": "2026-08-10",
+        "buy_date": "2026-08-11", "buy_price": 10.0, "sell_price": 10.8,
+        "shares": 100, "profit": 100.0, "return_pct": 7.8, "sell_postpone_days": 0,
+    }
+    trades = [
+        {**base, "sell_date": "2026-08-18"},
+        {**base, "sell_date": "2026-08-19"},
+        {**base, "sell_date": "2026-08-17"},
+    ]
+    (bt_dir / "result.json").write_text(
+        _json.dumps({"trade_count": 3, "skip_count": 0, "trades": trades, "skips": [],
+                     "open_positions": [], "equity_curve": [], "metrics": {}}),
+        encoding="utf-8",
+    )
+
+    url = f"/api/backtest-results/{key}/trades"
+    full = [r["sell_date"] for r in client.get(f"{url}?limit=50&sort_by=profit").json()["items"]]
+
+    def traverse() -> list[str]:
+        seen = []
+        for offset in range(3):
+            page = client.get(f"{url}?limit=1&offset={offset}&sort_by=profit").json()
+            assert len(page["items"]) == 1
+            seen.append(page["items"][0]["sell_date"])
+        return seen
+
+    first, second = traverse(), traverse()
+    assert first == second == full
+    assert sorted(full) == ["2026-08-17", "2026-08-18", "2026-08-19"]
+
+    # 并列 + join 路径（行业排序：三行同行业，全部并列）同样必须稳定且完整
+    def traverse_industry() -> list[str]:
+        seen = []
+        for offset in range(3):
+            page = client.get(f"{url}?limit=1&offset={offset}&sort_by=industry").json()
+            assert len(page["items"]) == 1
+            seen.append(page["items"][0]["sell_date"])
+        return seen
+
+    by_industry = traverse_industry()
+    assert by_industry == traverse_industry()
+    assert sorted(by_industry) == ["2026-08-17", "2026-08-18", "2026-08-19"]
+
+    # 一次取两行（补齐字段的 join 会参与）→ 页内行序仍必须是排序序，而不是 join 的产物顺序
+    two = client.get(f"{url}?limit=2&sort_by=industry").json()["items"]
+    assert [r["sell_date"] for r in two] == by_industry[:2]
+    assert all(r["industry"] for r in two)  # 同时确认补齐字段确实进来了
+
+
+def test_backtest_empty_dataset_with_strategy_filter(client, tmp_path):
+    """产物没有该明细 + 带 strategies 过滤：必须返回空页而不是 500。"""
+    import json as _json
+
+    key = "20260820_100100_backtest_empty"
+    bt_dir = tmp_path / "storage" / "objects" / "executions" / key / "backtest"
+    bt_dir.mkdir(parents=True)
+    (bt_dir / "result.json").write_text(
+        _json.dumps({"trade_count": 0, "skip_count": 0, "trades": [], "skips": [],
+                     "open_positions": [], "equity_curve": [], "metrics": {}}),
+        encoding="utf-8",
+    )
+
+    for dataset in ("trades", "skips", "open-positions"):
+        resp = client.get(f"/api/backtest-results/{key}/{dataset}?strategies=bbi_kdj_b1")
+        assert resp.status_code == 200, (dataset, resp.text[:200])
+        assert resp.json()["items"] == []
+        assert resp.json()["total"] == 0
