@@ -2,8 +2,8 @@ from datetime import date
 
 import polars as pl
 
+from trendradar.infrastructure.filesystem.atomic import atomic_write_parquet
 from trendradar.infrastructure.tushare.writer import (
-    atomic_write_parquet,
     flush_by_code,
     readback_calendar,
     swap_in_bars,

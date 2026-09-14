@@ -33,3 +33,17 @@ def test_atomic_write_fsyncs_before_replace(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "fsync", lambda fd: fsynced.append(fd))
     atomic.atomic_write(tmp_path / "test.txt", b"hello")
     assert fsynced, "fsync must be called before os.replace"
+
+
+def test_atomic_write_parquet_replaces_target(tmp_path):
+    """parquet 原子写：目标已存在时整体替换，且不留 .tmp 残渣。"""
+    import polars as pl
+
+    from trendradar.infrastructure.filesystem.atomic import atomic_write_parquet
+
+    target = tmp_path / "x.parquet"
+    atomic_write_parquet(pl.DataFrame({"a": [1]}), target)
+    atomic_write_parquet(pl.DataFrame({"a": [2, 3]}), target)
+
+    assert pl.read_parquet(target)["a"].to_list() == [2, 3]
+    assert [p.name for p in tmp_path.iterdir()] == ["x.parquet"]

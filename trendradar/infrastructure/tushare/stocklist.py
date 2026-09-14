@@ -11,9 +11,9 @@ from typing import Mapping
 import polars as pl
 
 from trendradar.domain.market.sync.spec import BASELINE_START
+from trendradar.infrastructure.filesystem.atomic import atomic_write_parquet
 from trendradar.infrastructure.tushare.client import get_pro
 from trendradar.infrastructure.tushare.fetch import EXCLUDE_BOARD_PREFIXES
-from trendradar.infrastructure.tushare.writer import atomic_write_parquet
 
 logger = logging.getLogger(__name__)
 

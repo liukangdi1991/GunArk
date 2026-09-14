@@ -15,6 +15,7 @@ from trendradar.domain.market.sync.selfcheck import (
     reconciliation_ok,
 )
 from trendradar.domain.market.sync.spec import FailureKind
+from trendradar.infrastructure.filesystem.atomic import atomic_write_parquet
 from trendradar.infrastructure.tushare.fetch import (
     fetch_code_range,
     fetch_day_by_date,
@@ -23,10 +24,7 @@ from trendradar.infrastructure.tushare.fetch import (
     shard_ranges,
 )
 from trendradar.infrastructure.tushare.stocklist import EffectiveList
-from trendradar.infrastructure.tushare.writer import (
-    atomic_write_parquet,
-    upsert_code_file,
-)
+from trendradar.infrastructure.tushare.writer import upsert_code_file
 
 
 @dataclass
