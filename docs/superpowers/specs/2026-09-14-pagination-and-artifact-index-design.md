@@ -60,6 +60,9 @@ GET <端点>?offset=<int≥0，默认 0>&limit=<1..200，默认 50>
 - `offset`/`limit` 越界 → FastAPI `Query(ge=/le=)` → 422（与现有 `?limit=` 端点一致）；
 - 过滤参数为端点特有：picks 用 `strategies` 与 `dates`（重复参数形式 `?strategies=A&strategies=B`）；
   trades/skips 用 `strategies`。
+- **白名单列必须在数据里存在**：`name`/`industry` 不在 `trades.parquet`/`picks.parquet` 中（实测列见
+  §5），属展示期从 `stock_meta` 补的字段——按它们排序时在服务端 join 后再排（实测 36,525 行
+  join 8ms、排序+切片 9ms，可忽略）。禁止出现「白名单有、数据没有同名来源」的列。
 
 ### 3.2 响应
 
@@ -84,12 +87,17 @@ GET <端点>?offset=<int≥0，默认 0>&limit=<1..200，默认 50>
 
 ### 4.1 索引文件
 
-| 产物 | 文件 | 内容 | 适用 |
+| 产物 | 文件 | 内容（**字段清单唯一来源**） | 适用 |
 |---|---|---|---|
 | 选股 | `selection/.index/picks.parquet` | `strategy, date, code`，按 `(strategy,date,code)` 排序 | 分页 |
-| 选股 | `selection/.index/summary.json` | `schema_version, source_mtime_ns, total_picks, unique_codes, trade_days, signal_from, signal_to, by_strategy_date[{strategy,date,count,elapsed_seconds}]` | 列表 + KPI + 摘要表 |
-| 回测 | `backtest/trades.parquet` 等（**已存在**） | 引擎写入 | 分页 |
-| 回测 | `backtest/.index/summary.json` | 见 §5.1（机器事实） | 列表 + KPI |
+| 选股 | `selection/.index/summary.json` | `schema_version, source_signature, total_picks, unique_codes, trade_days, signal_from, signal_to, by_strategy_date[{strategy,date,count,elapsed_seconds}]` | 列表 + KPI + 摘要表 |
+| 回测 | `backtest/trades.parquet`、`skips.parquet`、`open_positions.parquet`（**已存在**） | 引擎写入（列见 `_run_backtest_worker`） | 分页 |
+| 回测 | `backtest/.index/summary.json` | `schema_version, source_signature, window_from, window_to, trade_count, skip_count, open_position_count, by_strategy[{strategy, trade_count, skip_count, open_positions, realized_profit_sum, invested_notional_sum, unrealized_pnl}]` | 列表 + KPI |
+
+`source_signature` = **来源文件 → mtime_ns 的字典**（而非单个数值）：回测索引的来源有三个
+（`result.json`/`trades.parquet`/`skips.parquet`…），只对一个取 mtime 会在其余被替换时误判新鲜。
+任一键值不匹配或 `schema_version` 不同即重建。组合级指标（`total_return_pct` 等）不进索引：
+presenter 直读 `metrics.json`（408B）。索引**只存机器事实**，展示名与 meta 补全留在 presenter。
 
 索引一律落**产物目录下的 `.index/` 隐藏子目录**（P1 实施修正）：若与产物同目录，
 `artifacts` 列举会随「自愈是否已发生」漂移；产物目录的列举只收文件，子目录天然被跳过，
@@ -106,11 +114,23 @@ unrealized_pnl/窗口日期），展示名与 meta 补全仍在 presenter 完成
    `source_mtime_ns`（源产物 mtime），不匹配即重建；
 3. **降级**：索引生成失败（只读盘等）→ 该请求退回直读 JSON（功能不退化，只是慢），
    并记 WARNING 日志。**绝不因索引问题让端点 5xx。**
+4. **取数来源（回测）**：优先 `trades.parquet`/`skips.parquet`/`open_positions.parquet`（引擎落盘即写，
+   实测 869KB vs 15.9MB JSON）；产物缺这些文件时（0 笔成交的 run、旧版本产物）回落解析
+   `result.json` 反建，签名同样覆盖被读的文件。
+5. **失败退避**：自愈失败的 key 记进程内标记（60s TTL），窗口内该 key 直接走回落路径——
+   避免只读盘/源损坏时每次打开工作台都重试解析几十 MB JSON；成功即清除标记。
+6. **写序与撕裂窗口**：先写 parquet、后写 summary（summary 充当提交标记）。重建期间读者可能读到
+   「新 summary + 旧 parquet」：分页端点的 `total` 与行数据都取自 parquet（自洽）；详情端点 counts
+   取自 summary，极端窗口内两者可能相差一次重建——**已知可接受**（<1s，且只发生在存量自愈）。
+7. **启动预热（待用户拍板）**：lifespan 起后台线程补齐缺失索引（有界、失败静默），把存量自愈成本
+   移出请求路径（首次打开工作台即毫秒级）；不做则首访每 run 付一次（选股最坏 0.4s/13MB）。
 
 ### 4.3 并发与原子性
 
 - 写索引一律 `tmpfile + os.replace`（原子）；两个请求同时生成时各自写入，内容相同，后者覆盖前者；
-- 读索引不做锁（可见性由 `os.replace` 保证：要么旧要么新，不会读到半截文件）。
+- 读索引不做锁（可见性由 `os.replace` 保证：要么旧要么新，不会读到半截文件）；
+- **读取容错**：索引文件存在但读坏（截断/ParquetError/JSON 解析失败）→ 视为过期，删索引重建一次；
+  仍失败则走回落路径。端点不得 5xx。
 
 ## §5 端点变更（契约）
 
@@ -136,11 +156,8 @@ unrealized_pnl/窗口日期），展示名与 meta 补全仍在 presenter 完成
   `signals.json`（最大 13.2MB）/`result.json`（最大 15.9MB），只为算卡片上的日期/策略/条数。
 - 改法：新增 `ensure_backtest_index(key, backtest_dir)`（与选股索引同模块、同自愈/原子写/降级语义），
   新作业由 backtest worker 落盘时写；列表端点只读索引（μs 级）。
-- 回测索引内容（**只存机器事实**，展示名与 meta 补全仍留在 presenter）：
-  `schema_version, source_mtime_ns, window_from, window_to, trade_count, skip_count,
-  open_position_count, by_strategy[{strategy, trade_count, skip_count, open_positions,
-  realized_profit_sum, invested_notional_sum, unrealized_pnl}]`；`metrics.json` 里的组合级
-  指标（total_return_pct 等）由 presenter 直读原文件（408B，无需进索引）。
+- 回测索引字段清单见 §4.1（**唯一来源，本处不重复**）；组合级指标（`total_return_pct` 等）由
+  presenter 直读 `metrics.json`（408B），不进索引。
 - 副作用说明：列表首次访问会触发存量产物自愈（每个 run 一次性；10 个选股 run ≈ 1s 总计），
   之后为毫秒级。
 
@@ -200,12 +217,18 @@ unrealized_pnl/窗口日期），展示名与 meta 补全仍在 presenter 完成
 
 ### 9.2 报告首屏（P7）
 
-趋势图（两张）上移到「策略对比」之后；交易规则文案默认折叠（`Collapse`）；KPI 保持 4 张。
+趋势图（两张）上移到「策略对比」之后；交易规则文案默认折叠（`Collapse`，不持久化展开态）；KPI 保持 4 张。
+
+**验收**：1440×900 视口、滚动位置 0 时「交易收益走势」标题可见（落在首屏内）；折叠的规则文案
+仍可展开且内容与现行为一致；浏览器烟测无回归。
 
 ### 9.3 前端拆包（P8）
 
 `/selections`、`/backtests/*`、`/market-data` 路由级 `React.lazy`（K 线页已是）；vite
-`manualChunks` 把 `recharts` 单独成 chunk。目标：首访主包 ≤1.0MB。
+`manualChunks` 把 `recharts` 单独成 chunk。目标：首访主包 ≤1.0MB（现 1.71MB）。
+
+**验收**：`npm run build` 主包 ≤1.0MB 且 recharts 独立成 chunk；浏览器实测各路由首访正常
+（无白屏、无 chunk 404）；构建产物仍带 hash 文件名。
 
 ### 9.4 零散（P9）
 
@@ -218,19 +241,30 @@ unrealized_pnl/窗口日期），展示名与 meta 补全仍在 presenter 完成
 
 1. 索引缺失/过期/损坏 → 重建；重建失败 → 降级直读，端点不 5xx；
 2. 并发生成索引 → 原子替换，无半截文件；
-3. 分页参数非法 → 400/422 明确报错，不静默回落默认值（`sort_by` 例外见 §3.1）；
+3. 分页参数非法 → 明确报错、不静默回落默认值：非白名单 `sort_by` → 400；`offset`/`limit` 越界 → 422；
 4. `offset ≥ total`、空过滤结果、策略全不匹配 → 空页 + 正确 total；
 5. 增量一致性：源产物 mtime 变化（重跑/替换）后，索引自动重建，`total` 与内容同步变化；
 6. 前端：切页/切过滤/卸载不发悬挂请求（abort + 序号守卫）；失败保留旧数据；
 7. 所有新增端点有契约测试（形状 + 边界 + 404/400/422）。
+8. **聚合逻辑单一实现源**：选股摘要聚合（presenter `_selection_summary` 与索引构建）、回测按策略汇总
+   （`_backtest_summary` 与索引构建）各只保留一份实现——P1 已留下一处重复，P3 收口；presenter 的
+   回落路径复用索引模块的聚合函数。
+9. **部署耦合**：详情端点去掉 `picks` 后前后端必须同版本发布（单用户本地工具，不做版本协商）；
+   `index.html` 经 304 重验证 → 浏览器刷新即换新哈希 bundle。回滚 = 回退代码；`.index/` 是派生物，
+   可整目录删除，删除后行为退回「直读 JSON」。
+10. **故障注入**（随各批测试落地）：索引写失败（只读盘）、索引文件损坏、源产物缺失三种情况下，
+    端点均返回正确数据（走回落路径），不 5xx。
 
 ## §11 测试与验收
 
 - 后端：pytest 契约与边界（`tests/interfaces/`）、索引单测（`tests/infrastructure/`）、
   worker 落盘后索引存在（`tests/app/`）；
 - 前端：无测试框架 → 浏览器实测（翻页/过滤/排序/页大小/错误恢复），并在 review-backlog 记录；
-- 性能验收（本机）：选股详情首屏 ≤0.5s 且首屏响应 ≤200KB；报告首屏 ≤1.0s 且 ≤200KB；
-  列表端点 ≤50ms；`jobs.result_json` ≤4KB。
+- 性能验收（本机，区分首次与稳态）：
+  - **稳态**：选股 `picks` 分页 ≤0.3s / ≤100KB；回测 trades 分页 ≤0.3s；两个列表端点 ≤50ms；
+    详情端点 ≤0.2s；新作业 `jobs.result_json` ≤4KB。
+  - **首次（含存量自愈）**：选股最坏样本 ≤1.5s；回测 ≤1.0s。自愈只发生一次且**索引落盘即持久**
+    （进程重启不重复，除非源产物 mtime 变化）。
 
 ## §12 分批与顺序（用户确认）
 
