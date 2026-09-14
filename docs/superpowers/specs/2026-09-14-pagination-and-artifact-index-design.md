@@ -86,10 +86,14 @@ GET <端点>?offset=<int≥0，默认 0>&limit=<1..200，默认 50>
 
 | 产物 | 文件 | 内容 | 适用 |
 |---|---|---|---|
-| 选股 | `selection/picks.parquet` | `strategy, date, code`，按 `(strategy,date,code)` 排序 | 分页 |
-| 选股 | `selection/summary.json` | `schema_version, source_mtime_ns, total_picks, unique_codes, trade_days, signal_from, signal_to, by_strategy_date[{strategy,date,count,elapsed_seconds}]` | 列表 + KPI + 摘要表 |
+| 选股 | `selection/.index/picks.parquet` | `strategy, date, code`，按 `(strategy,date,code)` 排序 | 分页 |
+| 选股 | `selection/.index/summary.json` | `schema_version, source_mtime_ns, total_picks, unique_codes, trade_days, signal_from, signal_to, by_strategy_date[{strategy,date,count,elapsed_seconds}]` | 列表 + KPI + 摘要表 |
 | 回测 | `backtest/trades.parquet` 等（**已存在**） | 引擎写入 | 分页 |
-| 回测 | `backtest/summary.json` | `schema_version, source_mtime_ns, window(from/to), counts, by_strategy[summary 行]` | 列表 + KPI |
+| 回测 | `backtest/.index/summary.json` | 见 §5.1（机器事实） | 列表 + KPI |
+
+索引一律落**产物目录下的 `.index/` 隐藏子目录**（P1 实施修正）：若与产物同目录，
+`artifacts` 列举会随「自愈是否已发生」漂移；产物目录的列举只收文件，子目录天然被跳过，
+结果与生成时机无关。
 
 回测的 `summary` 行含中文策略名与名称补全，属展示层——**决策**：索引只存「机器事实」
 （trade_count/skip_count/open_positions/realized_profit_sum/invested_notional_sum/
@@ -119,8 +123,38 @@ unrealized_pnl/窗口日期），展示名与 meta 补全仍在 presenter 完成
 | `GET /api/backtest-results/{key}/skips` | **新增**：同上（白名单 `signal_date/buy_date/industry/code`） |
 | `GET /api/backtest-results/{key}/open-positions` | **新增**：同上（白名单 `buy_date/blocked_trading_days/unrealized_pnl/code`） |
 | `GET /api/executions/active`（P5） | **新增**：`[{execution_id, job_type, status, progress_current, progress_total, progress_message, started_at, console_url}]` |
+| `GET /api/selection-results`（P3） | 返回形状不变；每条改读 `.index/summary.json`（缺失→自愈；自愈失败→回落现行为解析 `signals.json`） |
+| `GET /api/backtest-results`（P3） | 返回形状不变；每条改读 `backtest/.index/summary.json`（同上回落 `result.json`） |
+| `GET /api/executions/{id}`（P4） | `result` 字段由「全量明细」变「摘要」——该端点无消费方 |
 
 前端 `types/*.ts` 与 `services/*.ts` 同步（clean cutover，不做双形状兼容）。
+
+### 5.1 列表端点读索引（P3）
+
+- 现状（实测 0.29s/次、随历史条数线性恶化）：`list_selection_results_payload` /
+  `list_backtest_results_payload` 每条历史调一次 `*_result_payload()`，各自整份解析
+  `signals.json`（最大 13.2MB）/`result.json`（最大 15.9MB），只为算卡片上的日期/策略/条数。
+- 改法：新增 `ensure_backtest_index(key, backtest_dir)`（与选股索引同模块、同自愈/原子写/降级语义），
+  新作业由 backtest worker 落盘时写；列表端点只读索引（μs 级）。
+- 回测索引内容（**只存机器事实**，展示名与 meta 补全仍留在 presenter）：
+  `schema_version, source_mtime_ns, window_from, window_to, trade_count, skip_count,
+  open_position_count, by_strategy[{strategy, trade_count, skip_count, open_positions,
+  realized_profit_sum, invested_notional_sum, unrealized_pnl}]`；`metrics.json` 里的组合级
+  指标（total_return_pct 等）由 presenter 直读原文件（408B，无需进索引）。
+- 副作用说明：列表首次访问会触发存量产物自愈（每个 run 一次性；10 个选股 run ≈ 1s 总计），
+  之后为毫秒级。
+
+### 5.2 `jobs.result_json` 瘦身（P4）
+
+- 现状：回测 worker 把**完整 output**（36,525 笔 trades/skips/equity）传给 `ctx.succeed`，
+  单行最大 **12.88MB**（`app.db` 18.1MB 的大头），而磁盘 `backtest/result.json` 已存同一份；
+  `GET /api/executions/{id}` 全仓无消费方（前端只用 console/cancel）。
+- 改法：`ctx.succeed` 只收摘要——`{metrics(截断为标量), trade_count, skip_count,
+  open_position_count}`（选股 worker 传的本就是小字典，无需改）；明细继续只落盘。
+- 旧行处理（可选、非必需）：一次性 `UPDATE jobs SET result_json = NULL WHERE length(result_json) > 100000`
+  + `VACUUM`，由运维脚本执行；不做自动清理（避免修改历史审计行）。
+- 验收：新作业 `length(result_json) ≤ 4KB`；`GET /api/executions/{id}` 返回 200 且 `result`
+  含上述摘要字段；`app.db` 不再随每次回测增长 12MB。
 
 ## §6 趋势序列服务端化（P2）
 
