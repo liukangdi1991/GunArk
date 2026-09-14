@@ -8,12 +8,15 @@ the artifact files, SQLite metadata, and the strategy registry.
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from trendradar.infrastructure.runtime import runtime_root
+
+logger = logging.getLogger(__name__)
 
 _MIME = {
     ".json": "application/json",
@@ -105,48 +108,19 @@ def _artifact_row(path: Path, scope: str) -> dict:
     }
 
 
-def _selection_summary(signals: dict) -> list[dict]:
-    by_strategy: dict[str, dict] = {}
-    for sig in signals.get("signals", []):
-        name = sig.get("strategy_name") or sig.get("strategy_id") or "未知"
-        date_str = sig.get("signal_date") or ""
-        count = len(sig.get("codes") or [])
-        key = (name, date_str)
-        if key not in by_strategy:
-            by_strategy[key] = {
-                "strategy": name,
-                "date": date_str,
-                "count": 0,
-                "elapsed_seconds": 0.0,
-            }
-        by_strategy[key]["count"] += count
-        # 复审 E2E #4：选择器算出的 select_day 耗时现在随信号持久化，此处聚合同
-        # 策略同日各段（旧文件无该键 → 恒 0.0，与历史行为一致）
-        by_strategy[key]["elapsed_seconds"] += sig.get("elapsed_seconds") or 0.0
-    for row in by_strategy.values():
-        row["elapsed_seconds"] = round(row["elapsed_seconds"], 3)
-    return list(by_strategy.values())
+def _selection_summary_fields(key: str) -> dict:
+    """摘要字段 + 计数（索引优先；不可用则回落 signals 现算）。
 
+    回落路径复用索引模块的 `summarize_signals`——聚合逻辑只保留一份实现（spec §10.8）。
+    """
+    from trendradar.infrastructure.storage.artifact_index import ensure_selection_index, summarize_signals
 
-def _selection_picks(key: str, signals: dict) -> list[dict]:
-    meta = _stock_meta_by_code()
-    picks = []
-    for sig in signals.get("signals", []):
-        name = sig.get("strategy_name") or sig.get("strategy_id") or "未知"
-        date_str = sig.get("signal_date") or ""
-        for code in sig.get("codes") or []:
-            stock_name, industry = meta.get(str(code), ("", ""))
-            picks.append(
-                {
-                    "execution_key": key,
-                    "strategy": name,
-                    "date": date_str,
-                    "code": str(code),
-                    "name": stock_name,
-                    "industry": industry,
-                }
-            )
-    return picks
+    sel_dir = _executions_root() / key / "selection"
+    index = ensure_selection_index(key, sel_dir)
+    if index is not None:
+        return index.summary
+    signals = _read_json(sel_dir / "signals.json", {}) or {}
+    return summarize_signals(signals)[0]
 
 
 def _selection_snapshots(lineage: dict) -> list[dict]:
@@ -173,29 +147,9 @@ PICKS_SORT_KEYS = {
 }
 
 
-def _selection_index_or_signals(key: str):
-    """索引优先：命中则 (summary, None)，未命中退回 (None, signals)——调用方自行降级。"""
-    from trendradar.infrastructure.storage.artifact_index import ensure_selection_index
-
-    sel_dir = _executions_root() / key / "selection"
-    index = ensure_selection_index(key, sel_dir)
-    if index is not None:
-        return index.summary, None
-    return None, _read_json(sel_dir / "signals.json", {})
-
-
-def _selection_counts(summary: dict | None, signals: dict | None) -> dict:
-    """计数口径（spec §9.1）：索引优先；索引不可用时由 signals 现算。"""
-    if summary is not None:
-        return {
-            "total_picks": summary["total_picks"],
-            "unique_codes": summary["unique_codes"],
-            "trade_days": summary["trade_days"],
-        }
-    signals = signals or {}
-    codes = [str(c) for sig in signals.get("signals", []) for c in (sig.get("codes") or [])]
-    days = {sig.get("signal_date") for sig in signals.get("signals", []) if sig.get("signal_date")}
-    return {"total_picks": len(codes), "unique_codes": len(set(codes)), "trade_days": len(days)}
+def _selection_counts(fields: dict) -> dict:
+    """计数口径（spec §9.1）：索引与回落路径共用同一份字段。"""
+    return {name: fields[name] for name in ("total_picks", "unique_codes", "trade_days")}
 
 
 def selection_result_payload(key: str, include_detail: bool = False) -> dict:
@@ -203,28 +157,20 @@ def selection_result_payload(key: str, include_detail: bool = False) -> dict:
     manifest = _read_json(sel_dir / "manifest.json", {})
     lineage = _read_json(sel_dir / "lineage.json", {})
 
-    index_summary, signals = _selection_index_or_signals(key)
+    fields = _selection_summary_fields(key)
+    counts = _selection_counts(fields)
+    signal_from = fields["signal_from"]
+    signal_to = fields["signal_to"]
 
-    strategies = [s.get("name") for s in lineage.get("resolved_strategies", [])]
-    if index_summary is not None:
-        summary_rows = index_summary["by_strategy_date"]
-        signal_from = index_summary.get("signal_from")
-        signal_to = index_summary.get("signal_to")
-    else:
-        summary_rows = _selection_summary(signals or {})
-        signal_from = (signals or {}).get("signal_from")
-        signal_to = (signals or {}).get("signal_to")
-
-    counts = _selection_counts(index_summary, signals)
     result = {
         "execution_key": key,
         "created_at": manifest.get("created_at"),
         "finished_at": None,
         "selection_date": signal_to or signal_from or "",
-        "strategies": strategies,
+        "strategies": [s.get("name") for s in lineage.get("resolved_strategies", [])],
         "strategy_snapshots": _selection_snapshots(lineage),
         "status": manifest.get("status", "success"),
-        "summary": summary_rows,
+        "summary": fields["by_strategy_date"],
         "selection_from": signal_from,
         "selection_to": signal_to,
         "trade_days": counts["trade_days"] or None,
@@ -240,24 +186,68 @@ def selection_result_payload(key: str, include_detail: bool = False) -> dict:
     }
 
 
-def _picks_lazy_filtered(path: Path, strategies: list[str] | None, dates: list[str] | None):
-    """picks.parquet 的惰性帧 + 过滤（过滤必须先于切片生效）。"""
+def _picks_page_from_frame(
+    frame,
+    *,
+    key: str,
+    offset: int,
+    limit: int,
+    strategies: list[str] | None,
+    dates: list[str] | None,
+    sort_by: str | None,
+    sort_dir: str,
+) -> tuple[list[dict], int]:
+    """在惰性帧上做过滤 → 计数 → 排序 → 切片（索引与回落两条路径共用同一查询语义）。"""
     import polars as pl
 
-    frame = pl.scan_parquet(path)
     if strategies:
         frame = frame.filter(pl.col("strategy").is_in(strategies))
     if dates:
         frame = frame.filter(pl.col("date").is_in(dates))
-    return frame
+    total = int(frame.select(pl.len()).collect().item())
+    if sort_by:  # 默认（None）= 产物固有全序 (strategy,date,code)，免排序
+        keys = list(PICKS_SORT_KEYS[sort_by])
+        frame = frame.sort(keys, descending=[sort_dir == "desc"] + [False] * (len(keys) - 1))
+    rows = frame.slice(offset, limit).collect().to_dicts()
+    return [{"execution_key": key, **row} for row in rows], total
 
 
-def _picks_matches(row: dict, strategies: list[str] | None, dates: list[str] | None) -> bool:
-    if strategies and row["strategy"] not in strategies:
-        return False
-    if dates and row["date"] not in dates:
-        return False
-    return True
+def _picks_page_from_index(
+    key: str,
+    sel_dir: Path,
+    *,
+    offset: int,
+    limit: int,
+    strategies: list[str] | None,
+    dates: list[str] | None,
+    sort_by: str | None,
+    sort_dir: str,
+) -> tuple[list[dict], int] | None:
+    """读索引取一页；索引不可用或读坏（重建一次仍失败）返回 None——调用方回落直读。"""
+    import polars as pl
+
+    from trendradar.infrastructure.storage.artifact_index import ensure_selection_index
+
+    for force in (False, True):  # 第一次用现有索引；读坏则强制重建后重试一次
+        index = ensure_selection_index(key, sel_dir, force=force)
+        if index is None:
+            return None
+        try:
+            return _picks_page_from_frame(
+                pl.scan_parquet(index.picks_path),
+                key=key,
+                offset=offset,
+                limit=limit,
+                strategies=strategies,
+                dates=dates,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+            )
+        except Exception as exc:
+            logger.warning(
+                "picks index unreadable for %s (force_rebuild=%s): %s", key, force, exc
+            )
+    return None
 
 
 def selection_picks_page(
@@ -270,37 +260,40 @@ def selection_picks_page(
     sort_by: str | None = None,
     sort_dir: str = "asc",
 ) -> dict | None:
-    """选股明细分页（spec §3/§4）。索引缺失或写入失败时降级直读 signals.json。
+    """选股明细分页（spec §3/§4）。索引缺失/读坏/写入失败时降级直读 signals.json。
 
     返回 None 表示该 key 没有选股产物（路由据此 404）。
     """
-    import polars as pl
-
-    from trendradar.infrastructure.storage.artifact_index import ensure_selection_index
+    from trendradar.infrastructure.storage.artifact_index import summarize_signals
 
     sel_dir = _executions_root() / key / "selection"
-    index = ensure_selection_index(key, sel_dir)
+    page = _picks_page_from_index(
+        key,
+        sel_dir,
+        offset=offset,
+        limit=limit,
+        strategies=strategies,
+        dates=dates,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
 
-    if index is not None:
-        frame = _picks_lazy_filtered(index.picks_path, strategies, dates)
-        total = int(frame.select(pl.len()).collect().item())
-        if sort_by:  # 默认（None）= 产物固有全序 (strategy,date,code)，免排序
-            keys = list(PICKS_SORT_KEYS[sort_by])
-            frame = frame.sort(keys, descending=[sort_dir == "desc"] + [False] * (len(keys) - 1))
-        rows = frame.slice(offset, limit).collect().to_dicts()
-    else:
+    if page is None:
         signals = _read_json(sel_dir / "signals.json")
         if signals is None:
             return None
-        rows_all = [
-            row for row in _selection_picks(key, signals) if _picks_matches(row, strategies, dates)
-        ]
-        keys = list(PICKS_SORT_KEYS[sort_by or "strategy"])
-        # 稳定排序：先按 tiebreaker 升序，再按主键（stable）——与 parquet 分支同序
-        rows_all.sort(key=lambda r: tuple(r[k] for k in keys[1:]))
-        rows_all.sort(key=lambda r: r[keys[0]], reverse=sort_dir == "desc")
-        total = len(rows_all)
-        rows = rows_all[offset : offset + limit]
+        rows, total = _picks_page_from_frame(
+            summarize_signals(signals)[1].lazy(),
+            key=key,
+            offset=offset,
+            limit=limit,
+            strategies=strategies,
+            dates=dates,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+        )
+    else:
+        rows, total = page
 
     meta = _stock_meta_by_code()
     items = [
@@ -830,12 +823,14 @@ def _compute_market_status() -> dict:
         "doubtful_days": [d.isoformat() for d in sync.doubtful_days()],
     }
 
-    # ⑥ 本地存储（沿用现状数字，供面板基线行）
+    # ⑥ 本地存储（面板基线行）：股票数取 stock_meta 行数（股票池口径），本地文件数取 bars 文件数——
+    #    两者不再是同一个 glob（差异本身即缺口信号，spec §9.4）
     file_count = len(list(bars_dir.glob("*.parquet"))) if bars_dir.is_dir() else 0
+    meta_rows = len(_stock_meta_by_code()) if meta_file.exists() else 0
     storage = {
         "data_dir": str(bars_dir),
         "stocklist": str(meta_file) if meta_file.exists() else "",
-        "stock_count": file_count,
+        "stock_count": meta_rows,
         "local_file_count": file_count,
         "latest_date": str(max(readback)) if readback else None,
     }

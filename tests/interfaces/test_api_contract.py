@@ -331,6 +331,25 @@ def test_selection_picks_page_filters_and_sort(client):
     assert desc["items"][0]["code"] == "600519"
 
 
+def test_selection_picks_page_recovers_from_corrupt_index(client, tmp_path):
+    """索引文件读坏 → 强制重建一次；端点必须 200 且数据正确（不 5xx）。"""
+    key = "20260820_100000_selection_a1b2"
+    url = f"/api/selection-results/{key}/picks?limit=2"
+    assert client.get(url).status_code == 200
+
+    index_file = (
+        tmp_path / "storage" / "objects" / "executions" / key / "selection"
+        / ".index" / "picks.parquet"
+    )
+    index_file.write_bytes(b"definitely not a parquet file")
+
+    resp = client.get(url)
+
+    assert resp.status_code == 200
+    assert [p["code"] for p in resp.json()["items"]] == ["000001", "000002"]
+    assert resp.json()["total"] == 4
+
+
 def test_selection_picks_page_rejects_bad_params(client):
     key = "20260820_100000_selection_a1b2"
     assert client.get(f"/api/selection-results/{key}/picks?sort_by=drop_table").status_code == 400
@@ -525,7 +544,8 @@ def test_status_payload_has_six_groups(client):
     assert set(payload["consistency"]) == {"ledger_suspect", "marker_mismatch",
                                            "doubtful_days"}
     # 旧平铺字段全部收进 storage 组（原 test_market_status_shape 的断言落点）
-    assert payload["storage"]["stock_count"] == 1
+    # 口径（spec §9.4）：股票数 = stock_meta 行数（股票池），本地文件数 = bars 文件数
+    assert payload["storage"]["stock_count"] == 4
     assert payload["storage"]["local_file_count"] == 1
     assert payload["storage"]["latest_date"] == "2026-08-30"
     # 新鲜度基于读回实测：fixture 只种了 000001 一只到 2026-08-30
