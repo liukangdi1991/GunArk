@@ -10,6 +10,8 @@ These tests pin that contract so the Web workbench renders real data.
 from __future__ import annotations
 
 import json
+import os
+import time
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -444,6 +446,71 @@ def test_status_payload_has_six_groups(client):
     assert payload["storage"]["latest_date"] == "2026-08-30"
     # 新鲜度基于读回实测：fixture 只种了 000001 一只到 2026-08-30
     assert payload["freshness"]["trusted_through"] == "2026-08-30"
+
+
+def test_market_status_readback_uses_cached_calendar(client, monkeypatch):
+    """行情页冷路径不再全库扫描：走 mtime 校验的日历缓存（trading-dates 同款）。
+
+    原实现每次冷路径都 readback_calendar() 重扫全部 bar 文件（实测 5,814 个
+    parquet ≈ 0.9s，占冷路径九成）；改为复用 data_store 的日历缓存后，
+    语义不变（同一份"全库日期并集"），成本降到 50ms 级。
+    """
+    import trendradar.domain.market.data_store as data_store_mod
+    import trendradar.infrastructure.tushare.writer as writer_mod
+    from trendradar.interfaces.api import presenters
+
+    counts = {"readback": 0, "calendar": 0}
+    real_readback = writer_mod.readback_calendar
+    real_get_calendar = data_store_mod.LocalParquetMarketStore.get_calendar
+
+    def spy_readback(bars_dir):
+        counts["readback"] += 1
+        return real_readback(bars_dir)
+
+    def spy_get_calendar(self):
+        counts["calendar"] += 1
+        return real_get_calendar(self)
+
+    monkeypatch.setattr(writer_mod, "readback_calendar", spy_readback)
+    monkeypatch.setattr(
+        data_store_mod.LocalParquetMarketStore, "get_calendar", spy_get_calendar
+    )
+
+    presenters.invalidate_market_status_cache()
+    resp = client.get("/api/market-data/status")
+
+    assert resp.status_code == 200
+    assert counts["readback"] == 0, "status 冷路径不得全库扫描（readback_calendar）"
+    assert counts["calendar"] >= 1, "status 必须走缓存日历"
+
+
+def test_market_status_reflects_new_bars_after_cache(client, tmp_path):
+    """新增行情文件后 status 必须反映新日期（缓存按文件 mtime 失效）。"""
+    from trendradar.interfaces.api import presenters
+
+    bars_dir = tmp_path / "storage" / "market" / "bars"
+    assert client.get("/api/market-data/status").json()["storage"]["latest_date"] == "2026-08-30"
+
+    pl.DataFrame(
+        [
+            {
+                "code": "000002",
+                "date": date(2026, 9, 1),
+                "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0,
+                "volume": 1.0, "amount": 1.0,
+                "adj_factor": 1.0, "is_suspended": False,
+            }
+        ],
+        schema_overrides={"date": pl.Date},
+    ).write_parquet(bars_dir / "000002.parquet")
+    # 明确推后 mtime：时间戳粒度粗的文件系统上避免"新文件不比缓存新"的假阴性
+    future = time.time() + 10
+    os.utime(bars_dir / "000002.parquet", (future, future))
+
+    presenters.invalidate_market_status_cache()
+    payload = client.get("/api/market-data/status").json()
+    assert payload["storage"]["latest_date"] == "2026-09-01"
+    assert payload["freshness"]["trusted_through"] == "2026-09-01"
 
 
 # ---------------------------------------------------------------------------

@@ -88,11 +88,11 @@ def _selection_artifacts(key: str) -> list[dict]:
     if sel_dir.is_dir():
         for f in sorted(sel_dir.iterdir()):
             if f.is_file():
-                artifacts.append(_artifact_row(key, f, scope="execution"))
+                artifacts.append(_artifact_row(f, scope="execution"))
     return artifacts
 
 
-def _artifact_row(key: str, path: Path, scope: str) -> dict:
+def _artifact_row(path: Path, scope: str) -> dict:
     rel = path.relative_to(_storage_root()).as_posix()
     return {
         "artifact_scope": scope,
@@ -393,7 +393,7 @@ def _selection_provenance(selection_keys: list[str]) -> dict:
     }
 
 
-def _backtest_summary(key: str, result: dict, metrics: dict) -> list[dict]:
+def _backtest_summary(result: dict, metrics: dict) -> list[dict]:
     trades = result.get("trades", [])
     skips = result.get("skips", [])
     open_positions = result.get("open_positions", [])
@@ -479,7 +479,7 @@ def _backtest_artifacts(key: str) -> list[dict]:
     if bt_dir.is_dir():
         for f in sorted(bt_dir.iterdir()):
             if f.is_file():
-                artifacts.append(_artifact_row(key, f, scope="execution"))
+                artifacts.append(_artifact_row(f, scope="execution"))
     return artifacts
 
 
@@ -535,7 +535,7 @@ def backtest_result_payload(key: str, include_report: bool = False) -> dict:
     provenance = _selection_provenance(_backtest_selection_sources(key, selection_keys))
     mtime_iso = _file_mtime_iso(bt_dir) if bt_dir.exists() else None
 
-    summaries = _with_strategy_names(_backtest_summary(key, result, metrics))
+    summaries = _with_strategy_names(_backtest_summary(result, metrics))
     for row in summaries:
         row["capital_mode"] = config["capital_mode"]
         row["fixed_cash_per_trade"] = config["cash_per_trade"]
@@ -643,9 +643,9 @@ def _compute_market_status() -> dict:
         SHANGHAI,
         latest_tradeable_day,
     )
+    from trendradar.domain.market.data_store import LocalParquetMarketStore
     from trendradar.infrastructure.runtime import storage_root
     from trendradar.infrastructure.storage.sync_store import SyncStore
-    from trendradar.infrastructure.tushare.writer import readback_calendar
 
     store_root = storage_root()
     bars_dir = store_root / "market" / "bars"
@@ -668,7 +668,15 @@ def _compute_market_status() -> dict:
 
     # ② 新鲜度（基于读回实测日历，不信任 done_days）
     latest = latest_tradeable_day(calendar_days, now_cn) if calendar_days else None
-    readback = readback_calendar(bars_dir) if bars_dir.is_dir() else set()
+    # 读回实测 = 全库 date 列并集，与 trading-dates/选股/回测共用同一份缓存
+    # （storage/market/calendar.parquet，按 bar 文件 mtime 失效）：原实现每次冷路径
+    # 重扫全部 bar 文件（5,814 个 ≈ 0.9s，占冷路径九成）。手工删除 bar 文件时缓存
+    # 不会失效——该口径全站一致，同步自检仍走 writer.readback_calendar 全量读数。
+    readback = (
+        set(LocalParquetMarketStore(bars_dir).get_calendar())
+        if bars_dir.is_dir()
+        else set()
+    )
     trusted = max((d for d in readback if latest is None or d <= latest), default=None)
     freshness = {
         "trusted_through": str(trusted) if trusted else None,
@@ -1130,7 +1138,6 @@ def bulk_delete_selections(execution_keys: list[str] | None = None) -> dict:
         if not (root / key).exists()
         or not (root / key / "selection" / "signals.json").exists()
     ]
-    deleted = 0
     deleted = 0
     file_errors = []
     for d in targets:
