@@ -49,8 +49,24 @@ export interface SelectionResultsResponse {
   results: SelectionResult[];
 }
 
+export interface SelectionCounts {
+  /** 全部 picks 条数（Σ 策略×日期，多日 run 会远大于股票只数） */
+  total_picks: number;
+  /** 去重后的股票只数 */
+  unique_codes: number;
+  /** 覆盖交易日数 */
+  trade_days: number;
+}
+
 export interface SelectionResultDetailResponse {
   result: SelectionResult;
   artifacts: SelectionArtifact[];
-  picks: SelectionPick[];
+  counts: SelectionCounts;
+}
+
+export interface SelectionPicksPage {
+  items: SelectionPick[];
+  total: number;
+  offset: number;
+  limit: number;
 }

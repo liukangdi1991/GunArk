@@ -3,27 +3,17 @@ import { Alert, Button, Card, Col, Row, Space, Statistic, Table, Tag, Typography
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { PagedTable } from "../../components/PagedTable";
 import { StrategySnapshots } from "../../components/StrategySnapshots";
-import { getSelectionResult } from "../../services/selections";
+import { usePagedQuery } from "../../hooks/usePagedQuery";
+import { getSelectionResult, getSelectionPicks } from "../../services/selections";
 import type { SelectionPick, SelectionResultDetailResponse, SelectionSummary } from "../../types/selection";
 import { formatDateRange, formatNumber } from "../../utils/format";
 
 const { Paragraph, Text, Title } = Typography;
 
-function compareText(a: unknown, b: unknown) {
-  return String(a || "").localeCompare(String(b || ""), "zh-Hans-CN");
-}
-
-function totalPickCount(detail?: SelectionResultDetailResponse | null) {
-  return (detail?.result.summary || []).reduce((sum, item) => sum + Number(item.count || 0), 0);
-}
-
 function summaryRowKey(record: Pick<SelectionSummary, "strategy" | "date">) {
   return `${record.strategy}-${record.date}`;
-}
-
-function selectedSummarySet(selectedKeys: string[]) {
-  return new Set(selectedKeys);
 }
 
 function toggleSummary(current: string[], key: string) {
@@ -63,14 +53,16 @@ const summaryColumns: ColumnsType<SelectionSummary> = [
   },
 ];
 
+/** 服务端排序（白名单列 code/date/strategy）；行业仅展示、不参与排序。 */
 const pickColumns: ColumnsType<SelectionPick> = [
-  { title: "策略", dataIndex: "strategy", key: "strategy", width: 180 },
-  { title: "日期", dataIndex: "date", key: "date", width: 120 },
+  { title: "策略", dataIndex: "strategy", key: "strategy", width: 180, sorter: true },
+  { title: "日期", dataIndex: "date", key: "date", width: 120, sorter: true },
   {
     title: "代码",
     dataIndex: "code",
     key: "code",
     width: 110,
+    sorter: true,
     render: (_, record) => (
       <Link to={`/stocks/${record.code}`}>{record.code}</Link>
     ),
@@ -90,7 +82,6 @@ const pickColumns: ColumnsType<SelectionPick> = [
     key: "industry",
     width: 140,
     render: (value) => value || "-",
-    sorter: (a, b) => compareText(a.industry, b.industry),
   },
 ];
 
@@ -128,14 +119,11 @@ export function SelectionResultPage() {
   }, [messageApi, executionKey]);
 
   const run = detail?.result;
-  const selectedSet = useMemo(() => selectedSummarySet(selectedSummaryKeys), [selectedSummaryKeys]);
+  const counts = detail?.counts;
+  const selectedSet = useMemo(() => new Set(selectedSummaryKeys), [selectedSummaryKeys]);
   const selectedSummaries = useMemo(
     () => (run?.summary || []).filter((item) => selectedSet.has(summaryRowKey(item))),
     [run?.summary, selectedSet],
-  );
-  const filteredPicks = useMemo(
-    () => (detail?.picks || []).filter((item) => selectedSet.has(summaryRowKey(item))),
-    [detail?.picks, selectedSet],
   );
   const selectedStrategyNames = useMemo(
     () => Array.from(new Set(selectedSummaries.map((item) => item.strategy))),
@@ -145,6 +133,26 @@ export function SelectionResultPage() {
     () => (run?.strategy_snapshots || []).filter((strategy) => selectedStrategyNames.includes(strategy.name)),
     [run?.strategy_snapshots, selectedStrategyNames],
   );
+
+  const picksQuery = usePagedQuery<SelectionPick>({
+    queryKey: `${executionKey}|${selectedSummaryKeys.join(",")}`,
+    initialLimit: 15,
+    fetchPage: ({ offset, limit, sortBy, sortDir, signal }) => {
+      if (!selectedSummaries.length) {
+        // 一条摘要都没勾 = 过滤后为空（保持原有语义），不发无谓请求
+        return Promise.resolve({ items: [], total: 0, offset, limit });
+      }
+      const strategies = Array.from(new Set(selectedSummaries.map((item) => item.strategy)));
+      const dates = Array.from(new Set(selectedSummaries.map((item) => item.date)));
+      return getSelectionPicks(
+        executionKey,
+        { offset, limit, strategies, dates, sortBy, sortDir },
+        signal,
+      );
+    },
+  });
+
+  const multiDay = (counts?.trade_days ?? 0) > 1;
 
   return (
     <div className="feature-page">
@@ -180,7 +188,11 @@ export function SelectionResultPage() {
               </Col>
               <Col xs={12} lg={6}>
                 <Card className="metric-card">
-                  <Statistic title="选中股票" value={filteredPicks.length} suffix="只" />
+                  <Statistic
+                    title={multiDay ? "选中信号（当前过滤）" : "选中股票（当前过滤）"}
+                    value={picksQuery.total}
+                    suffix={multiDay ? "条" : "只"}
+                  />
                 </Card>
               </Col>
               <Col xs={12} lg={6}>
@@ -200,7 +212,12 @@ export function SelectionResultPage() {
             <section>
               <div className="section-title">策略摘要</div>
               <Paragraph className="muted-text">
-                勾选策略日期后，下方选股明细会同步过滤。当前选中 {selectedSummaryKeys.length} 条记录。
+                勾选策略日期后，下方选股明细会同步过滤。当前选中 {selectedSummaryKeys.length} 条记录
+                {counts
+                  ? multiDay
+                    ? `；本次共 ${counts.total_picks} 条信号 · ${counts.unique_codes} 只（去重）· ${counts.trade_days} 个交易日。`
+                    : `；本次共选出 ${counts.total_picks} 只。`
+                  : "。"}
               </Paragraph>
               <Table
                 rowKey={summaryRowKey}
@@ -228,13 +245,12 @@ export function SelectionResultPage() {
 
             <section>
               <div className="section-title">选股明细</div>
-              <Table
-                rowKey={(record) => `${record.strategy}-${record.date}-${record.code}`}
+              <PagedTable<SelectionPick>
+                query={picksQuery}
                 columns={pickColumns}
-                dataSource={filteredPicks}
-                pagination={{ pageSize: 15, showSizeChanger: true }}
-                scroll={{ x: 760 }}
-                size="middle"
+                rowKey={(record) => `${record.strategy}-${record.date}-${record.code}`}
+                scrollX={760}
+                emptyText="没有符合条件的选股明细"
               />
             </section>
           </Space>
