@@ -302,7 +302,21 @@ def _run_backtest_worker(
         if signal_set.execution_key != ctx.job_id:
             _link_backtest_to_selection(signal_set.execution_key, ctx.job_id)
 
-    ctx.succeed(output)
+        # 落盘即建索引（幂等；索引是派生物，失败只记日志）：历史列表因此免解析 15.9MB 产物
+        from trendradar.infrastructure.storage.artifact_index import ensure_backtest_index
+
+        ensure_backtest_index(ctx.job_id, out_dir)
+
+    # P4：明细只落盘。作业终态只存摘要——原先整个 output（3.6 万笔 ≈ 12.9MB）写进
+    # SQLite 的 jobs.result_json，而全仓无消费方（前端只用 console/cancel）。
+    ctx.succeed(
+        {
+            "metrics": output.get("metrics"),
+            "trade_count": output.get("trade_count", 0),
+            "skip_count": output.get("skip_count", 0),
+            "open_position_count": len(output.get("open_positions") or []),
+        }
+    )
 
 
 def _link_backtest_to_selection(selection_key: str, backtest_key: str) -> None:

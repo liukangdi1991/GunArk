@@ -104,6 +104,16 @@ def _make_crashing_market(days):
     return FakeMarket()
 
 
+def _init_storage(tmp_path) -> None:
+    """建运行时目录与库表：worker 落盘后会写作业元数据。"""
+    from trendradar.infrastructure.storage.connection import StorageConnection
+    from trendradar.infrastructure.storage.schema import init_schema
+
+    sc = StorageConnection(tmp_path / "storage")
+    sc.storage_root.mkdir(parents=True, exist_ok=True)
+    init_schema(sc.connect())
+
+
 def _run_backtest_to_disk(tmp_path, monkeypatch, key, market, config):
     """把一次回测跑到底并落盘，返回 (产物目录, 报告 result)。"""
     from trendradar.infrastructure.storage.connection import StorageConnection
@@ -129,7 +139,9 @@ def _run_backtest_to_disk(tmp_path, monkeypatch, key, market, config):
     )
 
     _run_backtest_worker(ctx, signal_set, market, config, str(result_path))
-    return result_path.parent, ctx.result
+    # P4 起作业终态只存摘要（明细只落盘）：这里返回**落盘产物**，与从前 ctx.result
+    # 的内容一致（worker 写的 result.json 就是它），但不再依赖「明细进 SQLite」。
+    return result_path.parent, json.loads(result_path.read_text(encoding="utf-8"))
 
 
 def _run_blocked_backtest(tmp_path, monkeypatch):
@@ -141,11 +153,14 @@ def _run_blocked_backtest(tmp_path, monkeypatch):
     )
 
 
-def test_worker_report_serializes_contract_fields():
+def test_worker_report_serializes_contract_fields(tmp_path, monkeypatch):
     days = [date(2026, 8, 10) + timedelta(days=i) for i in range(8)]
+    monkeypatch.setenv("TREND_RADAR_RUNTIME_ROOT", str(tmp_path))
+    _init_storage(tmp_path)
     ctx = _FakeCtx("bt-report-test")
     signal_set = SignalSet(
-        execution_key="sel-1",
+        # 与 job_id 相同：组合管线语义（跳过自引用血缘链接，避免 FK 依赖）
+        execution_key="bt-report-test",
         signals=[StrategySignal(
             strategy_id="s1", strategy_name="S1", signal_date=days[0], codes=["000001"],
         )],
@@ -155,9 +170,12 @@ def test_worker_report_serializes_contract_fields():
         execution=ExecutionConfig(fixed_hold_n_days=1),
     )
 
-    _run_backtest_worker(ctx, signal_set, _make_market(days), config)
+    result_path = (
+        tmp_path / "storage" / "objects" / "executions" / "bt-report-test" / "backtest" / "result.json"
+    )
+    _run_backtest_worker(ctx, signal_set, _make_market(days), config, str(result_path))
 
-    out = ctx.result
+    out = json.loads(result_path.read_text(encoding="utf-8"))  # 明细只落盘（P4）
     assert out is not None
     assert len(out["trades"]) == 1
     trade = out["trades"][0]
@@ -172,21 +190,26 @@ def test_worker_report_serializes_contract_fields():
     assert out["open_positions"] == []
 
 
-def test_worker_serializes_positions_still_blocked_at_end():
+def test_worker_serializes_positions_still_blocked_at_end(tmp_path, monkeypatch):
     """卖不掉的持仓必须单独出现在报告里：它占着钱、算在净值里，但没有成交可对账。"""
     days = [date(2026, 8, 10) + timedelta(days=i) for i in range(8)]
+    monkeypatch.setenv("TREND_RADAR_RUNTIME_ROOT", str(tmp_path))
+    _init_storage(tmp_path)
     ctx = _FakeCtx("bt-open-test")
     signal_set = SignalSet(
-        execution_key="sel-1",
+        execution_key="bt-open-test",
         signals=[StrategySignal(
             strategy_id="s1", strategy_name="S1", signal_date=days[0], codes=["000001"],
         )],
     )
     config = BacktestConfig(execution=ExecutionConfig(fixed_hold_n_days=1))
 
-    _run_backtest_worker(ctx, signal_set, _make_crashing_market(days), config)
+    result_path = (
+        tmp_path / "storage" / "objects" / "executions" / "bt-open-test" / "backtest" / "result.json"
+    )
+    _run_backtest_worker(ctx, signal_set, _make_crashing_market(days), config, str(result_path))
 
-    out = ctx.result
+    out = json.loads(result_path.read_text(encoding="utf-8"))  # 明细只落盘（P4）
     assert out["trades"] == []                       # 一次都没成交
     assert out["skip_count"] == 0                    # 也不再报"强制平仓"
     assert out["metrics"]["open_position_count"] == 1
