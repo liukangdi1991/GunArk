@@ -1,10 +1,11 @@
 """产物索引：把大 JSON 产物物化成可分页的列式文件 + 小摘要。
 
 分页/列表端点若每次整份解析 signals.json（最大 13MB）/result.json（最大 16MB），
-成本是 O(产物字节)。索引把派生数据落到同目录：
+成本是 O(产物字节)。索引把派生数据落到产物目录下的隐藏子目录（不污染产物清单——
+``selection/`` 的 artifacts 列举只收文件，子目录天然被跳过）：
 
-    selection/picks.parquet   strategy,date,code（按固有全序排序）
-    selection/summary.json    计数与窗口（列表/KPI 用，μs 级读取）
+    selection/.index/picks.parquet   strategy,date,code（按固有全序排序）
+    selection/.index/summary.json    计数与窗口（列表/KPI 用，μs 级读取）
 
 - 新作业落盘后调用 ``ensure_*``（幂等）；
 - 存量产物首访自愈一次（summary 内 ``source_mtime_ns`` 校验源产物是否变过）；
@@ -29,6 +30,7 @@ from trendradar.infrastructure.filesystem.atomic import atomic_write_parquet, at
 logger = logging.getLogger(__name__)
 
 INDEX_SCHEMA_VERSION = 1
+INDEX_DIRNAME = ".index"
 SUMMARY_NAME = "summary.json"
 PICKS_NAME = "picks.parquet"
 
@@ -53,8 +55,8 @@ def ensure_selection_index(execution_key: str, selection_dir: Path) -> Selection
     if not signals_path.is_file():
         return None
 
-    summary_path = selection_dir / SUMMARY_NAME
-    picks_path = selection_dir / PICKS_NAME
+    summary_path = selection_dir / INDEX_DIRNAME / SUMMARY_NAME
+    picks_path = selection_dir / INDEX_DIRNAME / PICKS_NAME
     source_mtime_ns = signals_path.stat().st_mtime_ns
 
     cached = _load_fresh_summary(summary_path, picks_path, source_mtime_ns)

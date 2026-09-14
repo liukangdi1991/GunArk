@@ -221,8 +221,8 @@ Expected: FAIL（`ModuleNotFoundError: artifact_index`）
 分页/列表端点若每次整份解析 signals.json（最大 13MB）/result.json（最大 16MB），
 成本是 O(产物字节)。索引把派生数据落到同目录：
 
-    selection/picks.parquet   strategy,date,code（按固有全序排序）
-    selection/summary.json    计数与窗口（列表/KPI 用，μs 级读取）
+    selection/.index/picks.parquet   strategy,date,code（按固有全序排序）
+    selection/.index/summary.json    计数与窗口（列表/KPI 用，μs 级读取）
 
 - 新作业落盘后调用 ensure_*（幂等）；
 - 存量产物首访自愈一次（summary 内 source_mtime_ns 校验源产物是否变过）；

@@ -39,7 +39,7 @@ def test_ensure_selection_index_builds_parquet_and_summary(tmp_path):
     index = ensure_selection_index("k1", sel_dir)
 
     assert index is not None
-    assert index.picks_path == sel_dir / "picks.parquet"
+    assert index.picks_path == sel_dir / ".index" / "picks.parquet"
     df = pl.read_parquet(index.picks_path)
     assert df.columns == ["strategy", "date", "code"]
     assert df.height == 4
@@ -58,7 +58,7 @@ def test_ensure_selection_index_builds_parquet_and_summary(tmp_path):
         {"strategy": "填坑战法", "date": "2026-09-02", "count": 1, "elapsed_seconds": 0.1},
     ]
     # 落盘：summary.json 与源产物 mtime 绑定（新鲜度判据）
-    saved = json.loads((sel_dir / "summary.json").read_text(encoding="utf-8"))
+    saved = json.loads((sel_dir / ".index" / "summary.json").read_text(encoding="utf-8"))
     assert saved["source_mtime_ns"] == (sel_dir / "signals.json").stat().st_mtime_ns
 
 
