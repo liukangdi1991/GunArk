@@ -350,6 +350,22 @@ def test_selection_picks_page_recovers_from_corrupt_index(client, tmp_path):
     assert resp.json()["total"] == 4
 
 
+def test_selection_picks_page_tiles_without_gaps_or_duplicates(client):
+    """逐页翻完必须与全量序一致（默认序依赖 parquet 行序，这里是该前提的契约钉）。"""
+    key = "20260820_100000_selection_a1b2"
+    full = [
+        p["code"]
+        for p in client.get(f"/api/selection-results/{key}/picks?limit=50").json()["items"]
+    ]
+    paged: list[str] = []
+    for offset in range(4):
+        page = client.get(f"/api/selection-results/{key}/picks?limit=1&offset={offset}").json()
+        assert len(page["items"]) == 1
+        paged.append(page["items"][0]["code"])
+
+    assert paged == full == ["000001", "000002", "600519", "000333"]
+
+
 def test_selection_picks_page_rejects_bad_params(client):
     key = "20260820_100000_selection_a1b2"
     assert client.get(f"/api/selection-results/{key}/picks?sort_by=drop_table").status_code == 400

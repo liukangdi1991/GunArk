@@ -1,9 +1,10 @@
 # 分页契约与产物索引设计（选股/回测明细、列表、任务可见性）
 
-> 版本：v1（2026-09-14）。范围：第一批遗留项（不做）+ B/C/D 全部——选股详情分页（P1）、
+> 版本：v2（2026-09-14，含两轮自查整改）。范围：B/C/D 全部——选股详情分页（P1，已实施）、
 > 回测报告分页与趋势服务端化（P2）、列表端点与 `jobs.result_json` 瘦身（P3/P4）、
-> 运行中任务可见性（P5）、计数口径（P6）、报告首屏（P7）、前端拆包（P8）、零散项（P9）。
-> **实施顺序**：P1 → P3/P4 → P2 → P5 → P6/P7/P8/P9；每个 P 各自出计划、TDD、独立提交。
+> 运行中任务可见性（P5）、计数口径（P6，已随 P1 落地）、报告首屏（P7）、前端拆包（P8）、
+> 零散项（P9）；第一批遗留的**报告预生成缓存与静态资源缓存头明确不做**（见 §2 末）。
+> **实施顺序**：P1 ✅ → P3/P4 → P2 → P5 → P7/P8/P9；每个 P 各自出计划、TDD、独立提交。
 
 ## §1 背景与实测
 
@@ -60,6 +61,11 @@ GET <端点>?offset=<int≥0，默认 0>&limit=<1..200，默认 50>
 - `offset`/`limit` 越界 → FastAPI `Query(ge=/le=)` → 422（与现有 `?limit=` 端点一致）；
 - 过滤参数为端点特有：picks 用 `strategies` 与 `dates`（重复参数形式 `?strategies=A&strategies=B`）；
   trades/skips 用 `strategies`。
+- **过滤参数 `strategies` 的取值语义（两套端点不同，必须写明）**：
+  - picks 端点：**策略显示名**（选股产物只存 `strategy_name`，`summarize_signals` 用它聚合）；
+  - trades/skips/open-positions 端点：**策略机器 id**（回测产物只存 id，展示名由注册表现查）。
+  前端各自配套使用（选股页摘要行带显示名、回测页摘要行带 id + `strategy_name`），
+  但**同名参数不同义**——契约测试各钉一条，避免后人误用。
 - **白名单列必须在数据里存在**：`name`/`industry` 不在 `trades.parquet`/`picks.parquet` 中（实测列见
   §5），属展示期从 `stock_meta` 补的字段——按它们排序时在服务端 join 后再排（实测 36,525 行
   join 8ms、排序+切片 9ms，可忽略）。禁止出现「白名单有、数据没有同名来源」的列。
@@ -82,6 +88,12 @@ GET <端点>?offset=<int≥0，默认 0>&limit=<1..200，默认 50>
 1. 默认序 = 产物固有序（picks 按 `(strategy, date, code)`；trades 按引擎写入序）；
 2. 显式排序时，任何排序键之后都追加剩余固有序列作为 tiebreaker；
 3. 排序实现走 polars（`sort(keys)` 稳定），不做 Python 层重排。
+
+**默认序的实现前提（必须钉住）**：默认序不做排序，直接对 parquet 切片——依赖
+「行序 = 写入序」且「多次读取行序一致」（写入侧已按固有全序排序；读取侧 polars 单文件扫描
+保序）。这条是**分页正确性**的前提（否则用户翻页会看到重复/漏行），因此契约测试必须包含
+「逐页翻完 == 全量序」（`limit=1` 遍历 + 与全量结果逐项相等），而不是只测单页。
+若将来改用流式引擎或分片读取，需改为显式 `row_id` 列排序。
 
 ## §4 产物索引（materialization）
 
@@ -142,7 +154,7 @@ unrealized_pnl/窗口日期），展示名与 meta 补全仍在 presenter 完成
 |---|---|
 | `GET /api/selection-results/{key}` | 去掉 `picks`；新增 `counts: {total_picks, unique_codes, trade_days}`；其余（`result`/`artifacts`）不变 |
 | `GET /api/selection-results/{key}/picks` | **新增**：分页契约 §3，过滤器 `strategies`/`dates` |
-| `GET /api/backtest-results/{key}/report` | 去掉 `trades`/`skips`/`open_positions`/`equity`（UI 未渲染）；新增 `trend`（§6）与 `counts` |
+| `GET /api/backtest-results/{key}/report` | 去掉 `trades`/`skips`/`open_positions`/`equity`/`artifacts`（UI 未渲染）；新增 `trend`（§6）与 `counts: {trade_count, skip_count, open_position_count}`（与 §4.1 索引字段同名） |
 | `GET /api/backtest-results/{key}/trades` | **新增**：分页 + `strategies` 过滤，排序白名单 `sell_date/profit/return_pct/buy_date/industry/code` |
 | `GET /api/backtest-results/{key}/skips` | **新增**：同上（白名单 `signal_date/buy_date/industry/code`） |
 | `GET /api/backtest-results/{key}/open-positions` | **新增**：同上（白名单 `buy_date/blocked_trading_days/unrealized_pnl/code`） |
@@ -162,8 +174,9 @@ unrealized_pnl/窗口日期），展示名与 meta 补全仍在 presenter 完成
   新作业由 backtest worker 落盘时写；列表端点只读索引（μs 级）。
 - 回测索引字段清单见 §4.1（**唯一来源，本处不重复**）；组合级指标（`total_return_pct` 等）由
   presenter 直读 `metrics.json`（408B），不进索引。
-- 副作用说明：列表首次访问会触发存量产物自愈（每个 run 一次性；10 个选股 run ≈ 1s 总计），
-  之后为毫秒级。
+- 副作用说明（已被启动预热覆盖）：常规路径下索引由**启动预热**（§4.2.7）在进程起来时补齐，
+  列表请求不再付自愈成本；只有「预热失败/预热进行中/预热之后新增的产物」才在请求路径自愈一次
+  （选股最坏 0.4s/13MB），之后为毫秒级。
 
 ### 5.2 `jobs.result_json` 瘦身（P4）
 
@@ -184,9 +197,15 @@ unrealized_pnl/窗口日期），展示名与 meta 补全仍在 presenter 完成
 
 - 公式沿用前端既有口径（逐字迁移，不新造）：`dailyCost = Σ total_cost`（缺失时 `buy_price×shares`）、
   `dailyProfit = Σ profit`、`dailyReturnPct = dailyProfit/dailyCost×100`、累计同法；
-- 响应形状：`trend: [{strategy, points: [{date, dailyCost, dailyProfit, dailyReturnPct, cumulativeCost, cumulativeProfit, cumulativeReturnPct, tradeCount, winCount, lossCount}]}]`，
-  首点保留 `date="起点"` 基线（前端现行为）；
-- 前端 `TradeReturnTrendCards` 改为消费 `trend`（保留现有配色、图例、tooltip 字段）。
+- 响应形状：`trend: [{strategy, strategy_name, points: [{date, dailyCost, dailyProfit, dailyReturnPct, cumulativeCost, cumulativeProfit, cumulativeReturnPct, tradeCount, winCount, lossCount}]}]`，
+  首点保留 `date="起点"` 基线（前端现行为）。**`strategy_name` 必填**：前端卡片标题取
+  `trades.find(t => t.strategy_name)?.strategy_name || strategy`（现为 trades 内查找），trades 不再返回后
+  若无此字段，标题会退化成英文 id。
+- **体积上界**：`点数 = 策略数 × 交易日数`（与成交笔数无关）。实测 14 策略 × 1,250 交易日 ≈
+  3.5k 点 = 3.8MB 原始 / **16.7KB gzip**——线上代价可忽略，服务端产出约 50ms（parquet 分组）。
+  若将来确实嫌大，再改为按 `strategies` 过滤（前端切策略时重取），当前不做以保持「一次请求渲染整页」。
+- 前端 `TradeReturnTrendCards` 改为消费 `trend`（保留现有配色、图例、tooltip 字段），
+  **删除前端自算逻辑**（不得两处并存）。
 
 ## §7 前端统一分页器（P1 交付，P2 复用）
 
@@ -200,13 +219,16 @@ unrealized_pnl/窗口日期），展示名与 meta 补全仍在 presenter 完成
 
 约束（鲁棒性）：
 - 过滤器变化 → `offset=0`；`total` 变小导致当前页越界 → 自动回退最后一页并重取；
-- 请求失败不清空已有行（避免"白屏式失败"）；连续失败不刷屏（沿用 console 页的 `errorLogged` 模式）；
+- 请求失败不清空已有行（避免"白屏式失败"）：错误经单条 Alert 呈现（`PagedQuery.error`），不写日志行；
 - 排序状态与后端 `sort_by/sort_dir` 一一对应，前端不做本地排序（避免"页内排序"错觉）。
 
 ## §8 运行中任务可见性（P5）
 
 - 新端点 `GET /api/executions/active`（读 `jobs` 表，`status IN ('queued','running','cancelling')`，
-  进度复用 `parse_progress` 解析 `[PROGRESS]` 行，与 console 同口径）；
+  进度复用 `parse_progress` 解析 `[PROGRESS]` 行，与 console 同口径；实测最大作业 5,554 行日志、
+  全量读取 9ms——不需要给 `jobs` 加进度列）；
+- **幽灵任务不会残留**：进程重启时 lifespan 会把 `queued/running` 一律标 failed（既有行为），
+  因此徽标只反映本进程存活期间的作业；
 - AppShell 轮询（10s；`document.hidden` 时暂停；有任务时显示徽标与下拉列表，点击进控制台）；
 - 控制台页移入 AppShell 子路由（现为 AppShell 之外的独立路由），保留现有视觉；
 - 提交作业由 `window.location.href` 整页跳转改为 `navigate(console_url)`（SPA 内导航，保留历史栈）。
@@ -239,8 +261,8 @@ unrealized_pnl/窗口日期），展示名与 meta 补全仍在 presenter 完成
 - `_stock_meta_map()`（无缓存/无列裁剪）并入 `_stock_meta_by_code()`（60s TTL、列裁剪），单一实现；
 - 报告响应去掉 UI 未渲染字段（`equity`、`artifacts`）——与 §5 一并落地；
 - `storage.stock_count` 口径（**已拍板**）：取 `stock_meta.parquet` 行数（股票池规模）；`local_file_count`
-  仍为 `bars/*.parquet` 文件数。两者不再因同一 glob 而恒等——面板上「股票数 / 本地文件」从此是两个
-  不同口径（如 5,818 vs 5,814），差异本身即缺口信号。
+  仍为 `bars/*.parquet` 文件数。实测差异立刻可见：**5,901 vs 5,814**（87 只未落盘/已退市）——
+  两者不再是同一个 glob，差异本身即缺口信号。
 
 ## §10 鲁棒性清单（验收项）
 
@@ -248,7 +270,9 @@ unrealized_pnl/窗口日期），展示名与 meta 补全仍在 presenter 完成
 2. 并发生成索引 → 原子替换，无半截文件；
 3. 分页参数非法 → 明确报错、不静默回落默认值：非白名单 `sort_by` → 400；`offset`/`limit` 越界 → 422；
 4. `offset ≥ total`、空过滤结果、策略全不匹配 → 空页 + 正确 total；
-5. 增量一致性：源产物 mtime 变化（重跑/替换）后，索引自动重建，`total` 与内容同步变化；
+5. 增量一致性：来源文件签名（`mtime_ns`）变化后索引自动重建，`total` 与内容同步变化。
+   已知边界：备份还原等**逐位恢复且保留 mtime** 的改动无法识别——属可接受风险（本地工具，
+   真出现时删 `.index/` 即恢复）；
 6. 前端：切页/切过滤/卸载不发悬挂请求（abort + 序号守卫）；失败保留旧数据；
 7. 所有新增端点有契约测试（形状 + 边界 + 404/400/422）。
 8. **聚合逻辑单一实现源**：选股摘要聚合（presenter `_selection_summary` 与索引构建）、回测按策略汇总
@@ -288,4 +312,4 @@ unrealized_pnl/窗口日期），展示名与 meta 补全仍在 presenter 完成
 | 索引与源产物漂移 | `source_mtime_ns` 校验 + 自愈 + 降级 |
 | 前端分页器成为"又一个抽象层" | 只有两个调用方（picks、trades/skips/open），接口收窄到 props（列 + fetcher + filters），不做插件化 |
 | 明细表排序语义变化（原先本地排序全量） | 排序键白名单与服务端实现，契约测试钉住；前端不再本地排序 |
-| 存量产物首次访问慢 | 自愈只发生一次；10 个存量选股 run 首访各付一次 0.4s |
+| 存量产物首次访问慢 | 由启动预热（§4.2.7）在进程起来时补齐；实测 14 个存量 run 全部自动建好索引，请求路径零自愈 |
