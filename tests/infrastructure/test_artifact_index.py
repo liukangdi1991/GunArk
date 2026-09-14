@@ -57,9 +57,11 @@ def test_ensure_selection_index_builds_parquet_and_summary(tmp_path):
         {"strategy": "B1战法", "date": "2026-09-02", "count": 1, "elapsed_seconds": 0.25},
         {"strategy": "填坑战法", "date": "2026-09-02", "count": 1, "elapsed_seconds": 0.1},
     ]
-    # 落盘：summary.json 与源产物 mtime 绑定（新鲜度判据）
+    # 落盘：summary.json 与来源文件签名绑定（新鲜度判据；字段级而非单值）
     saved = json.loads((sel_dir / ".index" / "summary.json").read_text(encoding="utf-8"))
-    assert saved["source_mtime_ns"] == (sel_dir / "signals.json").stat().st_mtime_ns
+    assert saved["source_signature"] == {
+        "signals.json": (sel_dir / "signals.json").stat().st_mtime_ns
+    }
 
 
 def test_ensure_selection_index_reuses_fresh_index(tmp_path, monkeypatch):
@@ -143,3 +145,44 @@ def test_ensure_selection_index_degrades_on_broken_json(tmp_path):
     (sel_dir / "signals.json").write_text("{not json", encoding="utf-8")
 
     assert ensure_selection_index("k1", sel_dir) is None
+
+
+def test_summarize_signals_is_the_single_aggregation_source(tmp_path):
+    """聚合（摘要字段 + picks 帧）是公开的单一实现源：索引构建与 presenter 回落路径共用。"""
+    from trendradar.infrastructure.storage.artifact_index import summarize_signals
+
+    sel_dir = tmp_path / "selection"
+    _write_signals(sel_dir)
+    signals = json.loads((sel_dir / "signals.json").read_text(encoding="utf-8"))
+
+    fields, frame = summarize_signals(signals)
+
+    assert fields["total_picks"] == 4
+    assert fields["unique_codes"] == 3
+    assert fields["trade_days"] == 2
+    assert fields["signal_from"] == "2026-09-01"
+    assert fields["signal_to"] == "2026-09-02"
+    assert [row["count"] for row in fields["by_strategy_date"]] == [2, 1, 1]
+    assert frame.columns == ["strategy", "date", "code"]
+    assert frame.height == 4
+
+
+def test_warm_indexes_builds_missing_and_skips_broken(tmp_path):
+    """启动预热：补齐缺失索引、跳过无源/损坏产物、不抛异常、幂等。"""
+    from trendradar.infrastructure.storage.artifact_index import warm_indexes
+
+    root = tmp_path / "objects" / "executions"
+    _write_signals(root / "k1" / "selection")
+    _write_signals(root / "k2" / "selection")
+    (root / "k3" / "selection").mkdir(parents=True)  # 无 signals.json
+    broken = root / "k4" / "selection"
+    broken.mkdir(parents=True)
+    (broken / "signals.json").write_text("{not json", encoding="utf-8")
+
+    assert warm_indexes(root) == 2  # k1/k2 新建，k3/k4 跳过
+    for key in ("k1", "k2"):
+        assert (root / key / "selection" / ".index" / "summary.json").is_file()
+    assert not (root / "k4" / "selection" / ".index").exists()
+
+    assert warm_indexes(root) == 0  # 幂等：已就绪的不重建
+    assert warm_indexes(tmp_path / "nope") == 0  # 目录不存在时安全返回

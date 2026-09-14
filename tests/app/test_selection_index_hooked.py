@@ -70,6 +70,8 @@ def test_selection_worker_writes_index(tmp_path, monkeypatch):
         assert (sel_dir / ".index" / "picks.parquet").is_file(), "worker 落盘后必须已建索引（免首访自愈）"
         summary = json.loads((sel_dir / ".index" / "summary.json").read_text(encoding="utf-8"))
         assert summary["total_picks"] == pl.read_parquet(sel_dir / ".index" / "picks.parquet").height
-        assert summary["source_mtime_ns"] == (sel_dir / "signals.json").stat().st_mtime_ns
+        assert summary["source_signature"] == {
+            "signals.json": (sel_dir / "signals.json").stat().st_mtime_ns
+        }
     finally:
         executor.shutdown(wait=True)

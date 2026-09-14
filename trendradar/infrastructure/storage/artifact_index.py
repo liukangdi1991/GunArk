@@ -2,17 +2,17 @@
 
 分页/列表端点若每次整份解析 signals.json（最大 13MB）/result.json（最大 16MB），
 成本是 O(产物字节)。索引把派生数据落到产物目录下的隐藏子目录（不污染产物清单——
-``selection/`` 的 artifacts 列举只收文件，子目录天然被跳过）：
+产物目录的列举只收文件，子目录天然被跳过）：
 
-    selection/.index/picks.parquet   strategy,date,code（按固有全序排序）
-    selection/.index/summary.json    计数与窗口（列表/KPI 用，μs 级读取）
+    <产物目录>/.index/picks.parquet   strategy,date,code（按固有全序排序）
+    <产物目录>/.index/summary.json    计数与窗口（列表/KPI 用，μs 级读取）
 
-- 新作业落盘后调用 ``ensure_*``（幂等）；
-- 存量产物首访自愈一次（summary 内 ``source_mtime_ns`` 校验源产物是否变过）；
+- 新作业落盘后调用 ``ensure_*``（幂等）；启动时 ``warm_indexes`` 后台补齐存量；
+- 新鲜度由 ``source_signature``（来源文件 → mtime_ns 字典）判定，任一不匹配即重建；
 - 生成失败（只读盘、源损坏等）返回 None，调用方降级直读 JSON——绝不因索引问题 5xx。
 
 并发：写入一律 tmpfile + os.replace；两个请求同时生成时内容相同、后者覆盖前者，
-读侧永远只见完整文件。
+读侧永远只见完整文件。写序为 parquet 先、summary 后（summary 充当提交标记）。
 """
 
 from __future__ import annotations
@@ -29,10 +29,11 @@ from trendradar.infrastructure.filesystem.atomic import atomic_write_parquet, at
 
 logger = logging.getLogger(__name__)
 
-INDEX_SCHEMA_VERSION = 1
+INDEX_SCHEMA_VERSION = 2  # v2：source_signature（字段级）取代 source_mtime_ns
 INDEX_DIRNAME = ".index"
 SUMMARY_NAME = "summary.json"
 PICKS_NAME = "picks.parquet"
+SIGNALS_NAME = "signals.json"
 
 _PICKS_SCHEMA: dict[str, Any] = {"strategy": pl.Utf8, "date": pl.Utf8, "code": pl.Utf8}
 
@@ -46,46 +47,12 @@ class SelectionIndex:
     summary: dict
 
 
-def ensure_selection_index(execution_key: str, selection_dir: Path) -> SelectionIndex | None:
-    """确保索引存在且新鲜。
+def summarize_signals(signals: dict) -> tuple[dict, pl.DataFrame]:
+    """signals.json → (摘要字段, picks 帧)。**聚合的单一实现源**。
 
-    返回 None 的情形：源产物缺失、源损坏、索引写入失败——调用方一律降级直读。
+    索引构建与 presenter 的回落路径都走这里，避免同一套计数/分组写两遍。
+    帧按固有全序 `(strategy, date, code)` 排序；调用方只读，不应就地改。
     """
-    signals_path = selection_dir / "signals.json"
-    if not signals_path.is_file():
-        return None
-
-    summary_path = selection_dir / INDEX_DIRNAME / SUMMARY_NAME
-    picks_path = selection_dir / INDEX_DIRNAME / PICKS_NAME
-    source_mtime_ns = signals_path.stat().st_mtime_ns
-
-    cached = _load_fresh_summary(summary_path, picks_path, source_mtime_ns)
-    if cached is not None:
-        return SelectionIndex(picks_path=picks_path, summary_path=summary_path, summary=cached)
-
-    try:
-        signals = _read_signals(signals_path)
-    except Exception as exc:
-        logger.warning("selection index: signals.json unreadable for %s: %s", execution_key, exc)
-        return None
-
-    try:
-        summary, frame = _summary_from_signals(signals, source_mtime_ns)
-        atomic_write_parquet(frame, picks_path)
-        atomic_write_text(summary_path, json.dumps(summary, ensure_ascii=False))
-    except Exception as exc:  # 索引是派生物：任何写入失败都降级，不影响主功能
-        logger.warning("selection index build failed for %s: %s", execution_key, exc)
-        return None
-
-    return SelectionIndex(picks_path=picks_path, summary_path=summary_path, summary=summary)
-
-
-def _read_signals(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _summary_from_signals(signals: dict, source_mtime_ns: int) -> tuple[dict, pl.DataFrame]:
-    """由 signals.json 计算摘要与 picks 帧（帧按固有全序 strategy→date→code 排序）。"""
     by_key: dict[tuple[str, str], dict] = {}
     rows: list[tuple[str, str, str]] = []
     for sig in signals.get("signals", []):
@@ -110,9 +77,7 @@ def _summary_from_signals(signals: dict, source_mtime_ns: int) -> tuple[dict, pl
         frame = pl.DataFrame(schema=_PICKS_SCHEMA)
         total_picks = unique_codes = trade_days = 0
 
-    summary = {
-        "schema_version": INDEX_SCHEMA_VERSION,
-        "source_mtime_ns": source_mtime_ns,
+    fields = {
         "total_picks": total_picks,
         "unique_codes": unique_codes,
         "trade_days": trade_days,
@@ -123,13 +88,85 @@ def _summary_from_signals(signals: dict, source_mtime_ns: int) -> tuple[dict, pl
             for row in (by_key[key] for key in sorted(by_key))
         ],
     }
-    return summary, frame
+    return fields, frame
+
+
+def selection_source_signature(selection_dir: Path) -> dict[str, int] | None:
+    """选股索引的来源签名；signals.json 缺失返回 None（该 run 无产物）。"""
+    signals_path = selection_dir / SIGNALS_NAME
+    if not signals_path.is_file():
+        return None
+    return {SIGNALS_NAME: signals_path.stat().st_mtime_ns}
+
+
+def ensure_selection_index(
+    execution_key: str, selection_dir: Path, *, force: bool = False
+) -> SelectionIndex | None:
+    """确保索引存在且新鲜。
+
+    force=True 忽略现有 summary（读坏索引时的重建路径）。
+    返回 None 的情形：源产物缺失、源损坏、索引写入失败——调用方一律降级直读。
+    """
+    signature = selection_source_signature(selection_dir)
+    if signature is None:
+        return None
+
+    summary_path = selection_dir / INDEX_DIRNAME / SUMMARY_NAME
+    picks_path = selection_dir / INDEX_DIRNAME / PICKS_NAME
+
+    if not force:
+        cached = _load_fresh_summary(summary_path, picks_path, signature)
+        if cached is not None:
+            return SelectionIndex(picks_path=picks_path, summary_path=summary_path, summary=cached)
+
+    try:
+        signals = _read_signals(selection_dir / SIGNALS_NAME)
+        fields, frame = summarize_signals(signals)
+        summary = {"schema_version": INDEX_SCHEMA_VERSION, "source_signature": signature, **fields}
+        atomic_write_parquet(frame, picks_path)
+        atomic_write_text(summary_path, json.dumps(summary, ensure_ascii=False))
+    except Exception as exc:  # 索引是派生物：任何失败都降级，不影响主功能
+        logger.warning("selection index build failed for %s: %s", execution_key, exc)
+        return None
+
+    return SelectionIndex(picks_path=picks_path, summary_path=summary_path, summary=summary)
+
+
+def warm_indexes(executions_root: Path) -> int:
+    """启动预热：为存量产物补齐缺失索引，返回新建数量。
+
+    有界（只扫一层）；失败静默（记 WARNING）——预热失败不得影响服务启动，也不得
+    改变请求路径的降级语义。
+    """
+    if not executions_root.is_dir():
+        return 0
+
+    built = 0
+    for exec_dir in sorted(executions_root.iterdir()):
+        if not exec_dir.is_dir():
+            continue
+        selection_dir = exec_dir / "selection"
+        summary_path = selection_dir / INDEX_DIRNAME / SUMMARY_NAME
+        if summary_path.is_file() or selection_source_signature(selection_dir) is None:
+            continue
+        try:
+            if ensure_selection_index(exec_dir.name, selection_dir) is not None:
+                built += 1
+        except Exception as exc:  # ensure_* 已兜底，这里是双保险
+            logger.warning("warm index failed for %s: %s", exec_dir.name, exc)
+    if built:
+        logger.info("index warm-up built %d selection index(es)", built)
+    return built
+
+
+def _read_signals(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _load_fresh_summary(
-    summary_path: Path, picks_path: Path, source_mtime_ns: int
+    summary_path: Path, picks_path: Path, signature: dict[str, int]
 ) -> dict | None:
-    """新鲜索引 = 两文件都在 + schema 版本一致 + 源 mtime 未变。"""
+    """新鲜索引 = 两文件都在 + schema 版本一致 + 来源签名逐字段一致。"""
     if not (summary_path.is_file() and picks_path.is_file()):
         return None
     try:
@@ -138,6 +175,6 @@ def _load_fresh_summary(
         return None
     if summary.get("schema_version") != INDEX_SCHEMA_VERSION:
         return None
-    if summary.get("source_mtime_ns") != source_mtime_ns:
+    if summary.get("source_signature") != signature:
         return None
     return summary
