@@ -95,7 +95,12 @@ def get_selection_result(execution_key: str, request: FastAPIRequest):
     )
     if not signals_file.exists():
         raise HTTPException(status_code=404, detail=f"Selection result not found for '{execution_key}'")
-    return selection_result_payload(execution_key, include_detail=True)
+    from trendradar.interfaces.api.presenters import SelectionSourceUnreadable
+
+    try:
+        return selection_result_payload(execution_key, include_detail=True)
+    except SelectionSourceUnreadable as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get("/selection-results/{execution_key}/picks")
@@ -110,22 +115,29 @@ def get_selection_picks(
     sort_dir: str = Query(default="asc", pattern="^(asc|desc)$"),
 ):
     """选股明细分页（spec §3）：筛选/排序/切片在服务端完成，响应只含当前页。"""
-    from trendradar.interfaces.api.presenters import PICKS_SORT_KEYS, selection_picks_page
+    from trendradar.interfaces.api.presenters import (
+        PICKS_SORT_KEYS,
+        SelectionSourceUnreadable,
+        selection_picks_page,
+    )
 
     if _invalid_execution_key(execution_key):
         raise HTTPException(status_code=400, detail="Invalid execution_key")
     if sort_by is not None and sort_by not in PICKS_SORT_KEYS:
         raise HTTPException(status_code=400, detail=f"非法 sort_by: {sort_by}")
 
-    payload = selection_picks_page(
-        execution_key,
-        offset=offset,
-        limit=limit,
-        strategies=strategies,
-        dates=dates,
-        sort_by=sort_by,
-        sort_dir=sort_dir,
-    )
+    try:
+        payload = selection_picks_page(
+            execution_key,
+            offset=offset,
+            limit=limit,
+            strategies=strategies,
+            dates=dates,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+        )
+    except SelectionSourceUnreadable as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
     if payload is None:
         raise HTTPException(
             status_code=404, detail=f"Selection result not found for '{execution_key}'"

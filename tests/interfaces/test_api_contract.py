@@ -366,6 +366,57 @@ def test_selection_picks_page_tiles_without_gaps_or_duplicates(client):
     assert paged == full == ["000001", "000002", "600519", "000333"]
 
 
+def test_selection_picks_page_falls_back_when_index_deleted(client, tmp_path):
+    """整个 .index 目录被删（或从未生成）：端点必须仍返回正确数据（走回落直读）。"""
+    key = "20260820_100000_selection_a1b2"
+    url = f"/api/selection-results/{key}/picks?limit=2"
+    assert client.get(url).status_code == 200  # 先确保索引已建
+
+    import shutil
+
+    shutil.rmtree(
+        tmp_path / "storage" / "objects" / "executions" / key / "selection" / ".index"
+    )
+
+    resp = client.get(url)
+    assert resp.status_code == 200
+    assert [p["code"] for p in resp.json()["items"]] == ["000001", "000002"]
+    assert resp.json()["total"] == 4
+    # 详情端点的 counts 同样走回落
+    assert client.get(f"/api/selection-results/{key}").json()["counts"]["total_picks"] == 4
+
+
+def test_selection_picks_page_falls_back_when_index_unwritable(client, monkeypatch):
+    """索引写不进去（只读盘）：端点仍返回正确数据（每次请求都走回落路径）。"""
+    import trendradar.infrastructure.storage.artifact_index as index_mod
+
+    def boom(*_args, **_kwargs):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(index_mod, "atomic_write_parquet", boom)
+    monkeypatch.setattr(index_mod, "atomic_write_text", boom)
+
+    key = "20260820_100000_selection_a1b2"
+    resp = client.get(f"/api/selection-results/{key}/picks?limit=2")
+    assert resp.status_code == 200
+    assert [p["code"] for p in resp.json()["items"]] == ["000001", "000002"]
+    assert client.get(f"/api/selection-results/{key}").json()["counts"]["total_picks"] == 4
+
+
+def test_selection_endpoints_report_corrupt_source(client, tmp_path):
+    """源产物损坏（文件在但解析不了）：报「产物损坏」而不是含糊的「没找到」。"""
+    key = "20260820_100000_selection_a1b2"
+    signals = (
+        tmp_path / "storage" / "objects" / "executions" / key / "selection" / "signals.json"
+    )
+    signals.write_text("{not json", encoding="utf-8")
+
+    for url in (f"/api/selection-results/{key}", f"/api/selection-results/{key}/picks"):
+        resp = client.get(url)
+        assert resp.status_code == 500, url
+        assert "损坏" in resp.json()["detail"], url
+
+
 def test_selection_picks_page_rejects_bad_params(client):
     key = "20260820_100000_selection_a1b2"
     assert client.get(f"/api/selection-results/{key}/picks?sort_by=drop_table").status_code == 400

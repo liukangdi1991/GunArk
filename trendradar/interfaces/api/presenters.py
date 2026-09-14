@@ -108,6 +108,14 @@ def _artifact_row(path: Path, scope: str) -> dict:
     }
 
 
+class SelectionSourceUnreadable(RuntimeError):
+    """选股源产物存在但无法解析（文件损坏）。路由据此回 500 并给出明确文案。"""
+
+    def __init__(self, execution_key: str) -> None:
+        super().__init__(f"选股产物损坏：{execution_key}/selection/signals.json 无法解析，可删除该记录后重跑")
+        self.execution_key = execution_key
+
+
 def _selection_summary_fields(key: str) -> dict:
     """摘要字段 + 计数（索引优先；不可用则回落 signals 现算）。
 
@@ -119,7 +127,11 @@ def _selection_summary_fields(key: str) -> dict:
     index = ensure_selection_index(key, sel_dir)
     if index is not None:
         return index.summary
-    signals = _read_json(sel_dir / "signals.json", {}) or {}
+
+    signals_path = sel_dir / "signals.json"
+    signals = _read_json(signals_path) if signals_path.is_file() else None
+    if signals is None:
+        raise SelectionSourceUnreadable(key)
     return summarize_signals(signals)[0]
 
 
@@ -279,9 +291,12 @@ def selection_picks_page(
     )
 
     if page is None:
-        signals = _read_json(sel_dir / "signals.json")
+        signals_path = sel_dir / "signals.json"
+        signals = _read_json(signals_path) if signals_path.is_file() else None
         if signals is None:
-            return None
+            if not signals_path.is_file():
+                return None  # 没有这个产物 → 路由 404
+            raise SelectionSourceUnreadable(key)  # 产物在但读不了 → 路由 500（明确文案）
         rows, total = _picks_page_from_frame(
             summarize_signals(signals)[1].lazy(),
             key=key,
