@@ -117,13 +117,17 @@ unrealized_pnl/窗口日期），展示名与 meta 补全仍在 presenter 完成
 4. **取数来源（回测）**：优先 `trades.parquet`/`skips.parquet`/`open_positions.parquet`（引擎落盘即写，
    实测 869KB vs 15.9MB JSON）；产物缺这些文件时（0 笔成交的 run、旧版本产物）回落解析
    `result.json` 反建，签名同样覆盖被读的文件。
-5. **失败退避**：自愈失败的 key 记进程内标记（60s TTL），窗口内该 key 直接走回落路径——
-   避免只读盘/源损坏时每次打开工作台都重试解析几十 MB JSON；成功即清除标记。
+5. **失败后的行为（评估后简化）**：自愈失败不引入单独退避状态——失败时调用方本来就要走回落路径
+   （直读 JSON），退避只能省下「再次尝试构建」里的小头，却多一份进程内状态与失效规则，
+   收益≈0。代价如实记录：读失败期间每次打开工作台都按回落路径解析一次大 JSON（= 改造前的现状，
+   不是回归）；日志留 WARNING 供排查。
 6. **写序与撕裂窗口**：先写 parquet、后写 summary（summary 充当提交标记）。重建期间读者可能读到
    「新 summary + 旧 parquet」：分页端点的 `total` 与行数据都取自 parquet（自洽）；详情端点 counts
    取自 summary，极端窗口内两者可能相差一次重建——**已知可接受**（<1s，且只发生在存量自愈）。
-7. **启动预热（待用户拍板）**：lifespan 起后台线程补齐缺失索引（有界、失败静默），把存量自愈成本
-   移出请求路径（首次打开工作台即毫秒级）；不做则首访每 run 付一次（选股最坏 0.4s/13MB）。
+7. **启动预热（已拍板：做）**：lifespan 起后台守护线程调用 `artifact_index.warm_indexes(executions_root)`，
+   幂等补齐缺失/过期索引（有界：只扫 `objects/executions/` 一层；失败静默并记 WARNING，不影响服务启动）。
+   成本移出请求路径——存量产物首次打开工作台即毫秒级。预热与请求路径共用 `ensure_*`（幂等），
+   不存在两条实现。
 
 ### 4.3 并发与原子性
 
@@ -234,8 +238,9 @@ unrealized_pnl/窗口日期），展示名与 meta 补全仍在 presenter 完成
 
 - `_stock_meta_map()`（无缓存/无列裁剪）并入 `_stock_meta_by_code()`（60s TTL、列裁剪），单一实现；
 - 报告响应去掉 UI 未渲染字段（`equity`、`artifacts`）——与 §5 一并落地；
-- `storage.stock_count` 口径：**提案**取 `stock_meta.parquet` 行数（股票池），`local_file_count` 仍为 bars 文件数；
-  当前两者恒等（同一 glob）。若维持现状请在评审时说明。
+- `storage.stock_count` 口径（**已拍板**）：取 `stock_meta.parquet` 行数（股票池规模）；`local_file_count`
+  仍为 `bars/*.parquet` 文件数。两者不再因同一 glob 而恒等——面板上「股票数 / 本地文件」从此是两个
+  不同口径（如 5,818 vs 5,814），差异本身即缺口信号。
 
 ## §10 鲁棒性清单（验收项）
 
