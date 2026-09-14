@@ -1,3 +1,5 @@
+import type { Paged } from "./paging";
+
 import type { Strategy } from "./strategy";
 
 export interface SelectionSummary {
@@ -64,9 +66,4 @@ export interface SelectionResultDetailResponse {
   counts: SelectionCounts;
 }
 
-export interface SelectionPicksPage {
-  items: SelectionPick[];
-  total: number;
-  offset: number;
-  limit: number;
-}
+export type SelectionPicksPage = Paged<SelectionPick>;

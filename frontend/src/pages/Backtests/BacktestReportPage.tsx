@@ -1,10 +1,20 @@
 import { ArrowLeftOutlined } from "@ant-design/icons";
 import { Alert, Button, Card, Col, Row, Space, Statistic, Table, Typography, message } from "antd";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { PagedTable } from "../../components/PagedTable";
 import { ParamsSnapshot, StrategySnapshots } from "../../components/StrategySnapshots";
-import { getBacktestReport } from "../../services/backtests";
-import type { BacktestReportResponse, BacktestSummary } from "../../types/backtest";
+import { usePagedQuery } from "../../hooks/usePagedQuery";
+import type { PagedRequest } from "../../hooks/usePagedQuery";
+import { getBacktestReport, getBacktestRows } from "../../services/backtests";
+import type {
+  BacktestDataset,
+  BacktestOpenPosition,
+  BacktestReportResponse,
+  BacktestSkip,
+  BacktestSummary,
+  BacktestTrade,
+} from "../../types/backtest";
 import { formatDateRange, formatPercent, parseFiniteNumber } from "../../utils/format";
 import { formatPlainPercent } from "./components/BacktestSignedValue";
 import { buildSummaryColumns, openPositionColumns, skipColumns, tradeColumns } from "./components/BacktestReportTables";
@@ -94,18 +104,36 @@ export function BacktestReportPage() {
     () => (run?.summary || []).filter((item) => selectedSet.has(item.strategy)),
     [run?.summary, selectedSet],
   );
-  const filteredTrades = useMemo(
-    () => (report?.trades || []).filter((item) => selectedSet.has(item.strategy)),
-    [report?.trades, selectedSet],
+  // 明细：服务端分页（筛选/排序/切片都在后端）；勾选变化 → queryKey 变化 → 回第 1 页
+  const detailQueryKey = `${executionKey}|${selectedStrategies.join(",")}`;
+  const datasetQuery = useCallback(
+    <T,>(dataset: BacktestDataset) =>
+      ({ offset, limit, sortBy, sortDir, signal }: PagedRequest) =>
+        selectedStrategies.length === 0
+          ? Promise.resolve({ items: [] as T[], total: 0, offset, limit })
+          : getBacktestRows<T>(
+              executionKey,
+              dataset,
+              { offset, limit, strategies: selectedStrategies, sortBy, sortDir },
+              signal,
+            ),
+    [executionKey, selectedStrategies],
   );
-  const filteredSkips = useMemo(
-    () => (report?.skips || []).filter((item) => selectedSet.has(item.strategy)),
-    [report?.skips, selectedSet],
-  );
-  const filteredOpenPositions = useMemo(
-    () => (report?.open_positions || []).filter((item) => selectedSet.has(item.strategy)),
-    [report?.open_positions, selectedSet],
-  );
+  const tradesQuery = usePagedQuery<BacktestTrade>({
+    queryKey: detailQueryKey,
+    initialLimit: 12,
+    fetchPage: datasetQuery<BacktestTrade>("trades"),
+  });
+  const skipsQuery = usePagedQuery<BacktestSkip>({
+    queryKey: detailQueryKey,
+    initialLimit: 8,
+    fetchPage: datasetQuery<BacktestSkip>("skips"),
+  });
+  const positionsQuery = usePagedQuery<BacktestOpenPosition>({
+    queryKey: detailQueryKey,
+    initialLimit: 8,
+    fetchPage: datasetQuery<BacktestOpenPosition>("open-positions"),
+  });
   const overviewWinRate = weightedWinRate(selectedSummaries);
   const overviewBestReturn = bestTotalReturn(selectedSummaries);
   const overviewTrades = totalTrades(selectedSummaries);
@@ -234,51 +262,48 @@ export function BacktestReportPage() {
 
             <section>
               <div className="section-title">交易明细</div>
-              <Table
-                rowKey={(record, index) => `${record.strategy}-${record.code}-${record.signal_date}-${index}`}
+              <PagedTable<BacktestTrade>
+                query={tradesQuery}
                 columns={tradeColumns}
-                dataSource={filteredTrades}
-                pagination={{ defaultPageSize: 12, showSizeChanger: true }}
-                scroll={{ x: 1540 }}
-                size="middle"
+                rowKey={(record) => `${record.strategy}-${record.code}-${record.signal_date}-${record.buy_date}`}
+                scrollX={1540}
+                emptyText="没有符合条件的成交明细"
               />
             </section>
 
-            {filteredSkips.length ? (
+            {skipsQuery.total ? (
               <section>
                 <div className="section-title">跳过记录</div>
-                <Table
-                  rowKey={(record, index) => `${record.strategy}-${record.code}-${record.signal_date}-${index}`}
+                <PagedTable<BacktestSkip>
+                  query={skipsQuery}
                   columns={skipColumns}
-                  dataSource={filteredSkips}
-                  pagination={{ pageSize: 8 }}
-                  scroll={{ x: 1060 }}
-                  size="middle"
+                  rowKey={(record) => `${record.strategy}-${record.code}-${record.signal_date}`}
+                  scrollX={1060}
+                  emptyText="没有跳过记录"
                 />
               </section>
             ) : null}
 
-            {filteredOpenPositions.length ? (
+            {positionsQuery.total ? (
               <section>
                 <div className="section-title">期末未平仓（卖不掉）</div>
                 <Alert
                   className="workbench-alert"
                   type="warning"
                   showIcon
-                  message={`有 ${filteredOpenPositions.length} 笔持仓到最后一个交易日仍没能卖出，按"顺延到底"处理，不在跌停价上假装成交。`}
+                  message={`有 ${positionsQuery.total} 笔持仓到最后一个交易日仍没能卖出，按"顺延到底"处理，不在跌停价上假装成交。`}
                   description={
                     run.capital_mode === "unlimited_cash"
                       ? "这些票的名义金额还压在里面，浮动盈亏计入「未平仓盈亏」；无限资金模式不产组合收益、回撤与期末市值，也没有一笔成交可以对账。"
                       : "这些票的钱还压在里面，组合收益、回撤、期末市值都含它们的浮动盈亏，但没有一笔成交可以对账。"
                   }
                 />
-                <Table
-                  rowKey={(record, index) => `${record.strategy}-${record.code}-${record.buy_date}-${index}`}
+                <PagedTable<BacktestOpenPosition>
+                  query={positionsQuery}
                   columns={openPositionColumns}
-                  dataSource={filteredOpenPositions}
-                  pagination={{ pageSize: 8 }}
-                  scroll={{ x: 1700 }}
-                  size="middle"
+                  rowKey={(record) => `${record.strategy}-${record.code}-${record.buy_date}`}
+                  scrollX={1700}
+                  emptyText="没有未平仓记录"
                 />
               </section>
             ) : null}
@@ -288,7 +313,7 @@ export function BacktestReportPage() {
               <Paragraph className="muted-text">
                 每日收益率按卖出日统计：当天已平仓交易盈亏 / 当天已平仓交易投入成本。累计收益率按：累计已平仓盈亏 / 累计已平仓投入成本。
               </Paragraph>
-              <TradeReturnTrendCards trades={filteredTrades} />
+              <TradeReturnTrendCards trend={report.trend} selectedStrategies={selectedStrategies} />
             </section>
           </Space>
         )}

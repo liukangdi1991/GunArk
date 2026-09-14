@@ -15,6 +15,10 @@ from trendradar.interfaces.api.schemas.execution import (
 
 router = APIRouter(prefix="/api", tags=["backtest"])
 
+# 报告响应形状版本：改结构时必须 +1。ETag 只绑产物身份（mtime+size）时，产物没变 → 304 →
+# 浏览器继续复用旧形状的缓存体（实测踩过：P2 瘦身后页面拿到旧 payload 直接崩）。
+BACKTEST_REPORT_ETAG_VERSION = 2
+
 
 def _executor(request: FastAPIRequest):
     return request.app.state.executor
@@ -60,7 +64,7 @@ def get_backtest_report(execution_key: str, request: FastAPIRequest):
     # 产物级不变数据：ETag 直接取文件身份（mtime_ns + size），无需读盘算哈希。
     # 条件请求命中即 304——报告重达 15MB，重复打开不该重算也不该重传。
     stat = result_file.stat()
-    etag = f'"{stat.st_mtime_ns}-{stat.st_size}"'
+    etag = f'"{BACKTEST_REPORT_ETAG_VERSION}-{stat.st_mtime_ns}-{stat.st_size}"'
     headers = {"ETag": etag, "Cache-Control": "private, max-age=0, must-revalidate"}
     if _etag_matches(request.headers.get("if-none-match"), etag):
         return Response(status_code=304, headers=headers)
@@ -70,6 +74,93 @@ def get_backtest_report(execution_key: str, request: FastAPIRequest):
     except BacktestSourceUnreadable as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return JSONResponse(payload, headers=headers)
+
+
+@router.get("/backtest-results/{execution_key}/trades")
+def get_backtest_trades(
+    execution_key: str,
+    request: FastAPIRequest,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    strategies: list[str] | None = Query(default=None),
+    sort_by: str | None = Query(default=None),
+    sort_dir: str = Query(default="asc", pattern="^(asc|desc)$"),
+):
+    """成交明细分页（P2）：只回当前页，筛选/排序在服务端完成。"""
+    return _paged_dataset(
+        execution_key, "trades",
+        offset=offset, limit=limit, strategies=strategies, sort_by=sort_by, sort_dir=sort_dir,
+    )
+
+
+@router.get("/backtest-results/{execution_key}/skips")
+def get_backtest_skips(
+    execution_key: str,
+    request: FastAPIRequest,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    strategies: list[str] | None = Query(default=None),
+    sort_by: str | None = Query(default=None),
+    sort_dir: str = Query(default="asc", pattern="^(asc|desc)$"),
+):
+    """跳过记录分页（P2）。"""
+    return _paged_dataset(
+        execution_key, "skips",
+        offset=offset, limit=limit, strategies=strategies, sort_by=sort_by, sort_dir=sort_dir,
+    )
+
+
+@router.get("/backtest-results/{execution_key}/open-positions")
+def get_backtest_open_positions(
+    execution_key: str,
+    request: FastAPIRequest,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    strategies: list[str] | None = Query(default=None),
+    sort_by: str | None = Query(default=None),
+    sort_dir: str = Query(default="asc", pattern="^(asc|desc)$"),
+):
+    """期末未平仓分页（P2）。"""
+    return _paged_dataset(
+        execution_key, "open-positions",
+        offset=offset, limit=limit, strategies=strategies, sort_by=sort_by, sort_dir=sort_dir,
+    )
+
+
+def _paged_dataset(
+    execution_key: str,
+    dataset: str,
+    *,
+    offset: int,
+    limit: int,
+    strategies: list[str] | None,
+    sort_by: str | None,
+    sort_dir: str,
+) -> dict:
+    """三个明细端点共用的取数与校验（白名单按数据集取）。"""
+    from trendradar.interfaces.api.presenters import (
+        BACKTEST_SORT_KEYS,
+        BacktestSourceUnreadable,
+        backtest_rows_page,
+    )
+
+    if "/" in execution_key or "\\" in execution_key or ".." in execution_key:
+        raise HTTPException(status_code=400, detail="Invalid execution_key")
+    if sort_by is not None and sort_by not in BACKTEST_SORT_KEYS[dataset]:
+        raise HTTPException(status_code=400, detail=f"非法 sort_by: {sort_by}")
+
+    try:
+        payload = backtest_rows_page(
+            execution_key, dataset,
+            offset=offset, limit=limit, strategies=strategies, sort_by=sort_by, sort_dir=sort_dir,
+        )
+    except BacktestSourceUnreadable as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    if payload is None:
+        raise HTTPException(
+            status_code=404, detail=f"Backtest result not found for '{execution_key}'"
+        )
+    return payload
 
 
 def _etag_matches(header: str | None, etag: str) -> bool:

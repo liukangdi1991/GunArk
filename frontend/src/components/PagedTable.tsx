@@ -49,13 +49,17 @@ export function PagedTable<T extends object>({
         }}
         onChange={(pagination, _filters, sorter) => {
           const limit = pagination.pageSize ?? query.limit;
-          const offset = ((pagination.current ?? 1) - 1) * limit;
           const single = Array.isArray(sorter) ? sorter[0] : sorter;
+          const sortBy = single?.order ? String(single.field) : undefined;
+          const sortDir = single?.order === "descend" ? "desc" : "asc";
+          const sortChanged =
+            sortBy !== query.sortBy || (sortBy !== undefined && sortDir !== query.sortDir);
           query.update({
-            offset,
+            // 换排序回第 1 页：否则「点了排序，看到的却是第 2 页」，首行不是最值
+            offset: sortChanged ? 0 : ((pagination.current ?? 1) - 1) * limit,
             limit,
-            sortBy: single?.order ? String(single.field) : undefined,
-            sortDir: single?.order === "descend" ? "desc" : "asc",
+            sortBy,
+            sortDir,
           });
         }}
       />

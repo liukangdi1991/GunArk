@@ -359,33 +359,6 @@ def list_selection_results_payload(limit: int | None = None) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _stock_meta_map() -> dict:
-    """code -> {name, industry} from stock_meta.parquet (前端"名称/板块"列）。"""
-    import polars as pl
-
-    from trendradar.infrastructure.runtime import runtime_root
-
-    path = runtime_root() / "storage" / "market" / "stock_meta.parquet"
-    try:
-        df = pl.read_parquet(path)
-        return {
-            r["code"]: {"name": r.get("name"), "industry": r.get("industry")}
-            for r in df.to_dicts()
-        }
-    except Exception:
-        return {}
-
-
-def _enrich_stock_info(rows: list, meta_map: dict) -> list:
-    """Trades/skips 补 name/industry（缺失代码保持原样）。"""
-    for r in rows:
-        info = meta_map.get(r.get("code"))
-        if info:
-            r["name"] = info.get("name")
-            r["industry"] = info.get("industry")
-    return rows
-
-
 def _rule_from_config_dict(cfg: dict, request: dict) -> dict:
     """从一份生效配置字典构建 trade_rule。两路（快照 / 回落重算）共用同一映射，
     避免逻辑分叉：execution 全量 + capital.lot_size + 整个 costs + position_limits 四键。
@@ -531,16 +504,6 @@ def _selection_provenance(selection_keys: list[str]) -> dict:
     }
 
 
-def _backtest_artifacts(key: str) -> list[dict]:
-    bt_dir = _executions_root() / key / "backtest"
-    artifacts = []
-    if bt_dir.is_dir():
-        for f in sorted(bt_dir.iterdir()):
-            if f.is_file():
-                artifacts.append(_artifact_row(f, scope="execution"))
-    return artifacts
-
-
 def _backtest_selection_keys(key: str) -> list[str]:
     import sqlite3
 
@@ -568,12 +531,6 @@ def _strategy_display_name(strategy_id) -> str | None:
 
     defn = get(strategy_id or "")
     return defn.name if defn else None
-
-
-def _with_strategy_names(rows: list[dict]) -> list[dict]:
-    for row in rows:
-        row["strategy_name"] = _strategy_display_name(row.get("strategy"))
-    return rows
 
 
 def _backtest_facts(key: str, bt_dir: Path) -> dict:
@@ -636,6 +593,217 @@ def _backtest_summary_rows(
     return rows
 
 
+BACKTEST_DATASETS = {
+    "trades": ("trades", "trades.parquet"),
+    "skips": ("skips", "skips.parquet"),
+    "open-positions": ("open_positions", "open_positions.parquet"),
+}
+
+# 排序白名单：与前端既有可排序列对齐（只能多不能少）。industry/name 不在 parquet 里，
+# 需要排序时先 join stock_meta 再排（实测 8ms join）。
+BACKTEST_SORT_KEYS = {
+    "trades": {
+        "sell_date": ("sell_date", "code"),
+        "profit": ("profit", "code"),
+        "return_pct": ("return_pct", "code"),
+        "buy_date": ("buy_date", "code"),
+        "industry": ("industry", "code"),
+        "code": ("code",),
+    },
+    "skips": {
+        "signal_date": ("signal_date", "code"),
+        "buy_date": ("buy_date", "code"),
+        "industry": ("industry", "code"),
+        "code": ("code",),
+    },
+    "open-positions": {
+        "buy_date": ("buy_date", "code"),
+        "blocked_trading_days": ("blocked_trading_days", "code"),
+        "mark_price": ("mark_price", "code"),
+        "unrealized_pnl": ("unrealized_pnl", "code"),
+        "unrealized_return_pct": ("unrealized_return_pct", "code"),
+        "industry": ("industry", "code"),
+        "code": ("code",),
+    },
+}
+
+
+def _stock_meta_frame():
+    """stock_meta 的 DataFrame 视图（复用 60s 缓存），join 用；无数据返回 None。"""
+    import polars as pl
+
+    by_code = _stock_meta_by_code()
+    if not by_code:
+        return None
+    codes = list(by_code)
+    return pl.DataFrame(
+        {
+            "code": codes,
+            "name": [by_code[c][0] for c in codes],
+            "industry": [by_code[c][1] for c in codes],
+        }
+    )
+
+
+def _backtest_dataset_frame(key: str, dataset: str, bt_dir: Path):
+    """取明细帧（惰性）：parquet 优先（快），缺失/读坏时回落 result.json。"""
+    import polars as pl
+
+    _, parquet_name = BACKTEST_DATASETS[dataset]
+    parquet_path = bt_dir / parquet_name
+    if parquet_path.is_file():
+        try:
+            return pl.scan_parquet(parquet_path)
+        except Exception as exc:
+            logger.warning("backtest %s unreadable for %s: %s", parquet_name, key, exc)
+
+    result = _read_json(bt_dir / "result.json")
+    if result is None:
+        if not (bt_dir / "result.json").is_file():
+            return None
+        raise BacktestSourceUnreadable(key)
+    field, _ = BACKTEST_DATASETS[dataset]
+    rows = result.get(field) or []
+    if not rows:
+        return pl.LazyFrame()
+    return pl.DataFrame(rows, infer_schema_length=None).lazy()
+
+
+def backtest_rows_page(
+    key: str,
+    dataset: str,
+    *,
+    offset: int = 0,
+    limit: int = 50,
+    strategies: list[str] | None = None,
+    sort_by: str | None = None,
+    sort_dir: str = "asc",
+) -> dict | None:
+    """明细分页（trades/skips/open-positions 共用一套查询语义）。
+
+    返回 None 表示该 key 没有回测产物（路由据此 404）。
+    """
+    import polars as pl
+
+    bt_dir = _executions_root() / key / "backtest"
+    frame = _backtest_dataset_frame(key, dataset, bt_dir)
+    if frame is None:
+        return None
+
+    if strategies:
+        frame = frame.filter(pl.col("strategy").is_in(strategies))
+
+    # 总数为**过滤后**行数（前端分页器据此渲染）
+    try:
+        total = int(frame.select(pl.len()).collect().item())
+    except Exception:
+        total = 0
+    if total == 0:
+        return {"items": [], "total": 0, "offset": offset, "limit": limit}
+
+    meta_frame = _stock_meta_frame()
+    sort_keys = BACKTEST_SORT_KEYS[dataset].get(sort_by)
+    # industry 排序需要先 join（该列不在产物里）；否则只给当页补，避免整表 join
+    if sort_by == "industry" and meta_frame is not None:
+        frame = frame.join(meta_frame.lazy(), on="code", how="left")
+
+    if sort_keys:
+        keys = list(sort_keys)
+        descending = [sort_dir == "desc"] + [False] * (len(keys) - 1)
+        frame = frame.sort(keys, descending=descending, nulls_last=True)
+
+    page = frame.slice(offset, limit).collect()
+    if sort_by != "industry" and meta_frame is not None:
+        page = page.join(meta_frame, on="code", how="left")
+
+    items = []
+    for row in page.to_dicts():
+        row["name"] = row.get("name") or ""
+        row["industry"] = row.get("industry") or ""
+        row["strategy_name"] = _strategy_display_name(row.get("strategy"))
+        items.append(row)
+    return {"items": items, "total": total, "offset": offset, "limit": limit}
+
+
+def _backtest_trend(key: str, bt_dir: Path) -> list[dict]:
+    """按 (策略, 卖出日) 聚合的收益曲线。口径与前端旧算法逐字一致：
+
+    `cost = buy_price × shares`（产物无 total_cost，前端一直走这条兜底）；
+    仅统计有卖出日的成交；`dailyReturnPct = cost>0 ? profit/cost*100 : 0`；
+    `cumulative*` 按日期升序累加；胜负按 profit 正负。
+    """
+    import polars as pl
+
+    frame_lazy = _backtest_dataset_frame(key, "trades", bt_dir)
+    if frame_lazy is None:
+        return []
+
+    try:
+        frame = frame_lazy.collect()
+    except Exception:
+        return []
+    if frame.height == 0 or "sell_date" not in frame.columns:
+        return []
+
+    grouped = (
+        frame.lazy()
+        .filter(pl.col("sell_date").is_not_null())
+        .with_columns(
+            pl.when((pl.col("buy_price") > 0) & (pl.col("shares") > 0))
+            .then(pl.col("buy_price") * pl.col("shares"))
+            .otherwise(0.0)
+            .alias("cost"),
+            pl.col("profit").cast(pl.Float64, strict=False).fill_null(0.0).alias("profit"),
+        )
+        .group_by(["strategy", "sell_date"])
+        .agg(
+            pl.col("cost").sum().alias("dailyCost"),
+            pl.col("profit").sum().alias("dailyProfit"),
+            pl.len().alias("tradeCount"),
+            (pl.col("profit") > 0).sum().alias("winCount"),
+            (pl.col("profit") < 0).sum().alias("lossCount"),
+        )
+        .sort(["strategy", "sell_date"])
+        .with_columns(
+            (
+                pl.when(pl.col("dailyCost") > 0)
+                .then(pl.col("dailyProfit") / pl.col("dailyCost") * 100.0)
+                .otherwise(0.0)
+            ).alias("dailyReturnPct"),
+            pl.col("dailyCost").cum_sum().over("strategy").alias("cumulativeCost"),
+            pl.col("dailyProfit").cum_sum().over("strategy").alias("cumulativeProfit"),
+        )
+        .with_columns(
+            (
+                pl.when(pl.col("cumulativeCost") > 0)
+                .then(pl.col("cumulativeProfit") / pl.col("cumulativeCost") * 100.0)
+                .otherwise(0.0)
+            ).alias("cumulativeReturnPct")
+        )
+        .collect()
+    )
+
+    fields = (
+        "date", "dailyCost", "dailyProfit", "dailyReturnPct",
+        "cumulativeCost", "cumulativeProfit", "cumulativeReturnPct",
+        "tradeCount", "winCount", "lossCount",
+    )
+    series = []
+    for strategy in dict.fromkeys(grouped["strategy"].to_list()):
+        points = [
+            {"date": row["sell_date"], **{name: row[name] for name in fields[1:]}}
+            for row in grouped.filter(pl.col("strategy") == strategy).iter_rows(named=True)
+        ]
+        series.append(
+            {
+                "strategy": strategy,
+                "strategy_name": _strategy_display_name(strategy),
+                "points": points,
+            }
+        )
+    return series
+
+
 def backtest_result_payload(key: str, include_report: bool = False) -> dict:
     bt_dir = _executions_root() / key / "backtest"
     facts = _backtest_facts(key, bt_dir)
@@ -670,25 +838,16 @@ def backtest_result_payload(key: str, include_report: bool = False) -> dict:
     if not include_report:
         return run
 
-    result = _read_json(bt_dir / "result.json")
-    if result is None:
-        raise BacktestSourceUnreadable(key)
-
-    # 交易/跳过明细补股票名称与板块（前端"名称"列）
-    meta_map = _stock_meta_map()
-    trades = _with_strategy_names(_enrich_stock_info(result.get("trades", []), meta_map))
-    skips = _with_strategy_names(_enrich_stock_info(result.get("skips", []), meta_map))
-    open_positions = _with_strategy_names(
-        _enrich_stock_info(result.get("open_positions", []), meta_map)
-    )
-
+    # P2：报告瘦身——明细移到分页端点（/trades、/skips、/open-positions），
+    # 曲线由服务端聚合（前端不再解析全量成交）。
     return {
         "result": run,
-        "artifacts": _backtest_artifacts(key),
-        "trades": trades,
-        "equity": result.get("equity_curve", []),
-        "skips": skips,
-        "open_positions": open_positions,
+        "trend": _backtest_trend(key, bt_dir),
+        "counts": {
+            "trade_count": facts["trade_count"],
+            "skip_count": facts["skip_count"],
+            "open_position_count": facts["open_position_count"],
+        },
     }
 
 

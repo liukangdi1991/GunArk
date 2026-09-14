@@ -1,3 +1,4 @@
+import type { Paged } from "./paging";
 import type { Strategy } from "./strategy";
 
 export interface BacktestSummary {
@@ -132,11 +133,43 @@ export interface BacktestResultsResponse {
   results: BacktestResult[];
 }
 
+/** P2：报告只回摘要 + 服务端聚合的曲线；明细走分页端点。 */
 export interface BacktestReportResponse {
   result: BacktestResult;
-  artifacts: BacktestArtifact[];
-  trades: BacktestTrade[];
-  equity: BacktestEquity[];
-  skips: BacktestSkip[];
-  open_positions: BacktestOpenPosition[];
+  trend: BacktestTrendSeries[];
+  counts: BacktestReportCounts;
 }
+
+/** 服务端聚合的收益曲线（P2）：口径 = 按 (策略, 卖出日) 聚合后按日累加。 */
+export interface BacktestTrendPoint {
+  date: string;
+  dailyCost: number;
+  dailyProfit: number;
+  dailyReturnPct: number;
+  cumulativeCost: number;
+  cumulativeProfit: number;
+  cumulativeReturnPct: number;
+  tradeCount: number;
+  winCount: number;
+  lossCount: number;
+}
+
+export interface BacktestTrendSeries {
+  /** 策略 id（与 summary 的筛选键一致） */
+  strategy: string;
+  strategy_name?: string | null;
+  points: BacktestTrendPoint[];
+}
+
+export interface BacktestReportCounts {
+  trade_count: number;
+  skip_count: number;
+  open_position_count: number;
+}
+
+export type BacktestTradesPage = Paged<BacktestTrade>;
+export type BacktestSkipsPage = Paged<BacktestSkip>;
+export type BacktestOpenPositionsPage = Paged<BacktestOpenPosition>;
+
+/** 明细数据集：与三个分页端点一一对应。 */
+export type BacktestDataset = "trades" | "skips" | "open-positions";

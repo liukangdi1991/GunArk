@@ -12,10 +12,6 @@ import { formatPlainPercent, SignedValue, winRateClassName } from "./BacktestSig
 
 const { Text } = Typography;
 
-function compareText(a: unknown, b: unknown) {
-  return String(a || "").localeCompare(String(b || ""), "zh-Hans-CN");
-}
-
 /** 策略列显示中文名；`strategy`（id）继续当 rowKey 与筛选键，不随改名漂移。 */
 function strategyLabel(record: { strategy: string; strategy_name?: string | null }) {
   return record.strategy_name || record.strategy;
@@ -74,7 +70,7 @@ const summaryMoneyColumns: ColumnsType<BacktestSummary> = [
     key: "unrealized_pnl",
     width: 140,
     render: (value) => <SignedValue value={value} type="money" />,
-    sorter: (a, b) => Number(a.unrealized_pnl || 0) - Number(b.unrealized_pnl || 0),
+    sorter: true,
   },
 ];
 
@@ -118,7 +114,7 @@ export const tradeColumns: ColumnsType<BacktestTrade> = [
     key: "industry",
     width: 130,
     render: (value) => value || "-",
-    sorter: (a, b) => compareText(a.industry, b.industry),
+    sorter: true,
   },
   { title: "信号日", dataIndex: "signal_date", key: "signal_date", width: 120 },
   {
@@ -127,7 +123,7 @@ export const tradeColumns: ColumnsType<BacktestTrade> = [
     key: "profit",
     width: 120,
     render: (value) => <SignedValue value={value} type="money" />,
-    sorter: (a, b) => Number(a.profit || 0) - Number(b.profit || 0),
+    sorter: true,
   },
   {
     title: "收益率",
@@ -135,7 +131,7 @@ export const tradeColumns: ColumnsType<BacktestTrade> = [
     key: "return_pct",
     width: 110,
     render: (value) => <SignedValue value={value} type="percent" />,
-    sorter: (a, b) => Number(a.return_pct || 0) - Number(b.return_pct || 0),
+    sorter: true,
   },
   { title: "买入日", dataIndex: "buy_date", key: "buy_date", width: 120 },
   { title: "买入价", dataIndex: "buy_price", key: "buy_price", width: 100, render: (value) => formatNumber(value, 3) },
@@ -163,7 +159,7 @@ export const skipColumns: ColumnsType<BacktestSkip> = [
     key: "industry",
     width: 130,
     render: (value) => value || "-",
-    sorter: (a, b) => compareText(a.industry, b.industry),
+    sorter: true,
   },
   { title: "信号日", dataIndex: "signal_date", key: "signal_date", width: 120 },
   { title: "买入日", dataIndex: "buy_date", key: "buy_date", width: 120 },
@@ -189,7 +185,7 @@ export const openPositionColumns: ColumnsType<BacktestOpenPosition> = [
     key: "industry",
     width: 130,
     render: (value) => value || "-",
-    sorter: (a, b) => compareText(a.industry, b.industry),
+    sorter: true,
   },
   { title: "买入日", dataIndex: "buy_date", key: "buy_date", width: 120 },
   { title: "买入价", dataIndex: "entry_price", key: "entry_price", width: 100, render: (value) => formatNumber(value, 3) },
@@ -207,7 +203,7 @@ export const openPositionColumns: ColumnsType<BacktestOpenPosition> = [
     dataIndex: "blocked_trading_days",
     key: "blocked_trading_days",
     width: 120,
-    sorter: (a, b) => Number(a.blocked_trading_days || 0) - Number(b.blocked_trading_days || 0),
+    sorter: true,
   },
   { title: "顺延原因", dataIndex: "blocked_reason", key: "blocked_reason", width: 130 },
   {
@@ -221,7 +217,7 @@ export const openPositionColumns: ColumnsType<BacktestOpenPosition> = [
         {record.mark_date ? <Text className="muted-text">（{record.mark_date}）</Text> : null}
       </span>
     ),
-    sorter: (a, b) => Number(a.mark_price || 0) - Number(b.mark_price || 0),
+    sorter: true,
   },
   {
     title: "未实现盈亏",
@@ -229,7 +225,7 @@ export const openPositionColumns: ColumnsType<BacktestOpenPosition> = [
     key: "unrealized_pnl",
     width: 120,
     render: (value) => <SignedValue value={value} type="money" />,
-    sorter: (a, b) => Number(a.unrealized_pnl || 0) - Number(b.unrealized_pnl || 0),
+    sorter: true,
   },
   {
     title: "未实现收益率",
@@ -237,6 +233,6 @@ export const openPositionColumns: ColumnsType<BacktestOpenPosition> = [
     key: "unrealized_return_pct",
     width: 130,
     render: (value) => <SignedValue value={value} type="percent" />,
-    sorter: (a, b) => Number(a.unrealized_return_pct || 0) - Number(b.unrealized_return_pct || 0),
+    sorter: true,
   },
 ];

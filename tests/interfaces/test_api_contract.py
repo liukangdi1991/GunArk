@@ -609,20 +609,107 @@ def test_backtest_results_list_shape(client):
 
 
 def test_backtest_report_shape(client):
+    """P2：报告瘦身——不再直出明细（改分页端点），曲线由服务端聚合。"""
     resp = client.get("/api/backtest-results/20260820_100100_backtest_c3d4/report")
     assert resp.status_code == 200
     payload = resp.json()
-    assert set(payload) == {
-        "result", "artifacts", "trades", "equity", "skips", "open_positions",
-    }
+    assert set(payload) == {"result", "trend", "counts"}
     assert payload["result"]["execution_key"] == "20260820_100100_backtest_c3d4"
-    assert len(payload["trades"]) == 2
-    assert payload["trades"][0]["strategy"] == "bbi_kdj_b1"
-    assert len(payload["equity"]) == 2
-    assert len(payload["skips"]) == 1
-    assert len(payload["artifacts"]) >= 2
-    assert len(payload["open_positions"]) == 1
-    assert payload["open_positions"][0]["blocked_reason"] == "跌停封死"
+    assert payload["counts"] == {"trade_count": 2, "skip_count": 1, "open_position_count": 1}
+    strategies = {series["strategy"]: series for series in payload["trend"]}
+    assert set(strategies) == {"bbi_kdj_b1", "peak_kdj"}
+    assert strategies["bbi_kdj_b1"]["strategy_name"] == "B1战法"
+
+
+def test_backtest_trend_matches_frontend_math(client):
+    """曲线口径与前端旧算法逐字一致：cost = buy_price × shares，按卖出日聚合后累加。"""
+    payload = client.get("/api/backtest-results/20260820_100100_backtest_c3d4/report").json()
+    series = {s["strategy"]: s["points"] for s in payload["trend"]}
+
+    b1 = series["bbi_kdj_b1"][0]
+    assert b1["date"] == "2026-08-18"
+    assert b1["dailyCost"] == pytest.approx(10.0 * 4000)
+    assert b1["dailyProfit"] == pytest.approx(3100.0)
+    assert b1["dailyReturnPct"] == pytest.approx(3100.0 / 40000 * 100)
+    assert b1["cumulativeCost"] == pytest.approx(40000.0)
+    assert b1["cumulativeReturnPct"] == pytest.approx(3100.0 / 40000 * 100)
+    assert (b1["tradeCount"], b1["winCount"], b1["lossCount"]) == (1, 1, 0)
+
+    pk = series["peak_kdj"][0]
+    assert pk["dailyProfit"] == pytest.approx(-1900.0)
+    assert (pk["tradeCount"], pk["winCount"], pk["lossCount"]) == (1, 0, 1)
+
+
+def test_backtest_trades_page_contract(client):
+    key = "20260820_100100_backtest_c3d4"
+    page = client.get(f"/api/backtest-results/{key}/trades?limit=1").json()
+    assert set(page) == {"items", "total", "offset", "limit"}
+    assert page["total"] == 2 and len(page["items"]) == 1
+    assert page["items"][0]["strategy_name"] == "B1战法"  # 展示名仍由注册表现查
+    assert page["items"][0]["name"] == "平安银行"  # join stock_meta 补全
+    assert page["items"][0]["industry"] == "银行"
+
+    rest = client.get(f"/api/backtest-results/{key}/trades?limit=1&offset=1").json()
+    assert [r["code"] for r in rest["items"]] == ["000333"]
+    assert client.get(f"/api/backtest-results/{key}/trades?offset=99").json()["items"] == []
+
+
+def test_backtest_trades_page_filters_and_sort(client):
+    key = "20260820_100100_backtest_c3d4"
+    desc = client.get(f"/api/backtest-results/{key}/trades?sort_by=profit&sort_dir=desc").json()
+    assert [r["profit"] for r in desc["items"]] == [3100.0, -1900.0]
+    asc = client.get(f"/api/backtest-results/{key}/trades?sort_by=profit").json()
+    assert [r["profit"] for r in asc["items"]] == [-1900.0, 3100.0]
+    by_industry = client.get(f"/api/backtest-results/{key}/trades?sort_by=industry").json()
+    assert by_industry["total"] == 2
+    only_b1 = client.get(f"/api/backtest-results/{key}/trades?strategies=bbi_kdj_b1").json()
+    assert only_b1["total"] == 1 and only_b1["items"][0]["code"] == "000001"
+
+    assert client.get(f"/api/backtest-results/{key}/trades?sort_by=drop_table").status_code == 400
+    assert client.get(f"/api/backtest-results/{key}/trades?limit=0").status_code == 422
+    assert client.get(f"/api/backtest-results/{key}/trades?limit=201").status_code == 422
+    assert client.get("/api/backtest-results/nope/trades").status_code == 404
+
+
+def test_backtest_trades_page_tiles_without_gaps(client):
+    """逐页翻完 == 全量序（默认序依赖产物行序）。"""
+    key = "20260820_100100_backtest_c3d4"
+    full = [
+        r["code"] for r in client.get(f"/api/backtest-results/{key}/trades?limit=50").json()["items"]
+    ]
+    paged = []
+    for offset in range(len(full)):
+        page = client.get(f"/api/backtest-results/{key}/trades?limit=1&offset={offset}").json()
+        assert len(page["items"]) == 1
+        paged.append(page["items"][0]["code"])
+    assert paged == full == ["000001", "000333"]
+
+
+def test_backtest_skips_and_positions_pages(client):
+    key = "20260820_100100_backtest_c3d4"
+    skips = client.get(f"/api/backtest-results/{key}/skips").json()
+    assert skips["total"] == 1 and skips["items"][0]["code"] == "600519"
+    assert skips["items"][0]["industry"] == "白酒"
+
+    positions = client.get(f"/api/backtest-results/{key}/open-positions").json()
+    assert positions["total"] == 1
+    row = positions["items"][0]
+    assert row["code"] == "000002" and row["blocked_reason"] == "跌停封死"
+    assert row["strategy_name"] == "B1战法"
+    # 未平仓白名单含顺延交易日（前端该列本来可排）
+    sorted_positions = client.get(
+        f"/api/backtest-results/{key}/open-positions?sort_by=blocked_trading_days&sort_dir=desc"
+    ).json()
+    assert sorted_positions["items"][0]["blocked_trading_days"] == 5
+    assert client.get(f"/api/backtest-results/{key}/open-positions?sort_by=entry_price").status_code == 400
+
+
+def test_backtest_report_etag_carries_representation_version(client):
+    """响应形状版本必须进 ETag：否则改了返回结构，浏览器仍复用旧缓存体（实测踩过）。"""
+    from trendradar.interfaces.api.routes.backtest import BACKTEST_REPORT_ETAG_VERSION
+
+    etag = client.get("/api/backtest-results/20260820_100100_backtest_c3d4/report").headers["etag"]
+    assert etag.startswith(f'"{BACKTEST_REPORT_ETAG_VERSION}-')
 
 
 def test_backtest_report_conditional_get(client):
@@ -1296,12 +1383,3 @@ def test_backtest_from_selection_injects_ultra_short_execution(monkeypatch):
     }
 
 
-def test_enrich_stock_info_adds_name_and_industry():
-    from trendradar.interfaces.api.presenters import _enrich_stock_info
-    trades = [{"code": "000001"}, {"code": "999999"}]
-    meta = {"000001": {"name": "平安银行", "industry": "银行"}}
-    out = _enrich_stock_info(trades, meta)
-    assert out[0]["name"] == "平安银行"
-    assert out[0]["industry"] == "银行"
-    # 缺失代码保持原样（无 name 键）
-    assert "name" not in out[1]

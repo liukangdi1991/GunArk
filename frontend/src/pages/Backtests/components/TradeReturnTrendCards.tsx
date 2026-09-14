@@ -12,84 +12,14 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { BacktestTrade } from "../../../types/backtest";
+import type { BacktestTrendPoint, BacktestTrendSeries } from "../../../types/backtest";
 import { formatMoney, formatPercent, signedClassName } from "../../../utils/format";
 import { SignedValue } from "./BacktestSignedValue";
 
 const { Text } = Typography;
 
-interface ReturnTrendPoint {
-  date: string;
-  dailyCost: number;
-  dailyProfit: number;
-  dailyReturnPct: number;
-  cumulativeCost: number;
-  cumulativeProfit: number;
-  cumulativeReturnPct: number;
-  tradeCount: number;
-  winCount: number;
-  lossCount: number;
-  isBaseline?: boolean;
-}
-
-function tradeCost(trade: BacktestTrade) {
-  const totalCost = Number(trade.total_cost);
-  if (Number.isFinite(totalCost) && totalCost > 0) {
-    return totalCost;
-  }
-  const buyPrice = Number(trade.buy_price);
-  const shares = Number(trade.shares);
-  if (Number.isFinite(buyPrice) && Number.isFinite(shares) && buyPrice > 0 && shares > 0) {
-    return buyPrice * shares;
-  }
-  return 0;
-}
-
-function buildReturnTrendPoints(trades: BacktestTrade[]): ReturnTrendPoint[] {
-  const byDate = new Map<string, Omit<ReturnTrendPoint, "cumulativeCost" | "cumulativeProfit" | "cumulativeReturnPct">>();
-
-  for (const trade of trades) {
-    const date = trade.sell_date;
-    if (!date) {
-      continue;
-    }
-    const current = byDate.get(date) || {
-      date,
-      dailyCost: 0,
-      dailyProfit: 0,
-      dailyReturnPct: 0,
-      tradeCount: 0,
-      winCount: 0,
-      lossCount: 0,
-    };
-    const profit = Number(trade.profit || 0);
-    current.dailyCost += tradeCost(trade);
-    current.dailyProfit += profit;
-    current.tradeCount += 1;
-    if (profit > 0) {
-      current.winCount += 1;
-    } else if (profit < 0) {
-      current.lossCount += 1;
-    }
-    current.dailyReturnPct = current.dailyCost > 0 ? (current.dailyProfit / current.dailyCost) * 100 : 0;
-    byDate.set(date, current);
-  }
-
-  let cumulativeCost = 0;
-  let cumulativeProfit = 0;
-  return Array.from(byDate.values())
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .map((item) => {
-      cumulativeCost += item.dailyCost;
-      cumulativeProfit += item.dailyProfit;
-      return {
-        ...item,
-        cumulativeCost,
-        cumulativeProfit,
-        cumulativeReturnPct: cumulativeCost > 0 ? (cumulativeProfit / cumulativeCost) * 100 : 0,
-      };
-    });
-}
+/** 服务端聚合出的点 + 前端插入的基线点（"起点"，纯展示）。 */
+type ReturnTrendPoint = BacktestTrendPoint & { isBaseline?: boolean };
 
 function buildCumulativeTrendPoints(points: ReturnTrendPoint[]): ReturnTrendPoint[] {
   if (!points.length) {
@@ -174,19 +104,13 @@ function ReturnTrendTooltip({
   );
 }
 
-function TradeReturnTrendCard({
-  strategy,
-  trades,
-}: {
-  strategy: string;
-  trades: BacktestTrade[];
-}) {
-  const points = buildReturnTrendPoints(trades);
+function TradeReturnTrendCard({ series }: { series: BacktestTrendSeries }) {
+  const points = series.points;
   if (!points.length) {
     return null;
   }
 
-  const label = trades.find((trade) => trade.strategy_name)?.strategy_name || strategy;
+  const label = series.strategy_name || series.strategy;
   const last = points[points.length - 1];
   const cumulativePoints = buildCumulativeTrendPoints(points);
   const cumulativeDomain = percentDomain(cumulativePoints.map((point) => point.cumulativeReturnPct));
@@ -267,17 +191,17 @@ function TradeReturnTrendCard({
   );
 }
 
-export function TradeReturnTrendCards({ trades }: { trades: BacktestTrade[] }) {
-  if (!trades.length) {
+export function TradeReturnTrendCards({
+  trend,
+  selectedStrategies,
+}: {
+  trend: BacktestTrendSeries[];
+  selectedStrategies: string[];
+}) {
+  const series = trend.filter((item) => selectedStrategies.includes(item.strategy));
+  if (!series.length) {
     return <Alert type="info" showIcon message="暂无已平仓交易，无法生成交易收益走势。" />;
   }
-
-  const grouped = trades.reduce((map, trade) => {
-    const items = map.get(trade.strategy) || [];
-    items.push(trade);
-    map.set(trade.strategy, items);
-    return map;
-  }, new Map<string, BacktestTrade[]>());
 
   return (
     <Space direction="vertical" size={12} className="equity-card-list">
@@ -286,8 +210,8 @@ export function TradeReturnTrendCards({ trades }: { trades: BacktestTrade[] }) {
         <Tag className="market-down">绿色柱：当日已平仓亏损</Tag>
         <Tag color="blue">蓝线：累计收益率</Tag>
       </Space>
-      {Array.from(grouped.entries()).map(([strategy, items]) => (
-        <TradeReturnTrendCard key={strategy} strategy={strategy} trades={items} />
+      {series.map((item) => (
+        <TradeReturnTrendCard key={item.strategy} series={item} />
       ))}
     </Space>
   );

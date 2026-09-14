@@ -1,11 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-
-export interface PageResult<T> {
-  items: T[];
-  total: number;
-  offset: number;
-  limit: number;
-}
+import type { Paged } from "../types/paging";
 
 export interface PagedRequest {
   offset: number;
@@ -38,7 +32,7 @@ export interface PagedQuery<T> extends QueryState {
  * - 失败保留上一页数据（翻页失败不清空，避免白屏式失败）。
  */
 export function usePagedQuery<T>(options: {
-  fetchPage: (req: PagedRequest) => Promise<PageResult<T>>;
+  fetchPage: (req: PagedRequest) => Promise<Paged<T>>;
   queryKey: string;
   initialLimit?: number;
 }): PagedQuery<T> {
