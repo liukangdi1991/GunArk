@@ -16,6 +16,7 @@ import {
 } from "@ant-design/icons";
 import { useParams } from "react-router-dom";
 import { cancelExecution, getExecutionConsole } from "../../services/executions";
+import { ApiError } from "../../services/apiClient";
 import type { Execution } from "../../types/execution";
 import { executionPercent, logLineClassName, statusTone } from "../../utils/execution";
 
@@ -61,6 +62,8 @@ export function ExecutionConsolePage() {
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
+    let attempt = 0;          // 连续失败次数：决定退避档位
+    let errorLogged = false;  // 一轮失败只在日志里留一行，不刷屏
     const controller = new AbortController();
     offsetRef.current = 0;
     pendingTextRef.current = "";
@@ -82,6 +85,14 @@ export function ExecutionConsolePage() {
           return;
         }
 
+        if (errorLogged) {
+          errorLogged = false;
+          setLines((current) =>
+            current.concat(`${new Date().toISOString()} [INFO] 日志刷新已恢复`),
+          );
+        }
+        attempt = 0;
+
         setExecution(payload.execution);
         offsetRef.current = payload.offset || offsetRef.current;
         setErrorMessage("");
@@ -102,9 +113,21 @@ export function ExecutionConsolePage() {
         }
         const message = error instanceof Error ? error.message : "请求运行日志失败。";
         setErrorMessage(message);
-        setLines((current) =>
-          current.concat(`${new Date().toISOString()} [ERROR] ${message}`),
-        );
+        // 任务本体多半还在跑：瞬时失败（超时/网络抖动/5xx）必须退避重试，
+        // 否则一次失败就把 20 分钟级任务的进度条永久冻死（只能手动刷新页面）。
+        // 404 是「查无此任务」，重试无意义，如实停在这里。
+        if (error instanceof ApiError && error.status === 404) {
+          return;
+        }
+        if (!errorLogged) {
+          errorLogged = true;
+          setLines((current) =>
+            current.concat(`${new Date().toISOString()} [ERROR] ${message}`),
+          );
+        }
+        attempt += 1;
+        const delay = Math.min(15000, 1000 * 2 ** (attempt - 1)); // 1s→2s→4s…上限 15s
+        timer = window.setTimeout(poll, delay);
       }
     }
 

@@ -52,14 +52,6 @@ class UltimateBrickChartSelector(SelectionStrategy):
 
     def select_day(self, context: SelectionContext, warmup: WarmupResult) -> SelectionResult:
         t0 = time.time()
-        m4 = self.definition.default_params.get("m4", 114)
-        selected = []
-        for code, hist in warmup.grouped.items():
-            if len(hist) < m4 + 1:   # DKK 需 MA(m4)
-                continue
-
-    def select_day(self, context: SelectionContext, warmup: WarmupResult) -> SelectionResult:
-        t0 = time.time()
         selected = []
         for code, hist in warmup.grouped.items():
             if len(hist) < 115:   # DKK 需 MA114
