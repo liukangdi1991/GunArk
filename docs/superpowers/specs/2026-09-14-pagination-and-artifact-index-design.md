@@ -297,6 +297,19 @@ unrealized_pnl/窗口日期），展示名与 meta 补全仍在 presenter 完成
   组件零重挂载、`/report` 零重取；排序逐次生效（升序 -7,952.22 → 降序 4,994.64 → 清除 → …）；
   返回后 URL/请求/首行与离开前逐字一致（`sort_by=profit&sort_dir=desc`）。
 
+### 7.2 滚动位置记忆（回测报告，2026-09-15）
+
+M8 之外的同类补全：URL 状态只恢复了排序/筛选/页码，**滚动位置**仍会回到顶部。
+方案：离开前把 `.main-content` 的 `scrollTop` 写进 sessionStorage（键 `scroll:<pathname>`，
+按路由记忆——排序/翻页改变查询串不应丢位置）；回退/前进后，等报告主体**与三张明细表都加载完**
+（内容高度稳定）再恢复，350ms 后补一次校准。
+
+- 为什么不用 `history.state`：实测回退后 react-router 会把条目 state 重写为 `{"idx":n}`，
+  第三方写入的键丢失；sessionStorage 不受影响，还顺带支持刷新后恢复（每标签页隔离，无跨标签泄漏）。
+- 为什么不用 react-router 的 `<ScrollRestoration>`：它恢复的是 `window` 滚动，
+  本应用的滚动容器是 `.main-content`（AppShell 定高布局），不适用。
+- 恢复后 350ms 内用户手动滚动会被拉回一次——回退后的瞬间用户尚未开始交互，可接受。
+
 ## §8 运行中任务可见性（P5）
 
 - 新端点 `GET /api/executions/active`（读 `jobs` 表，`status IN ('queued','running','cancelling')`，

@@ -8,6 +8,7 @@ import { usePagedQuery } from "../../hooks/usePagedQuery";
 import type { PagedRequest } from "../../hooks/usePagedQuery";
 import { currentSearchParams, readListParam, replaceSearchParams, writeListParam } from "../../utils/urlState";
 import { getBacktestReport, getBacktestRows } from "../../services/backtests";
+import { readRememberedScroll, rememberScroll } from "../../utils/scrollMemory";
 import type {
   BacktestDataset,
   BacktestOpenPosition,
@@ -109,6 +110,23 @@ export function BacktestReportPage() {
     void load();
   }, [messageApi, executionKey]);
 
+  // —— 滚动位置记忆（spec：回测报告 §7.2）——
+  // 离开前把 .main-content 的位置写进当前历史条目；回退/前进、数据渲染完成后恢复。
+  useEffect(() => {
+    const container = document.querySelector<HTMLElement>(".main-content");
+    if (!container) return;
+    let last = 0;
+    const onScroll = () => {
+      const now = Date.now();
+      if (now - last < 150) return; // 节流：replaceState 有成本，150ms 一次足够
+      last = now;
+      rememberScroll(Math.round(container.scrollTop));
+    };
+    container.addEventListener("scroll", onScroll, { passive: true });
+    return () => container.removeEventListener("scroll", onScroll);
+  }, []);
+
+
   const run = report?.result;
   const selectedSet = useMemo(() => selectedStrategySet(selectedStrategies), [selectedStrategies]);
   const selectedSummaries = useMemo(
@@ -148,6 +166,23 @@ export function BacktestReportPage() {
     urlParamPrefix: "op",
     fetchPage: datasetQuery<BacktestOpenPosition>("open-positions"),
   });
+
+  // 恢复时机：报告主体 + 三张明细表都就位（内容高度稳定），再恢复；350ms 后补一次校准
+  // （行高/字体渲染可能二次变化）。用户若在这 350ms 内手动滚动，会被拉回一次——
+  // 权衡：回退后的瞬间用户尚未开始交互，可接受。
+  useEffect(() => {
+    if (loading || !report) return;
+    if (tradesQuery.loading || skipsQuery.loading || positionsQuery.loading) return;
+    const restore = () => {
+      const saved = readRememberedScroll();
+      if (saved > 0) {
+        document.querySelector<HTMLElement>(".main-content")?.scrollTo({ top: saved });
+      }
+    };
+    restore();
+    const timer = window.setTimeout(restore, 350);
+    return () => window.clearTimeout(timer);
+  }, [loading, report, tradesQuery.loading, skipsQuery.loading, positionsQuery.loading]);
 
   const updateSelectedStrategies = useCallback(
     (next: string[]) => {

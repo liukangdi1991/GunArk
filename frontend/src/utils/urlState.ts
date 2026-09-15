@@ -51,7 +51,10 @@ export function replaceSearchParams(mutate: (params: URLSearchParams) => boolean
     return;
   }
   const query = params.toString();
-  window.history.replaceState(null, "", query ? `${window.location.pathname}?${query}` : window.location.pathname);
+  // 合并保留既有 history.state（react-router 的 idx/usr、以及滚动位置记忆），
+  // 不能传 null——那会把整份 state 抹掉
+  const state = { ...((window.history.state ?? {}) as Record<string, unknown>) };
+  window.history.replaceState(state, "", query ? `${window.location.pathname}?${query}` : window.location.pathname);
 }
 
 /** 读取当前地址栏（而非路由内部状态）的查询串。 */
