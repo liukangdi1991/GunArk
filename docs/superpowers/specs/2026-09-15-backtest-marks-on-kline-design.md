@@ -192,7 +192,9 @@ interface BarMark { label: string; count: number; items: BacktestMark[] }
   - `bt_buy`：`type:'text'`，**值 = `bar.low`**（只当坐标），`attrs` 覆写 `{ text: label, y: ... }`，`styles` 红底白字（`backgroundColor`+`padding`+圆角、`size:10`、`weight:600`）；
   - `bt_sell`：`type:'text'`，**值 = `bar.high`**，`attrs` 覆写 `{ text: label, y: ... }`，`styles` 绿底白字；
   - **下移/上移必须是像素量**：`attrs` 回调里取 `p.coordinate.current[figureKey]`（= `yAxis.convertToPixel(值)`）
-    再 `±12`；写成 `值 ± 12`（价格单位）会偏出去一大截——单位不同，这是最容易写错的一处；
+    再 `±6`（= 徽章高度一半 → 徽章边缘正好贴住柱端；2026-09-15 用户反馈原 12px 空隙
+    让徽章「悬浮」、遇邻近大实体 K 线会误挂到别的柱子上，已收紧）；写成 `值 ± 6`
+    （价格单位）会偏出去一大截——单位不同，这是最容易写错的一处；
   - **不要用 `p.bounding` 做贴边夹取**（2026-09-15 实测踩坑）：`attrs` 拿到的 bounding 只有
     `width/height/left/right` 有意义，**`top` 与 `bottom` 恒为 0**；`Math.min(Math.max(y, top+8), bottom-8)`
     会把 y 夹成 `-8`，徽章被画到画布外（表现为「文本明明算出来了却什么都看不到」）。
