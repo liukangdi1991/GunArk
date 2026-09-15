@@ -21,8 +21,10 @@ const XPSD_SHORT = "#00c0c0"; // 洗盘线短期（青）
 const XPSD_LONG = "#ef232a"; // 洗盘线长期（红）
 const REF_LINE = "#8a93a3"; // 洗盘线 20/80 参考线（灰虚线）
 const CROSS_DOWN = "#8bc34a"; // DIFF 下穿零轴（COLORLIGREEN）
-const BT_BUY_BG = "#ef232a"; // 回测买入标记底色（用户确认的默认值，改这里即换色）
-const BT_SELL_BG = "#14b143"; // 回测卖出标记底色
+// 买卖标记底色：与蜡烛同色相但明显提亮（蜡烛 #ef232a/#14b143 的 35% 白色混合），
+// 避免徽章与红绿烛体在观感上粘连（2026-09-15 用户反馈）；改色只动这两行
+const BT_BUY_BG = "#f57075"; // 浅红（买入）
+const BT_SELL_BG = "#66cc8d"; // 浅绿（卖出）
 const BT_TEXT = "#ffffff";
 const BT_OFFSET = 12; // 标记离 K 线沿的像素距离
 
