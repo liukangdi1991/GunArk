@@ -1212,10 +1212,16 @@ def invalidate_market_status_cache() -> None:
 
 
 _TRADE_STRATEGY_EXECUTION = {
+    # 三种策略共用同一入场：信号日当日收盘买入，涨停按当日收盘判定（拒绝追涨停）。
+    # 差异只在持有天数与中途止损。
     "long_term_bull_bear_stop": {
+        "entry_on_signal_day": True,
+        "entry_at_close": True,
         "force_sell_on_two_day_close_below_long_term_bull_bear_line": True,
     },
     "ten_day_low_stop": {
+        "entry_on_signal_day": True,
+        "entry_at_close": True,
         "close_below_recent_low_stop_window": 10,
     },
     "ultra_short": {
