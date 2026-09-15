@@ -228,11 +228,6 @@ function btMarkStyles(background: string) {
   };
 }
 
-/** 贴边时不把标记挤出窗格（bounding 恒有值，见 d.ts）。 */
-function clampMarkY(y: number, bounding: { top: number; bottom: number }): number {
-  return Math.min(Math.max(y, bounding.top + 8), bounding.bottom - 8);
-}
-
 /** 回测买卖标记（B/S）：**值只当坐标**（买=low、卖=high），字母靠 attrs 覆写 text。
  *  10.0.3 的 text figure 默认把「值」同时当 y 与 text——值给字母会 convertToPixel(NaN) 静默不画。 */
 function ensureBtMarksRegistered() {
@@ -244,19 +239,20 @@ function ensureBtMarksRegistered() {
       {
         key: "bt_buy",
         type: "text",
-        attrs: (p) => ({
-          text: p.data.current?.bt_buy_text ?? "",
-          y: clampMarkY(p.coordinate.current.bt_buy + BT_OFFSET, p.bounding),
-        }),
+        attrs: (p) => {
+          const y = p.coordinate.current.bt_buy;
+          // y 必须有限才画：坐标缺失/非数字时返回 null（不画），否则 fillText 落在 NaN
+          return Number.isFinite(y) ? { text: p.data.current?.bt_buy_text ?? "", y: y + BT_OFFSET } : null;
+        },
         styles: () => btMarkStyles(BT_BUY_BG),
       },
       {
         key: "bt_sell",
         type: "text",
-        attrs: (p) => ({
-          text: p.data.current?.bt_sell_text ?? "",
-          y: clampMarkY(p.coordinate.current.bt_sell - BT_OFFSET, p.bounding),
-        }),
+        attrs: (p) => {
+          const y = p.coordinate.current.bt_sell;
+          return Number.isFinite(y) ? { text: p.data.current?.bt_sell_text ?? "", y: y - BT_OFFSET } : null;
+        },
         styles: () => btMarkStyles(BT_SELL_BG),
       },
     ],
