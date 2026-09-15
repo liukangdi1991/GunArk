@@ -127,6 +127,28 @@ def get_backtest_open_positions(
     )
 
 
+@router.get("/backtest-results/{execution_key}/marks")
+def get_backtest_marks(
+    execution_key: str,
+    request: FastAPIRequest,
+    code: str = Query(pattern=r"^\d{6}$"),
+):
+    """个股日K上的回测买卖标记（B/S）：只回该股该次回测的成交，不分页。"""
+    from trendradar.interfaces.api.presenters import BacktestSourceUnreadable, backtest_marks
+
+    if "/" in execution_key or "\\" in execution_key or ".." in execution_key:
+        raise HTTPException(status_code=400, detail="Invalid execution_key")
+    try:
+        payload = backtest_marks(execution_key, code)
+    except BacktestSourceUnreadable as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    if payload is None:
+        raise HTTPException(
+            status_code=404, detail=f"Backtest result not found for '{execution_key}'"
+        )
+    return payload
+
+
 def _paged_dataset(
     execution_key: str,
     dataset: str,

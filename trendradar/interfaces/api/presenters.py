@@ -750,6 +750,88 @@ def backtest_rows_page(
     return {"items": items, "total": total, "offset": offset, "limit": limit}
 
 
+def backtest_marks(key: str, code: str) -> dict | None:
+    """该回测在该股上的买卖标记（B/S）：一笔成交出一买一卖，期末未平仓只出买。
+
+    返回 None 表示**该 key 没有回测产物**（路由据此 404）；产物在但该股无成交 → 空 items。
+    纯读：不建索引、不写盘（索引由 worker 与启动预热负责）；
+    与 `/trades` 同源（parquet 优先 → result.json 回落），故索引删/坏/缺失时行为一致。
+    """
+    import polars as pl
+
+    bt_dir = _executions_root() / key / "backtest"
+    has_source = (bt_dir / "result.json").is_file()
+
+    trades = _backtest_dataset_frame(key, "trades", bt_dir)
+    positions = _backtest_dataset_frame(key, "open-positions", bt_dir)
+    if trades is None and positions is None:
+        if not has_source:
+            return None
+        return {"execution_key": key, "code": code, "items": []}
+
+    def mark(
+        side: str,
+        date_value,
+        price,
+        shares,
+        strategy: str,
+        signal_date,
+        source: str,
+        profit,
+        return_pct,
+    ) -> dict:
+        return {
+            "side": side,
+            "date": str(date_value),
+            "price": float(price) if price is not None else None,
+            "shares": int(shares) if shares is not None else None,
+            "strategy": strategy,
+            "strategy_name": _strategy_display_name(strategy),
+            "signal_date": str(signal_date) if signal_date is not None else None,
+            "source": source,
+            "profit": float(profit) if profit is not None else None,
+            "return_pct": float(return_pct) if return_pct is not None else None,
+        }
+
+    items: list[dict] = []
+    if trades is not None:
+        rows = trades.filter(pl.col("code") == code).collect()
+        for row in rows.iter_rows(named=True):
+            common = {
+                "shares": row.get("shares"),
+                "strategy": row.get("strategy") or "",
+                "signal_date": row.get("signal_date"),
+                "source": "trade",
+            }
+            items.append(
+                mark(
+                    "buy", row.get("buy_date"), row.get("buy_price"),
+                    profit=None, return_pct=None, **common,
+                )
+            )
+            items.append(
+                mark(
+                    "sell", row.get("sell_date"), row.get("sell_price"),
+                    profit=row.get("profit"), return_pct=row.get("return_pct"), **common,
+                )
+            )
+    if positions is not None:
+        rows = positions.filter(pl.col("code") == code).collect()
+        for row in rows.iter_rows(named=True):
+            items.append(
+                mark(
+                    "buy", row.get("buy_date"), row.get("entry_price"),
+                    row.get("shares"), row.get("strategy") or "", row.get("signal_date"),
+                    "open_position", row.get("unrealized_pnl"),
+                    row.get("unrealized_return_pct"),
+                )
+            )
+
+    # (date, side) 为主序、strategy/signal_date 兜底 → 全序，两次调用逐字一致
+    items.sort(key=lambda m: (m["date"], m["side"], m["strategy"], m["signal_date"] or ""))
+    return {"execution_key": key, "code": code, "items": items}
+
+
 def _backtest_trend(key: str, bt_dir: Path) -> list[dict]:
     """按 (策略, 卖出日) 聚合的收益曲线。口径与前端旧算法逐字一致：
 
