@@ -190,7 +190,12 @@ interface BarMark { label: string; count: number; items: BacktestMark[] }
   - `bt_buy`：`type:'text'`，**值 = `bar.low`**（只当坐标），`attrs` 覆写 `{ text: label, y: ... }`，`styles` 红底白字（`backgroundColor`+`padding`+圆角、`size:10`、`weight:600`）；
   - `bt_sell`：`type:'text'`，**值 = `bar.high`**，`attrs` 覆写 `{ text: label, y: ... }`，`styles` 绿底白字；
   - **下移/上移必须是像素量**：`attrs` 回调里取 `p.coordinate.current[figureKey]`（= `yAxis.convertToPixel(值)`）
-    再 `±10`；写成 `值 ± 10`（价格单位）会偏出去一大截——单位不同，这是最容易写错的一处；
+    再 `±12`；写成 `值 ± 12`（价格单位）会偏出去一大截——单位不同，这是最容易写错的一处；
+  - **不要用 `p.bounding` 做贴边夹取**（2026-09-15 实测踩坑）：`attrs` 拿到的 bounding 只有
+    `width/height/left/right` 有意义，**`top` 与 `bottom` 恒为 0**；`Math.min(Math.max(y, top+8), bottom-8)`
+    会把 y 夹成 `-8`，徽章被画到画布外（表现为「文本明明算出来了却什么都看不到」）。
+    正确做法：只做有限性守卫（`Number.isFinite(y)` 才画，否则 `attrs` 返回 `null`），越界交给
+    klinecharts 的窗格裁剪；
   - 两个 figure **都不写 `title`** ⇒ 不进图例（同 `XPSD` 参考线做法）；`precision` 无关（值只当坐标用）。
 - 挂载/卸载：判定依据**取自 `payload.bars`**（任一 bar 带 `bt_buy`/`bt_sell`）→ `chart.createIndicator({ name:'BTMARK', paneId:'candle_pane' })`；
   清除 `bt`、该股无标记、marks 拉取失败 → 不创建（已创建则 `removeIndicator`）。

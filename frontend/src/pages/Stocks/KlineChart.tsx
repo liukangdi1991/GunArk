@@ -8,8 +8,8 @@ import {
   type Period,
   type TooltipLegend,
 } from "klinecharts";
-import type { BacktestMark } from "../../types/backtest";
 import type { KlineBar, KlineResponse } from "../../types/kline";
+import { barMarkLegend } from "../../utils/backtestMarks";
 
 const UP = "#ef232a";
 const DOWN = "#14b143";
@@ -336,30 +336,6 @@ function fmtP(v: number | null | undefined): string {
   return v == null ? "—" : v.toFixed(2);
 }
 
-/** 单笔回测成交：`B 78.66×600 · 单针下20`；卖出带收益率。 */
-function btMarkText(mark: BacktestMark, letter: string): string {
-  const parts = [`${letter} ${fmtP(mark.price)}×${mark.shares ?? "—"}`];
-  if (mark.side === "sell" && mark.return_pct != null) parts.push(`${mark.return_pct.toFixed(2)}%`);
-  parts.push(mark.strategy_name || mark.strategy);
-  return parts.join(" · ");
-}
-
-/** 弹框里的回测行：买段在前、卖段在后，段内按日期序，多笔用 ` / ` 分隔；无标记返回 null。 */
-function btMarkLegend(bar: KlineBar): TooltipLegend | null {
-  const segments: string[] = [];
-  if (bar.bt_buy?.items.length) {
-    segments.push(bar.bt_buy.items.map((mark) => btMarkText(mark, "B")).join(" / "));
-  }
-  if (bar.bt_sell?.items.length) {
-    segments.push(bar.bt_sell.items.map((mark) => btMarkText(mark, "S")).join(" / "));
-  }
-  if (segments.length === 0) return null;
-  return {
-    title: { text: "回测", color: NEUTRAL },
-    value: { text: segments.join(" / "), color: NEUTRAL },
-  };
-}
-
 /** 主图中文十字光标弹框（M11：开盘/最高/最低/收盘/涨跌幅/成交量/成交额）。 */
 function candleLegends(data: { prev: unknown; current: unknown }): TooltipLegend[] {
   const cur = data.current as unknown as KlineBar | null;
@@ -383,7 +359,7 @@ function candleLegends(data: { prev: unknown; current: unknown }): TooltipLegend
     { title: { text: "成交量(手)", color: NEUTRAL }, value: { text: formatVol(cur.volume ?? 0), color: NEUTRAL } },
     { title: { text: "成交额", color: NEUTRAL }, value: { text: formatAmount(cur.amount ?? null), color: NEUTRAL } },
   ];
-  const marks = btMarkLegend(cur);
+  const marks = barMarkLegend(cur, NEUTRAL);
   return marks ? [...base, marks] : base;
 }
 

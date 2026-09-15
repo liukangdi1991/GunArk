@@ -987,3 +987,25 @@ Run: `.venv/bin/python -m pytest -q`
 Expected: 全绿（此前 685+ 项）
 Run: `git status --short`
 Expected: 干净（无未提交改动；dist 已 gitignore）
+
+
+---
+
+## 实施记录（2026-09-15 落地时修正）
+
+1. **Task 5 的 `clampMarkY` 必须去掉**：实测 `attrs` 的 `p.bounding` 里 `top`/`bottom` 恒为 0
+   （只有 width/height/left/right 有意义），夹取会把 y 变成 `-8`，徽章画到画布外。
+   最终实现改为有限性守卫：`Number.isFinite(y) ? { text, y: y ± 12 } : null`。spec §5.4 已同步钉死。
+2. **弹框行的构造抽成纯函数**：`barMarkText` / `barMarkLegend` 放进 `frontend/src/utils/backtestMarks.ts`
+   （原计划放在 KlineChart 内部），这样可用真实数据直接断言，不依赖无头环境的绘制帧。
+3. **非法 `bt` 要在挂载时从地址栏清掉**（spec §5.1 已写、初版漏做）：`?bt=bad key!` → 地址栏留下
+   `?period=daily&adjust=qfq`，不产生会 404 的可分享脏参数。
+4. **验证手法的环境约束**（下次直接用这套）：
+   - `page.evaluate` 在本 harness 里运行于**隔离世界**：页面里 `window.__x` 的补丁、React fiber、
+     画布 `getImageData/toDataURL` 都读不到；`evaluateOnNewDocument` 也不生效。
+   - 无头隐藏页的 **rAF 被节流**（探针从不触发）⇒ 依赖「下一帧」的绘制不可靠；
+     靠 `setViewport`/`dispatchEvent(resize)` 触发重绘同样不可靠。
+   - 因此**可编程证据**要用：DOM 断言（URL/提示条/元素）+ 截图字节差分（带 bt vs 清除后 vs 无 bt）
+     + **隔离页**（`/tmp/btmark-check/prod.html`：klinecharts UMD + 生产 figure 代码逐字复制 + 真实数据
+     `data.js`，页面世界内直接 `getImageData` 扫描与写 DOM 日志）；
+     小字徽章的最终确认用「2 倍放大截图 + 视觉模型读图」。

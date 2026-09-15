@@ -1,6 +1,12 @@
 import type { BacktestMark } from "../types/backtest";
 import type { BarMark, KlineBar } from "../types/kline";
 
+/** 与 klinecharts 的 TooltipLegend 同形（只依赖结构，避免把图表库拖进工具模块）。 */
+export interface MarkLegend {
+  title: { text: string; color: string };
+  value: { text: string; color: string };
+}
+
 /**
  * 把回测买卖标记归并到 K 线 bar 上（spec: 2026-09-15-backtest-marks-on-kline-design §5.3）。
  *
@@ -70,4 +76,32 @@ export function countMarks(marks: BacktestMark[]): { buy: number; sell: number }
     else buy++;
   }
   return { buy, sell };
+}
+
+/** 单笔回测成交：`B 78.66×600 · 单针下20`；卖出带收益率。 */
+export function barMarkText(mark: BacktestMark, letter: string): string {
+  const parts = [`${letter} ${fmtPrice(mark.price)}×${mark.shares ?? "—"}`];
+  if (mark.side === "sell" && mark.return_pct != null) parts.push(`${mark.return_pct.toFixed(2)}%`);
+  parts.push(mark.strategy_name || mark.strategy);
+  return parts.join(" · ");
+}
+
+/** 弹框里的回测行：买段在前、卖段在后，段内按日期序，多笔用 ` / ` 分隔；无标记返回 null。 */
+export function barMarkLegend(bar: KlineBar, color: string): MarkLegend | null {
+  const segments: string[] = [];
+  if (bar.bt_buy?.items.length) {
+    segments.push(bar.bt_buy.items.map((mark) => barMarkText(mark, "B")).join(" / "));
+  }
+  if (bar.bt_sell?.items.length) {
+    segments.push(bar.bt_sell.items.map((mark) => barMarkText(mark, "S")).join(" / "));
+  }
+  if (segments.length === 0) return null;
+  return {
+    title: { text: "回测", color },
+    value: { text: segments.join(" / "), color },
+  };
+}
+
+function fmtPrice(value: number | null): string {
+  return value == null ? "—" : value.toFixed(2);
 }

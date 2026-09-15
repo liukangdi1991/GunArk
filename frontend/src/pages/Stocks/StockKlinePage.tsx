@@ -92,7 +92,9 @@ export default function StockKlinePage() {
   // —— 回测买卖标记（spec M1/M7）：只在 URL 带合法 bt 时拉一次；失败只影响提示条 ——
   const btKey = useMemo(() => {
     const raw = initialParams.current.get("bt");
-    return raw && /^[A-Za-z0-9_]{1,128}$/.test(raw) ? raw : null;
+    if (raw === null) return null;
+    if (/^[A-Za-z0-9_]{1,128}$/.test(raw)) return raw;
+    return null; // 非法格式：当没有标记处理
   }, []);
   const [marks, setMarks] = useState<BacktestMark[] | null>(null);
   const [marksRev, setMarksRev] = useState(0);
@@ -106,6 +108,16 @@ export default function StockKlinePage() {
   const [period, setPeriod] = useState<KlinePeriod>(() => normalizePeriod(initialParams.current.get("period")));
   const [adjust, setAdjust] = useState<AdjustMode>(() => normalizeAdjust(initialParams.current.get("adjust")));
   const codeValid = /^\d{6}$/.test(code);
+
+  // 挂载时把非法的 bt 从地址栏清掉（spec §5.1：非法值视同没有，且不留可分享的脏参数）
+  useEffect(() => {
+    const raw = initialParams.current.get("bt");
+    if (raw === null || /^[A-Za-z0-9_]{1,128}$/.test(raw)) return;
+    replaceSearchParams((params) => {
+      params.delete("bt");
+      return true;
+    });
+  }, []);
 
   // 挂载时把 URL 里的脏参数归一化写回（本来干净的 URL 不动）
   useEffect(() => {
