@@ -406,25 +406,37 @@ git commit -m "feat(ui): marks 类型（响应 + bar 挂载字段）与取数函
 
 **Files:**
 - Create: `frontend/src/utils/backtestMarks.ts`
-- Throwaway: `/tmp/check-attach-marks.ts`（**不进仓库**，验证完删除）
+- 断言：写在**本会话的 JS 内核**里（下面 Step 1），不落盘
 
-- [ ] **Step 1: 写断言脚本（RED）**
+> **环境事实（实测）**：shell 里没有独立 `bun` 可执行文件（Bun 内嵌在 harness 中，`bun` → command not found）；
+> 且带 `process.exit` 的脚本被内核 import 会直接杀掉内核。故断言在本会话 JS 内核里跑：
+> `const { attachMarks, countMarks } = await import("/workspace/github/GunArk/frontend/src/utils/backtestMarks.ts");`
+> 后面接同一批断言（`log(...)` 输出、末尾 `return failed === 0 ? … : …`）。
 
-创建 `/tmp/check-attach-marks.ts`：
+- [ ] **Step 1: 写断言（RED）**
 
-```ts
-import { attachMarks, countMarks } from "/workspace/github/GunArk/frontend/src/utils/backtestMarks";
+在 JS 内核里跑（**注意**：类型化的构造助手，禁 `as any`——仓库规则 ts-no-any；下面用完整字段字面量，
+内核里是 JS 单元格没有类型检查，但保持与前端同形状）：
 
-const bar = (date: string, low = 10, high = 11) =>
-  ({ date, low, high, open: 10, close: 10.5, volume: 1, amount: 1, timestamp: 0 } as any);
-const mark = (side: "buy" | "sell", date: string, strategy = "s1") =>
-  ({ side, date, price: 10, shares: 100, strategy, strategy_name: null, source: "trade", profit: null, return_pct: null } as any);
+```js
+const { attachMarks, countMarks } = await import("/workspace/github/GunArk/frontend/src/utils/backtestMarks.ts");
+
+const bar = (date, low = 10, high = 11) => ({
+  timestamp: 0, date, open: 10, high, low, close: 10.5, pre_close: 10, volume: 1, amount: 1,
+  zx_short: null, zx_long: null, mt: null, mt_prev: null, mt_color: null,
+  xpsd_short: null, xpsd_mid: null, xpsd_midlong: null, xpsd_long: null,
+  xpsig_zero: null, xpsig_w20: null, xpsig_xlong: null, xpsig_xmid: null,
+});
+const mark = (side, date, strategy = "s1") => ({
+  side, date, price: 10, shares: 100, strategy, strategy_name: null, signal_date: date,
+  source: "trade", profit: null, return_pct: null,
+});
 
 let failed = 0;
-const eq = (name: string, got: unknown, want: unknown) => {
+const eq = (name, got, want) => {
   const ok = JSON.stringify(got) === JSON.stringify(want);
   if (!ok) failed++;
-  console.log(`${ok ? "PASS" : "FAIL"} ${name}${ok ? "" : `\n  got=${JSON.stringify(got)}\n  want=${JSON.stringify(want)}`}`);
+  log(`${ok ? "PASS" : "FAIL"} ${name}${ok ? "" : `  got=${JSON.stringify(got)} want=${JSON.stringify(want)}`}`);
 };
 
 // 日线：命中与不命中
@@ -464,14 +476,13 @@ eq("空 bars 不炸", attachMarks([], [mark("buy", "2026-08-11")]).length, 0);
 eq("计数", countMarks([mark("buy", "2026-08-11"), mark("buy", "2026-08-12"), mark("sell", "2026-08-13")]),
   { buy: 2, sell: 1 });
 
-console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);
-process.exit(failed === 0 ? 0 : 1);
+return failed === 0 ? "全部通过（13 项断言）" : `${failed} 项失败`;
 ```
 
-- [ ] **Step 2: 跑脚本确认失败**
+- [ ] **Step 2: 跑断言确认失败（RED）**
 
-Run: `bun /tmp/check-attach-marks.ts`
-Expected: 报错「Cannot find module .../backtestMarks」（模块还没建）
+Run: 直接跑上面那个 JS 内核单元格
+Expected: `Error: ENOENT: no such file or directory … backtestMarks.ts`（模块还没建）
 
 - [ ] **Step 3: 实现纯函数**
 
@@ -556,10 +567,10 @@ export function countMarks(marks: BacktestMark[]): { buy: number; sell: number }
 type BarMarkLike = NonNullable<KlineBar["bt_buy"]>;
 ```
 
-- [ ] **Step 4: 跑脚本（GREEN）**
+- [ ] **Step 4: 重跑断言（GREEN）**
 
-Run: `bun /tmp/check-attach-marks.ts`
-Expected: 全部 `PASS` + 「全部通过」（退出码 0）
+Run: 再跑同一个 JS 内核单元格
+Expected: 13 行 `PASS` + 返回值「全部通过（13 项断言）」
 
 - [ ] **Step 5: 提交**
 
@@ -974,7 +985,5 @@ Expected: 标记消失（`__texts` 里不再有 B/S）、URL 无 `bt`、**页面
 
 Run: `.venv/bin/python -m pytest -q`
 Expected: 全绿（此前 685+ 项）
-Run: `rm -f /tmp/check-attach-marks.ts`
-Expected: 临时脚本删除
 Run: `git status --short`
 Expected: 干净（无未提交改动；dist 已 gitignore）
