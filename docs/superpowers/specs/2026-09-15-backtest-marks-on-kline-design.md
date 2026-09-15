@@ -34,13 +34,15 @@
 
 ### 3.1 依赖事实（klinecharts 10.0.3，实测源码/d.ts）
 
-- `figures[].type` 支持：`line`/`bar`/`circle`/`rect`/`text`/`arc`/`polygon`/`path`。
+- figure 注册表实为 `circle/line/polygon/rect/text/arc/path`（`extensions` 数组）；指标里写作 `type:'bar'`
+  与 `rect` **同一条 attrs 分支处理**（本仓库 `ZTMACD` 用的就是 `bar`）。本文只用 `text`。
 - **`text` figure 的 attrs 默认构造**：`{ x: 该 bar 的 x, y: yAxis.convertToPixel(当前值), text: 当前值, align:'center', baseline:'middle' }`，
   随后被 `figure.attrs?.(...)` 的返回值 **overwrite**。
   ⇒ **值必须是数字（当 y 坐标用），字母必须靠 `attrs` 覆写 `text`**；把 `"B"` 当值会让 `convertToPixel` 拿到非数字而**静默不画**（无异常、无日志）。
 - 值为 `null` 的 bar 不进入绘制（`isValid(currentData[key])` 门控）⇒ 「非标记日」天然不画。
 - `figures[].styles` 可用函数形式按行返回样式（`ZTMACD` 的 `macd_cross` 已用此法按 bar 改色）。
-- 无 `title` 的 figure 不进图例（`XPSD` 的参考线已用此法）。
+- **无 `title` 的 figure 不进图例**：图例构建处为 `if (isString(figure.title))` 才 push（lib 源码实证）；
+  本仓库 `XPSD` 的 20/80 参考线已用此法 ⇒ 标记不会污染指标图例。
 
 ## 4. 后端设计
 
@@ -70,11 +72,15 @@ GET /api/backtest-results/{execution_key}/marks?code=000661
 | 状态 | 触发 |
 |---|---|
 | 200 `items: []` | 该回测存在，但这只票没有任何成交（含跳过的票） |
-| 400 | `execution_key` 含 `/` `\` `..`；`code` 不匹配 `^\d{6}$` |
+| 400 | `execution_key` 含 `/` `\` `..`（与 `/trades` 的 `_paged_dataset` 同规则） |
+| 422 | `code` 不匹配 `^\d{6}$`——用 `Query(pattern=r"^\d{6}$")` 交给 FastAPI，**与 `/stocks/{code}/kline` 既有做法一致**（禁 `int`：`000001` 会被吃成 `1`） |
 | 404 | 该 key 无回测产物（与 `/trades` 同语义） |
 | 500 | 产物存在但读不出（`BacktestSourceUnreadable`，与既有明细分页同文案） |
 
 ### 4.2 读路径与降级
+
+分层：新增 `presenters.backtest_marks(key, code)`（与 `backtest_rows_page` 同层、同返回约定：`None` = 无产物），
+路由只做参数校验与状态码映射——不在路由里写 polars。
 
 复用 `presenters._backtest_dataset_frame(key, dataset, bt_dir)`（**parquet 优先 → `result.json` 回落**），
 与 `/trades`、`/open-positions` 完全同源 ⇒ 索引目录被删、索引读坏、产物为老格式（无 parquet）时行为一致，
@@ -127,10 +133,17 @@ StockKlinePage（挂载）
         成功 → marks / 失败 → marksError（只影响提示条一行，不影响图表）
 ```
 
-- marks 只在 `bt` 有效且 `code` 合法时请求，**只跑一次**（不随 period/adjust 变化重拉）；
-- 切股（code 变化）时 abort 上一个请求（`AbortController`，与 `useKline` 同款守卫）。
+- 取数函数进 `services/backtests.ts`（既有 `getBacktestReport` 等同僚）；响应类型进 `types/backtest.ts`；
+- marks 只在 `bt` 有效**且 `code` 匹配 `^\d{6}$`** 时请求；`code` 非法时页面走既有 422 卡片，不发 marks 请求；
+- **只跑一次**：依赖 `[btKey, code]`，不随 `period`/`adjust` 变化重拉——这条成立的前提是 §5.1 的写入口
+  （`replaceSearchParams` 不触发重挂载，2026-09-15 已修复并有实测），若哪天退回 `setSearchParams`，
+  本页会被整棵重挂载、marks 每次切周期都会被重拉；
+- 切股（code 变化）时 abort 上一个请求（`AbortController` + 序号守卫，与 `useKline` 同款）。
 
-### 5.3 映射纯函数 `attachMarks(bars, marks, period)`
+### 5.3 映射纯函数 `attachMarks(bars, marks)`
+
+> 规则与周期**无关**（同一条「第一根 `date >= 成交日`」在日线上退化为精确匹配、在周/月线上即分组归属），
+> 故不带 `period` 形参——传了也只是死参数。前提：`bars` 按日期升序（后端 `build_kline_series` 已 `sort("date")` 保证）。
 
 | 场景 | 规则 |
 |---|---|
@@ -148,14 +161,22 @@ interface BarMark { label: string; count: number; items: BacktestMark[] }
 // bar.bt_buy?: BarMark | null   bar.bt_sell?: BarMark | null
 ```
 
+**接入点**：`StockKlinePage` 里 `payloadWithMarks = useMemo(...)`——有 marks 时
+`{ ...payload, bars: attachMarks(payload.bars, marks) }`，无 marks 时原样透传 `payload`；
+`<KlineChart payload={payloadWithMarks} ...>`。`KlineChart` 与 `useKline` 的既有契约不变（仍是纯展示 /
+纯取数），标记只是 bar 上的附加字段。
+
 ### 5.4 图表配置
 
 - `registerIndicator('BTMARK')`（模块级幂等，与 `ZX`/`MT`/`ZTMACD` 同款）：
-  - `bt_buy`：`type:'text'`，**值 = `bar.low`**，`attrs` 覆写 `{ text: label, y: 下移 10px }`，`styles` 红底白字（`backgroundColor`+`padding`+圆角、`size:10`、`weight:600`）；
-  - `bt_sell`：`type:'text'`，**值 = `bar.high`**，`attrs` 覆写 `{ text: label, y: 上移 10px }`，`styles` 绿底白字；
+  - `bt_buy`：`type:'text'`，**值 = `bar.low`**（只当坐标），`attrs` 覆写 `{ text: label, y: ... }`，`styles` 红底白字（`backgroundColor`+`padding`+圆角、`size:10`、`weight:600`）；
+  - `bt_sell`：`type:'text'`，**值 = `bar.high`**，`attrs` 覆写 `{ text: label, y: ... }`，`styles` 绿底白字；
+  - **下移/上移必须是像素量**：`attrs` 回调里取 `p.coordinate.current[figureKey]`（= `yAxis.convertToPixel(值)`）
+    再 `±10`；写成 `值 ± 10`（价格单位）会偏出去一大截——单位不同，这是最容易写错的一处；
   - 两个 figure **都不写 `title`** ⇒ 不进图例（同 `XPSD` 参考线做法）；`precision` 无关（值只当坐标用）。
-- 挂载/卸载：`marks` 非空时 `chart.createIndicator({ name:'BTMARK', paneId:'candle_pane' })`；
-  清除 `bt`、该股无标记、marks 拉取失败 → 不创建（已创建则 `removeIndicator`）；
+- 挂载/卸载：判定依据**取自 `payload.bars`**（任一 bar 带 `bt_buy`/`bt_sell`）→ `chart.createIndicator({ name:'BTMARK', paneId:'candle_pane' })`；
+  清除 `bt`、该股无标记、marks 拉取失败 → 不创建（已创建则 `removeIndicator`）。
+  **不新增 `hasMarks` prop**——否则「prop 说有、数据没有」会变成两份真相；
 - 与 `mainOverlays`（MA/ZX/MT）共存：都在 `candle_pane`，互不影响；`cleanup` 时随图表一起销毁；
 - 样式常量集中在 `KlineChart.tsx` 顶部（与 `UP`/`DOWN` 等既有常量并列），便于改色。
 
@@ -168,7 +189,10 @@ interface BarMark { label: string; count: number; items: BacktestMark[] }
 回测: S 77.15×600 · -2.02% · 单针下20  ← 卖出（带收益率）
 ```
 
-明细行生成规则：同一根 bar 上**先买后卖**各一段，段内按日期序用 ` / ` 分隔，整体仍是一行
+实现形态与该函数既有返回值同形：`{ title: { text: "回测", color }, value: { text: 明细串, color } }`
+（`candleLegends` 每行都是 `{title, value}` 对，不新造结构）。
+
+明细串生成规则：同一根 bar 上**先买后卖**各一段，段内按日期序用 ` / ` 分隔，整体仍是一行
 （例：`回测: B 78.66×600 · 单针下20 / S 77.15×600 · -2.02% · 单针下20`）；
 无标记的 bar 不显示该行（不出现空行）。
 
@@ -202,7 +226,7 @@ interface BarMark { label: string; count: number; items: BacktestMark[] }
 |---|---|
 | marks 404（回测已被删）/ 400 / 500 / 网络错误 | 提示条一行说明 + `清除`；K 线与工具条完全不受影响 |
 | `bt` 非法（格式） | 视为无标记；`replace` 清掉该参数；不发请求 |
-| `bt` 指向的回测不存在 | 同 404 分支（不弹全局 message.error，避免误伤主流程） |
+| `bt` 指向的回测不存在 | 同 404 分支（不弹全局 `message.error`，避免误伤主流程）；**不自动改写 URL**——保留可诊断性，由用户点「清除」（自动改 URL 会让「为什么没标记」变得不可见） |
 | 该股无成交 | 提示条一行「该回测在这只票上没有成交」 |
 | `open_positions` 数据集为空（文件不存在） | 后端按空帧处理，不是错误 |
 | marks 请求未回来就切股 | abort + 序号守卫（复用既有模式），不写过期状态 |
@@ -214,8 +238,12 @@ interface BarMark { label: string; count: number; items: BacktestMark[] }
 1. 200：一笔成交 → 恰好 2 条 mark（buy+sell），字段与 `trades.parquet` 一致；
 2. 200：一笔未平仓 → 1 条 buy（`source="open_position"`）；
 3. 200：`items: []`（该 code 无成交，且该 run 的 `open_positions.parquet` 不存在——实测该形态真实存在）；
+3b. 200：同一 code 被**两个策略**各成交一笔 → 4 条 mark（2 buy + 2 sell），各自带正确 `strategy_name`；
+3c. 200：同一 code 既有成交、又在 `open_positions` 里 → 卖出后的 `buy`（`source="trade"`）与未平仓的 `buy`
+    （`source="open_position"`）同时在列，前端同根合并计数、弹框逐笔区分；
+3d. 输出顺序稳定：`(date, side)` 为主序、`strategy`/`buy_date` 兜底，两次调用逐字一致；
 4. 404：`execution_key` 无产物；
-5. 400：`execution_key` 含 `..`；`code=abc123` / `code=00066`；
+5. 400：`execution_key` 含 `..`；**422**：`code=abc123` / `code=00066`（与 §4.1 状态码表一致）；
 6. 索引删除后仍正确（删除 `.index/` 后重跑用例 1）；
 7. **纯读不写盘**：用一份没有 `.index/` 的临时产物目录调用端点 → 结果正确，且调用后该目录下仍无 `.index/`
    （索引由 worker 与启动预热负责，端点不得顺手建索引）。
@@ -225,7 +253,10 @@ interface BarMark { label: string; count: number; items: BacktestMark[] }
 - `attachMarks` 纯函数断言脚本（Bun 直跑 TS）：日线命中/未命中、周线映射到当周、跨周两笔合并计数、成交日在区间外丢弃、空 marks 原样返回；
 - 浏览器 E2E（真实数据，key=`20260915_031528_backtest_d740308f`，code=000661）：
   1. 从报告「交易明细」点 000661 → URL 带 `bt=` → 图上出现 `B`（2026-08-03）与 `S`（2026-08-04）；
-  2. 十字光标移到该日 → 弹框出现 `回测: B 78.66×600 · 单针下20`；
+  1b. **视图稳定**：K 线首绘后与 marks 到达后各截一次图（间隔 1.5s）比字节一致——进标记不得把视图
+      重置回最新一根（`resetData` 的副作用，见 §9 风险表）；
+  2. 十字光标移到该日（若该日不在默认可见区间内，先让图表滚到该 date）→ 弹框出现
+     `回测: B 78.66×600 · 单针下20`；
   3. 切周线/月线 → 标记仍在（落在所属周期 bar）；切 `不复权` → 标记仍**贴在该 bar 的下沿/上沿**
      （不漂进蜡烛实体里）——证明位置只由 bar 决定、与复权无关；
   4. 点「清除」→ 标记消失、URL 无 `bt`、**页面不跳顶**；
@@ -238,7 +269,8 @@ interface BarMark { label: string; count: number; items: BacktestMark[] }
 - 上述 E2E 全绿 + 截图存证（B/S 真的画出来了，不是「代码看着对」）；
 - 后端用例全绿；
 - 既有测试套件（685 项）不回退；
-- 改动面：`routes/backtest.py`、`presenters.py`、`types/backtest.ts`、`services/backtest.ts`、`KlineChart.tsx`、`StockKlinePage.tsx`、`BacktestReportTables.tsx`（+ 测试）。
+- 改动面：`routes/backtest.py`、`presenters.py`、`types/backtest.ts`、**`services/backtests.ts`**、
+  `KlineChart.tsx`、`StockKlinePage.tsx`、`BacktestReportTables.tsx`（+ 后端 pytest 用例）。
 
 ## 8. 不做（YAGNI）
 
@@ -259,3 +291,4 @@ interface BarMark { label: string; count: number; items: BacktestMark[] }
 | 同根多笔/多策略堆叠看不清 | 同向合并为 `B×n`；明细进弹框逐笔列出 |
 | 入口链接污染（URL 变长） | `bt` 单个短参数，不带策略勾选；清除按钮一键还原 |
 | 端点变成第二条读路径 | 复用 `_backtest_dataset_frame`，索引删/坏/缺失三种形态与分页端点同行为 |
+| marks 与 K 线**两次到达** → `resetData` 可能把视图重置回最新一根（用户看到「跳一下」） | 两条请求都在挂载时发起、marks 更快，正常路径下 marks 先到位（单次 `resetData`）；验收含 1b 的截屏比对。若实测确有跳动：把 marks 结果先写 ref、与 payload 合并后再触发一次数据刷新，或改用不重置视图的更新接口（实施时按实测定，不预设） |
