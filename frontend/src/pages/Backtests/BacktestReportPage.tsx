@@ -115,15 +115,22 @@ export function BacktestReportPage() {
   useEffect(() => {
     const container = document.querySelector<HTMLElement>(".main-content");
     if (!container) return;
-    let last = 0;
+    // 150ms 合并写入（trailing）：滚轮停稳后 150ms 内落盘。
+    // 注意：不要在 cleanup 里 flush——卸载正是 react-router 推入新条目的时刻，
+    // 此时带 URL 的 replaceState 会改写新条目，导致「返回」后渲染出错误的页面（实测踩坑）。
+    let timer = 0;
     const onScroll = () => {
-      const now = Date.now();
-      if (now - last < 150) return; // 节流：replaceState 有成本，150ms 一次足够
-      last = now;
-      rememberScroll(Math.round(container.scrollTop));
+      if (timer) return;
+      timer = window.setTimeout(() => {
+        timer = 0;
+        rememberScroll(Math.round(container.scrollTop));
+      }, 150);
     };
     container.addEventListener("scroll", onScroll, { passive: true });
-    return () => container.removeEventListener("scroll", onScroll);
+    return () => {
+      container.removeEventListener("scroll", onScroll);
+      if (timer) window.clearTimeout(timer);
+    };
   }, []);
 
 

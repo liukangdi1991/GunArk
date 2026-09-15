@@ -300,9 +300,9 @@ unrealized_pnl/窗口日期），展示名与 meta 补全仍在 presenter 完成
 ### 7.2 滚动位置记忆（回测报告，2026-09-15）
 
 M8 之外的同类补全：URL 状态只恢复了排序/筛选/页码，**滚动位置**仍会回到顶部。
-方案：离开前把 `.main-content` 的 `scrollTop` 写进 sessionStorage（键 `scroll:<pathname>`，
-按路由记忆——排序/翻页改变查询串不应丢位置）；回退/前进后，等报告主体**与三张明细表都加载完**
-（内容高度稳定）再恢复，350ms 后补一次校准。
+方案：滚轮停止后 150ms 把 `.main-content` 的 `scrollTop` 写进 sessionStorage（键 `scroll:<pathname>`，
+按路由记忆——排序/翻页改变查询串不应丢位置；trailing 写入保证最后停驻位置必被捕获）；
+回退/前进后，等报告主体**与三张明细表都加载完**（内容高度稳定）再恢复，350ms 后补一次校准。
 
 - 为什么不用 `history.state`：实测回退后 react-router 会把条目 state 重写为 `{"idx":n}`，
   第三方写入的键丢失；sessionStorage 不受影响，还顺带支持刷新后恢复（每标签页隔离，无跨标签泄漏）。
