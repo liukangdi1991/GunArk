@@ -303,16 +303,19 @@ unrealized_pnl/窗口日期），展示名与 meta 补全仍在 presenter 完成
 
 趋势图（两张）上移到「策略对比」之后；交易规则文案默认折叠（`Collapse`，不持久化展开态）；KPI 保持 4 张。
 
-**验收**：1440×900 视口、滚动位置 0 时「交易收益走势」标题可见（落在首屏内）；折叠的规则文案
-仍可展开且内容与现行为一致；浏览器烟测无回归。
+**验收（实测通过）**：1440×900、滚动位置 0 时「交易收益走势」标题 top=662px（< 视口 900）✓；
+交易规则默认折叠 ✓ 且可展开；区块顺序 = KPI → 走势 → 策略对比 → 明细 → 跳过 → 未平仓。
 
 ### 9.3 前端拆包（P8）
 
 `/selections`、`/backtests/*`、`/market-data` 路由级 `React.lazy`（K 线页已是）；vite
 `manualChunks` 把 `recharts` 单独成 chunk。目标：首访主包 ≤1.0MB（现 1.71MB）。
 
-**验收**：`npm run build` 主包 ≤1.0MB 且 recharts 独立成 chunk；浏览器实测各路由首访正常
-（无白屏、无 chunk 404）；构建产物仍带 hash 文件名。
+**验收（实测通过）**：主包 **1,711KB → 654KB**（gzip 530KB → 207KB）；recharts 随
+`BacktestReportPage` 分包（gzip 117KB，仅打开报告时加载）；选股页首访 JS+CSS 合计 **347KB**；
+6 条路由浏览器实测全部正常渲染、无 chunk 404；产物仍带 hash 文件名。
+实现方式：路由级 `React.lazy` 覆盖全部页面（框架 AppShell 保持同步），未再手工配 manualChunks——
+recharts 只被报告页引用，懒加载后自然落入其 chunk。
 
 ### 9.4 零散（P9）
 

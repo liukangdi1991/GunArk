@@ -1,5 +1,5 @@
 import { ArrowLeftOutlined } from "@ant-design/icons";
-import { Alert, Button, Card, Col, Row, Space, Statistic, Table, Typography, message } from "antd";
+import { Alert, Button, Card, Col, Collapse, Row, Space, Statistic, Table, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { PagedTable } from "../../components/PagedTable";
@@ -219,18 +219,32 @@ export function BacktestReportPage() {
             </Row>
 
             <section>
-              <StrategySnapshots
-                strategies={run.strategy_snapshots || []}
-                extra={
-                  <ParamsSnapshot
-                    params={run.trade_rule || {}}
-                    capitalMode={run.capital_mode}
-                    cashPerTrade={run.cash_per_trade}
-                  />
-                }
+              <Collapse
+                ghost
+                items={[
+                  {
+                    key: "trade-rule",
+                    label: "交易规则与参数快照（点击展开）",
+                    children: (
+                      <ParamsSnapshot
+                        params={run.trade_rule || {}}
+                        capitalMode={run.capital_mode}
+                        cashPerTrade={run.cash_per_trade}
+                      />
+                    ),
+                  },
+                ]}
               />
+              <StrategySnapshots strategies={run.strategy_snapshots || []} />
             </section>
 
+            <section>
+              <div className="section-title">交易收益走势</div>
+              <Paragraph className="muted-text">
+                每日收益率按卖出日统计：当天已平仓交易盈亏 / 当天已平仓交易投入成本。累计收益率按：累计已平仓盈亏 / 累计已平仓投入成本。
+              </Paragraph>
+              <TradeReturnTrendCards trend={report.trend} selectedStrategies={selectedStrategies} />
+            </section>
             <section>
               <div className="section-title">策略对比</div>
               <Paragraph className="muted-text">
@@ -308,13 +322,6 @@ export function BacktestReportPage() {
               </section>
             ) : null}
 
-            <section>
-              <div className="section-title">交易收益走势</div>
-              <Paragraph className="muted-text">
-                每日收益率按卖出日统计：当天已平仓交易盈亏 / 当天已平仓交易投入成本。累计收益率按：累计已平仓盈亏 / 累计已平仓投入成本。
-              </Paragraph>
-              <TradeReturnTrendCards trend={report.trend} selectedStrategies={selectedStrategies} />
-            </section>
           </Space>
         )}
       </Card>

@@ -1,15 +1,47 @@
 import { lazy, Suspense } from "react";
+import type { ReactNode } from "react";
 import { Spin } from "antd";
 import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
 import { AppShell } from "../layouts/AppShell";
-import { BacktestReportPage } from "../pages/Backtests/BacktestReportPage";
-import { BacktestWorkspacePage } from "../pages/Backtests/BacktestWorkspacePage";
-import { ExecutionConsolePage } from "../pages/ExecutionConsole/ExecutionConsolePage";
-import { MarketDataPage } from "../pages/MarketData/MarketDataPage";
-import { SelectionResultPage } from "../pages/Selections/SelectionResultPage";
-import { SelectionWorkspacePage } from "../pages/Selections/SelectionWorkspacePage";
 
+/**
+ * 路由级懒加载（P8）：主包只留框架（AppShell + antd 基础）。
+ * 页面的重量级依赖随之分包——recharts 只在回测报告用、klinecharts 只在 K 线页用，
+ * 首访其它页面不再为它们付费（原先主包 1.71MB）。
+ */
+const SelectionWorkspacePage = lazy(() =>
+  import("../pages/Selections/SelectionWorkspacePage").then((m) => ({
+    default: m.SelectionWorkspacePage,
+  })),
+);
+const SelectionResultPage = lazy(() =>
+  import("../pages/Selections/SelectionResultPage").then((m) => ({
+    default: m.SelectionResultPage,
+  })),
+);
+const BacktestWorkspacePage = lazy(() =>
+  import("../pages/Backtests/BacktestWorkspacePage").then((m) => ({
+    default: m.BacktestWorkspacePage,
+  })),
+);
+const BacktestReportPage = lazy(() =>
+  import("../pages/Backtests/BacktestReportPage").then((m) => ({
+    default: m.BacktestReportPage,
+  })),
+);
+const MarketDataPage = lazy(() =>
+  import("../pages/MarketData/MarketDataPage").then((m) => ({ default: m.MarketDataPage })),
+);
+const ExecutionConsolePage = lazy(() =>
+  import("../pages/ExecutionConsole/ExecutionConsolePage").then((m) => ({
+    default: m.ExecutionConsolePage,
+  })),
+);
 const StockKlinePage = lazy(() => import("../pages/Stocks/StockKlinePage"));
+
+function page(element: ReactNode) {
+  return <Suspense fallback={<Spin style={{ display: "block", margin: "80px auto" }} />}>{element}</Suspense>;
+}
 
 const router = createBrowserRouter([
   {
@@ -26,11 +58,11 @@ const router = createBrowserRouter([
       },
       {
         path: "selections",
-        element: <SelectionWorkspacePage />,
+        element: page(<SelectionWorkspacePage />),
       },
       {
         path: "selections/:executionKey",
-        element: <SelectionResultPage />,
+        element: page(<SelectionResultPage />),
       },
       {
         path: "backtests",
@@ -38,31 +70,27 @@ const router = createBrowserRouter([
       },
       {
         path: "backtests/history",
-        element: <BacktestWorkspacePage mode="history" />,
+        element: page(<BacktestWorkspacePage mode="history" />),
       },
       {
         path: "backtests/selection-backtest",
-        element: <BacktestWorkspacePage mode="selection_backtest" />,
+        element: page(<BacktestWorkspacePage mode="selection_backtest" />),
       },
       {
         path: "backtests/:executionKey",
-        element: <BacktestReportPage />,
+        element: page(<BacktestReportPage />),
       },
       {
         path: "market-data",
-        element: <MarketDataPage />,
+        element: page(<MarketDataPage />),
       },
       {
         path: "console/:executionId",
-        element: <ExecutionConsolePage />,
+        element: page(<ExecutionConsolePage />),
       },
       {
         path: "stocks/:code",
-        element: (
-          <Suspense fallback={<Spin style={{ display: "block", margin: "80px auto" }} />}>
-            <StockKlinePage />
-          </Suspense>
-        ),
+        element: page(<StockKlinePage />),
       },
     ],
   },
