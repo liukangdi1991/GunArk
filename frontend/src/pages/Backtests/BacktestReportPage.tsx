@@ -1,11 +1,12 @@
 import { ArrowLeftOutlined } from "@ant-design/icons";
 import { Alert, Button, Card, Col, Collapse, Row, Space, Statistic, Table, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { PagedTable } from "../../components/PagedTable";
 import { ParamsSnapshot, StrategySnapshots } from "../../components/StrategySnapshots";
 import { usePagedQuery } from "../../hooks/usePagedQuery";
 import type { PagedRequest } from "../../hooks/usePagedQuery";
+import { readListParam, writeListParam } from "../../utils/urlState";
 import { getBacktestReport, getBacktestRows } from "../../services/backtests";
 import type {
   BacktestDataset,
@@ -68,6 +69,7 @@ function toggleStrategy(current: string[], strategy: string) {
 export function BacktestReportPage() {
   const [messageApi, contextHolder] = message.useMessage();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { executionKey = "" } = useParams();
   const [report, setReport] = useState<BacktestReportResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -85,7 +87,10 @@ export function BacktestReportPage() {
       try {
         const payload = await getBacktestReport(executionKey);
         setReport(payload);
-        setSelectedStrategies((payload.result.summary || []).map((item) => item.strategy));
+        // 筛选状态优先取 URL（点进个股日 K 再返回时恢复原样），未知策略 id 忽略
+        const known = new Set((payload.result.summary || []).map((item) => item.strategy));
+        const fromUrl = readListParam(searchParams, "st")?.filter((id) => known.has(id));
+        setSelectedStrategies(fromUrl?.length ? fromUrl : Array.from(known));
         setErrorMessage("");
       } catch (error) {
         const text = error instanceof Error ? error.message : "加载回测报告失败。";
@@ -96,7 +101,7 @@ export function BacktestReportPage() {
       }
     }
     void load();
-  }, [messageApi, executionKey]);
+  }, [messageApi, executionKey, searchParams]);
 
   const run = report?.result;
   const selectedSet = useMemo(() => selectedStrategySet(selectedStrategies), [selectedStrategies]);
@@ -122,18 +127,32 @@ export function BacktestReportPage() {
   const tradesQuery = usePagedQuery<BacktestTrade>({
     queryKey: detailQueryKey,
     initialLimit: 12,
+    urlParamPrefix: "tr",
     fetchPage: datasetQuery<BacktestTrade>("trades"),
   });
   const skipsQuery = usePagedQuery<BacktestSkip>({
     queryKey: detailQueryKey,
     initialLimit: 8,
+    urlParamPrefix: "sk",
     fetchPage: datasetQuery<BacktestSkip>("skips"),
   });
   const positionsQuery = usePagedQuery<BacktestOpenPosition>({
     queryKey: detailQueryKey,
     initialLimit: 8,
+    urlParamPrefix: "op",
     fetchPage: datasetQuery<BacktestOpenPosition>("open-positions"),
   });
+
+  const updateSelectedStrategies = useCallback(
+    (next: string[]) => {
+      setSelectedStrategies(next);
+      const params = new URLSearchParams(searchParams);
+      if (writeListParam(params, "st", next)) {
+        setSearchParams(params, { replace: true });
+      }
+    },
+    [searchParams, setSearchParams],
+  );
   const overviewWinRate = weightedWinRate(selectedSummaries);
   const overviewBestReturn = bestTotalReturn(selectedSummaries);
   const overviewTrades = totalTrades(selectedSummaries);
@@ -257,7 +276,7 @@ export function BacktestReportPage() {
                 pagination={false}
                 rowSelection={{
                   selectedRowKeys: selectedStrategies,
-                  onChange: (keys) => setSelectedStrategies(keys.map(String)),
+                  onChange: (keys) => updateSelectedStrategies(keys.map(String)),
                 }}
                 onRow={(record) => ({
                   onClick: (event) => {
@@ -265,7 +284,7 @@ export function BacktestReportPage() {
                     if (target instanceof Element && target.closest(".ant-checkbox-wrapper")) {
                       return;
                     }
-                    setSelectedStrategies((current) => toggleStrategy(current, record.strategy));
+                    updateSelectedStrategies(toggleStrategy(selectedStrategies, record.strategy));
                   },
                 })}
                 rowClassName={(record) => (selectedSet.has(record.strategy) ? "selected-summary-row" : "")}

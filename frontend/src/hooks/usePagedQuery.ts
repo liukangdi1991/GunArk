@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import type { Paged } from "../types/paging";
 
 export interface PagedRequest {
@@ -35,13 +36,38 @@ export function usePagedQuery<T>(options: {
   fetchPage: (req: PagedRequest) => Promise<Paged<T>>;
   queryKey: string;
   initialLimit?: number;
+  /**
+   * 提供前缀即把「页码/每页/排序」同步到 URL 查询串（`<前缀>_o/_l/_sb/_sd`）。
+   * 同页多张表各用一个前缀，互不覆盖；写入用 replace，翻页不塞满历史栈。
+   */
+  urlParamPrefix?: string;
 }): PagedQuery<T> {
-  const { queryKey, fetchPage, initialLimit = 15 } = options;
-  const [state, setState] = useState<QueryState>({
-    offset: 0,
-    limit: initialLimit,
-    sortDir: "asc",
-  });
+  const { queryKey, fetchPage, initialLimit = 15, urlParamPrefix } = options;
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // 初值只在挂载时取：之后 URL 由本 hook 写，避免与表单状态互相打架
+  const initialState = useMemo<QueryState>(() => {
+    if (!urlParamPrefix) {
+      return { offset: 0, limit: initialLimit, sortDir: "asc" };
+    }
+    const readNumber = (name: string, fallback: number) => {
+      const raw = searchParams.get(`${urlParamPrefix}_${name}`);
+      if (raw === null || raw === "") {
+        return fallback; // 注意 Number(null) === 0：缺参数必须走兜底，否则每页会被写成 1 行
+      }
+      const value = Number(raw);
+      return Number.isFinite(value) && value >= 0 ? value : fallback;
+    };
+    return {
+      offset: readNumber("o", 0),
+      limit: Math.max(1, readNumber("l", initialLimit)),
+      sortBy: searchParams.get(`${urlParamPrefix}_sb`) || undefined,
+      sortDir: searchParams.get(`${urlParamPrefix}_sd`) === "desc" ? "desc" : "asc",
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const [state, setState] = useState<QueryState>(initialState);
   const [items, setItems] = useState<T[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -87,6 +113,26 @@ export function usePagedQuery<T>(options: {
       });
     return () => controller.abort();
   }, [state, queryKey]);
+
+  // 状态 → URL（replace：翻页/排序不进历史栈；点进个股再返回时由 URL 恢复）
+  useEffect(() => {
+    if (!urlParamPrefix) {
+      return;
+    }
+    const next = new URLSearchParams(searchParams);
+    next.set(`${urlParamPrefix}_o`, String(state.offset));
+    next.set(`${urlParamPrefix}_l`, String(state.limit));
+    if (state.sortBy) {
+      next.set(`${urlParamPrefix}_sb`, state.sortBy);
+      next.set(`${urlParamPrefix}_sd`, state.sortDir);
+    } else {
+      next.delete(`${urlParamPrefix}_sb`);
+      next.delete(`${urlParamPrefix}_sd`);
+    }
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true });
+    }
+  }, [state, urlParamPrefix, searchParams, setSearchParams]);
 
   const update = useCallback(
     (patch: Partial<QueryState>) => setState((cur) => ({ ...cur, ...patch })),
