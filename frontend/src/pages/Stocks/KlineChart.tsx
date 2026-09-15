@@ -8,6 +8,7 @@ import {
   type Period,
   type TooltipLegend,
 } from "klinecharts";
+import type { BacktestMark } from "../../types/backtest";
 import type { KlineBar, KlineResponse } from "../../types/kline";
 
 const UP = "#ef232a";
@@ -20,6 +21,10 @@ const XPSD_SHORT = "#00c0c0"; // 洗盘线短期（青）
 const XPSD_LONG = "#ef232a"; // 洗盘线长期（红）
 const REF_LINE = "#8a93a3"; // 洗盘线 20/80 参考线（灰虚线）
 const CROSS_DOWN = "#8bc34a"; // DIFF 下穿零轴（COLORLIGREEN）
+const BT_BUY_BG = "#ef232a"; // 回测买入标记底色（用户确认的默认值，改这里即换色）
+const BT_SELL_BG = "#14b143"; // 回测卖出标记底色
+const BT_TEXT = "#ffffff";
+const BT_OFFSET = 12; // 标记离 K 线沿的像素距离
 
 /** 后端已按周期聚合完毕；此处 Period 仅作 v10 loader 门控与轴刻度形态。 */
 const PERIOD_SETTINGS: Record<KlineResponse["period"], Period> = {
@@ -199,11 +204,82 @@ function ensureZtMacdRegistered() {
   ztMacdRegistered = true;
 }
 
+let btMarksRegistered = false;
+
+interface BtMarkResult {
+  bt_buy: number | null;
+  bt_sell: number | null;
+  bt_buy_text: string;
+  bt_sell_text: string;
+}
+
+/** 回测买卖标记样式：小号白字 + 圆角底色。 */
+function btMarkStyles(background: string) {
+  return {
+    color: BT_TEXT,
+    backgroundColor: background,
+    size: 10,
+    weight: "600",
+    paddingLeft: 4,
+    paddingRight: 4,
+    paddingTop: 1,
+    paddingBottom: 1,
+    borderRadius: 2,
+  };
+}
+
+/** 贴边时不把标记挤出窗格（bounding 恒有值，见 d.ts）。 */
+function clampMarkY(y: number, bounding: { top: number; bottom: number }): number {
+  return Math.min(Math.max(y, bounding.top + 8), bounding.bottom - 8);
+}
+
+/** 回测买卖标记（B/S）：**值只当坐标**（买=low、卖=high），字母靠 attrs 覆写 text。
+ *  10.0.3 的 text figure 默认把「值」同时当 y 与 text——值给字母会 convertToPixel(NaN) 静默不画。 */
+function ensureBtMarksRegistered() {
+  if (btMarksRegistered) return;
+  registerIndicator<BtMarkResult>({
+    name: "BTMARK",
+    shortName: "回测买卖",
+    figures: [
+      {
+        key: "bt_buy",
+        type: "text",
+        attrs: (p) => ({
+          text: p.data.current?.bt_buy_text ?? "",
+          y: clampMarkY(p.coordinate.current.bt_buy + BT_OFFSET, p.bounding),
+        }),
+        styles: () => btMarkStyles(BT_BUY_BG),
+      },
+      {
+        key: "bt_sell",
+        type: "text",
+        attrs: (p) => ({
+          text: p.data.current?.bt_sell_text ?? "",
+          y: clampMarkY(p.coordinate.current.bt_sell - BT_OFFSET, p.bounding),
+        }),
+        styles: () => btMarkStyles(BT_SELL_BG),
+      },
+    ],
+    calc: (dataList) =>
+      dataList.map((k) => {
+        const bar = k as unknown as KlineBar; // 自定义字段随行（M12），库里只有 KLineData 类型
+        return {
+          bt_buy: bar.bt_buy ? (bar.low ?? null) : null,
+          bt_sell: bar.bt_sell ? (bar.high ?? null) : null,
+          bt_buy_text: bar.bt_buy?.label ?? "",
+          bt_sell_text: bar.bt_sell?.label ?? "",
+        };
+      }),
+  });
+  btMarksRegistered = true;
+}
+
 function ensureAllRegistered() {
   ensureZxRegistered();
   ensureBrickRegistered();
   ensureXpsdRegistered();
   ensureZtMacdRegistered();
+  ensureBtMarksRegistered();
 }
 
 /* ---- 工具 ---- */
@@ -233,6 +309,8 @@ function toKlineData(bars: KlineBar[]): KLineData[] {
         xpsig_w20: b.xpsig_w20,
         xpsig_xlong: b.xpsig_xlong,
         xpsig_xmid: b.xpsig_xmid,
+        bt_buy: b.bt_buy ?? null,
+        bt_sell: b.bt_sell ?? null,
       }) as unknown as KLineData,
   );
 }
@@ -262,6 +340,30 @@ function fmtP(v: number | null | undefined): string {
   return v == null ? "—" : v.toFixed(2);
 }
 
+/** 单笔回测成交：`B 78.66×600 · 单针下20`；卖出带收益率。 */
+function btMarkText(mark: BacktestMark, letter: string): string {
+  const parts = [`${letter} ${fmtP(mark.price)}×${mark.shares ?? "—"}`];
+  if (mark.side === "sell" && mark.return_pct != null) parts.push(`${mark.return_pct.toFixed(2)}%`);
+  parts.push(mark.strategy_name || mark.strategy);
+  return parts.join(" · ");
+}
+
+/** 弹框里的回测行：买段在前、卖段在后，段内按日期序，多笔用 ` / ` 分隔；无标记返回 null。 */
+function btMarkLegend(bar: KlineBar): TooltipLegend | null {
+  const segments: string[] = [];
+  if (bar.bt_buy?.items.length) {
+    segments.push(bar.bt_buy.items.map((mark) => btMarkText(mark, "B")).join(" / "));
+  }
+  if (bar.bt_sell?.items.length) {
+    segments.push(bar.bt_sell.items.map((mark) => btMarkText(mark, "S")).join(" / "));
+  }
+  if (segments.length === 0) return null;
+  return {
+    title: { text: "回测", color: NEUTRAL },
+    value: { text: segments.join(" / "), color: NEUTRAL },
+  };
+}
+
 /** 主图中文十字光标弹框（M11：开盘/最高/最低/收盘/涨跌幅/成交量/成交额）。 */
 function candleLegends(data: { prev: unknown; current: unknown }): TooltipLegend[] {
   const cur = data.current as unknown as KlineBar | null;
@@ -275,7 +377,7 @@ function candleLegends(data: { prev: unknown; current: unknown }): TooltipLegend
   }
   const dirColor = pct == null ? NEUTRAL : pct >= 0 ? UP : DOWN;
   const pctText = pct == null ? "—" : `${pct >= 0 ? "+" : ""}${(pct * 100).toFixed(2)}%`;
-  return [
+  const base: TooltipLegend[] = [
     { title: { text: "日期", color: NEUTRAL }, value: { text: cur.date ?? "—", color: NEUTRAL } },
     { title: { text: "开盘", color: NEUTRAL }, value: { text: fmtP(cur.open), color: NEUTRAL } },
     { title: { text: "最高", color: NEUTRAL }, value: { text: fmtP(cur.high), color: NEUTRAL } },
@@ -285,6 +387,8 @@ function candleLegends(data: { prev: unknown; current: unknown }): TooltipLegend
     { title: { text: "成交量(手)", color: NEUTRAL }, value: { text: formatVol(cur.volume ?? 0), color: NEUTRAL } },
     { title: { text: "成交额", color: NEUTRAL }, value: { text: formatAmount(cur.amount ?? null), color: NEUTRAL } },
   ];
+  const marks = btMarkLegend(cur);
+  return marks ? [...base, marks] : base;
 }
 
 function applySymbolAndPeriod(chart: Chart, payload: KlineResponse) {
@@ -438,6 +542,19 @@ export function KlineChart({ payload, mainOverlays, subIndicators }: KlineChartP
     // 新增/移除副图后按容器高度重新分配窗格
     if (changed && containerRef.current) applySubPaneHeights(chart, containerRef.current);
   }, [subIndicators, mainOverlays]);
+
+  // 回测买卖标记：有标记才挂 BTMARK（不在「主图指标」菜单里，随数据来去）
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const hasMarks = Boolean(payload?.bars.some((b) => b.bt_buy || b.bt_sell));
+    const exists = chart.getIndicators().some((i) => i.name === "BTMARK");
+    if (hasMarks && !exists) {
+      chart.createIndicator({ name: "BTMARK", paneId: "candle_pane" }, true);
+    } else if (!hasMarks && exists) {
+      chart.removeIndicator({ name: "BTMARK" });
+    }
+  }, [payload]);
 
   return <div ref={containerRef} className="kline-chart-container" />;
 }
