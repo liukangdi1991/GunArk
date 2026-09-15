@@ -1506,3 +1506,21 @@ def test_backtest_empty_dataset_with_strategy_filter(client, tmp_path):
         assert resp.status_code == 200, (dataset, resp.text[:200])
         assert resp.json()["items"] == []
         assert resp.json()["total"] == 0
+
+
+def test_selection_picks_page_sorts_by_joined_columns(client):
+    """industry/name 不在明细里 → 走 join 排序；页内序必须是排序序（规范化过）。"""
+    key = "20260820_100000_selection_a1b2"
+    url = f"/api/selection-results/{key}/picks"
+
+    names = [p["name"] for p in client.get(f"{url}?sort_by=name").json()["items"]]
+    assert names == ["万科A", "平安银行", "美的集团", "贵州茅台"]  # 码点序（§3.4 口径）
+    assert [p["name"] for p in client.get(f"{url}?sort_by=name&limit=2").json()["items"]] == names[:2]
+
+    industries = [p["industry"] for p in client.get(f"{url}?sort_by=industry").json()["items"]]
+    assert industries == ["全国地产", "家用电器", "白酒", "银行"]
+    assert [p["industry"] for p in client.get(f"{url}?sort_by=industry&limit=2").json()["items"]] == industries[:2]
+
+    # 反序
+    desc = [p["name"] for p in client.get(f"{url}?sort_by=name&sort_dir=desc").json()["items"]]
+    assert desc == list(reversed(names))

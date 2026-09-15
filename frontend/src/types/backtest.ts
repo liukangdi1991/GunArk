@@ -73,15 +73,6 @@ export interface BacktestTrade {
   sell_postpone_days: number;
 }
 
-export interface BacktestEquity {
-  execution_key: string;
-  strategy: string;
-  date: string;
-  cash: number;
-  equity: number;
-  position_count: number;
-}
-
 export interface BacktestSkip {
   execution_key: string;
   strategy: string;
@@ -117,16 +108,6 @@ export interface BacktestOpenPosition {
   blocked_trading_days: number;
   unrealized_pnl: number;
   unrealized_return_pct: number;
-}
-
-export interface BacktestArtifact {
-  artifact_scope: string;
-  artifact_type: string;
-  storage_key: string;
-  mime_type: string;
-  size_bytes: number;
-  checksum: string;
-  created_at: string;
 }
 
 export interface BacktestResultsResponse {
@@ -166,10 +147,6 @@ export interface BacktestReportCounts {
   skip_count: number;
   open_position_count: number;
 }
-
-export type BacktestTradesPage = Paged<BacktestTrade>;
-export type BacktestSkipsPage = Paged<BacktestSkip>;
-export type BacktestOpenPositionsPage = Paged<BacktestOpenPosition>;
 
 /** 明细数据集：与三个分页端点一一对应。 */
 export type BacktestDataset = "trades" | "skips" | "open-positions";

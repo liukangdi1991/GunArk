@@ -72,6 +72,7 @@ const pickColumns: ColumnsType<SelectionPick> = [
     dataIndex: "name",
     key: "name",
     width: 140,
+    sorter: true,
     render: (_, record) => (
       <Link to={`/stocks/${record.code}`}>{record.name}</Link>
     ),
@@ -81,6 +82,7 @@ const pickColumns: ColumnsType<SelectionPick> = [
     dataIndex: "industry",
     key: "industry",
     width: 140,
+    sorter: true,
     render: (value) => value || "-",
   },
 ];

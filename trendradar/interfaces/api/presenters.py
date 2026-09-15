@@ -172,7 +172,12 @@ PICKS_SORT_KEYS = {
     "strategy": ("strategy", "date", "code"),
     "date": ("date", "strategy", "code"),
     "code": ("code", "strategy", "date"),
+    # 行业/名称不在明细里（展示期从 stock_meta 补）：排序前先 join（spec §3.4）
+    "industry": ("industry", "code", "strategy", "date"),
+    "name": ("name", "code", "strategy", "date"),
 }
+
+_INHERENT_PICKS_ORDER = ("strategy", "date", "code")
 
 
 def _selection_counts(fields: dict) -> dict:
@@ -225,19 +230,45 @@ def _picks_page_from_frame(
     sort_by: str | None,
     sort_dir: str,
 ) -> tuple[list[dict], int]:
-    """在惰性帧上做过滤 → 计数 → 排序 → 切片（索引与回落两条路径共用同一查询语义）。"""
+    """过滤 → 计数 → 排序 → 切片 → 补齐（索引帧与回落帧共用同一查询语义）。
+
+    - `industry`/`name` 不在明细里：需要排序时先 join 基础信息表（与回测明细同一手法）；
+    - 补齐发生在切片之后，而 join 不保证保序 → 末尾按同一全序再规范化页内序；
+    - 默认（不点排序）不做全量排序，直接按产物固有全序切片（实测 1.4ms vs 34ms）。
+    """
     import polars as pl
 
     if strategies:
         frame = frame.filter(pl.col("strategy").is_in(strategies))
     if dates:
         frame = frame.filter(pl.col("date").is_in(dates))
+
     total = int(frame.select(pl.len()).collect().item())
-    if sort_by:  # 默认（None）= 产物固有全序 (strategy,date,code)，免排序
-        keys = list(PICKS_SORT_KEYS[sort_by])
-        frame = frame.sort(keys, descending=[sort_dir == "desc"] + [False] * (len(keys) - 1))
-    rows = frame.slice(offset, limit).collect().to_dicts()
-    return [{"execution_key": key, **row} for row in rows], total
+    if total == 0:
+        return [], 0
+
+    meta_frame = _stock_meta_frame()
+    needs_join_for_sort = sort_by in ("industry", "name")
+    if needs_join_for_sort and meta_frame is not None:
+        frame = frame.join(meta_frame.lazy(), on="code", how="left")
+
+    keys = list(PICKS_SORT_KEYS[sort_by] if sort_by else _INHERENT_PICKS_ORDER)
+    descending = [sort_dir == "desc"] + [False] * (len(keys) - 1) if sort_by else [False] * len(keys)
+    if sort_by:
+        frame = frame.sort(keys, descending=descending, nulls_last=True)
+
+    page = frame.slice(offset, limit).collect()
+    if not needs_join_for_sort and meta_frame is not None:
+        page = page.join(meta_frame, on="code", how="left")
+    # 规范化页内序（join 不保证保序）：≤200 行，代价可忽略
+    page = page.sort(keys, descending=descending, nulls_last=True)
+
+    items = []
+    for row in page.with_columns(pl.lit(key).alias("execution_key")).to_dicts():
+        row["name"] = row.get("name") or ""
+        row["industry"] = row.get("industry") or ""
+        items.append(row)
+    return items, total
 
 
 def _picks_page_from_index(
@@ -326,16 +357,7 @@ def selection_picks_page(
     else:
         rows, total = page
 
-    meta = _stock_meta_by_code()
-    items = [
-        {
-            **row,
-            "name": meta.get(row["code"], ("", ""))[0],
-            "industry": meta.get(row["code"], ("", ""))[1],
-        }
-        for row in rows
-    ]
-    return {"items": items, "total": total, "offset": offset, "limit": limit}
+    return {"items": rows, "total": total, "offset": offset, "limit": limit}
 
 
 def list_selection_results_payload(limit: int | None = None) -> dict:
@@ -800,10 +822,11 @@ def _backtest_trend(key: str, bt_dir: Path) -> list[dict]:
         "tradeCount", "winCount", "lossCount",
     )
     series = []
-    for strategy in dict.fromkeys(grouped["strategy"].to_list()):
+    for part in grouped.partition_by("strategy", maintain_order=True):
+        strategy = part["strategy"][0]
         points = [
             {"date": row["sell_date"], **{name: row[name] for name in fields[1:]}}
-            for row in grouped.filter(pl.col("strategy") == strategy).iter_rows(named=True)
+            for row in part.iter_rows(named=True)
         ]
         series.append(
             {

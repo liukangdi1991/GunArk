@@ -28,7 +28,8 @@ export function useActiveExecutions(): ActiveExecution[] {
       } catch {
         // 静默：保留上一次结果
       }
-      if (!cancelled) {
+      // 页面隐藏时不排下一次：由 visibilitychange 在重新可见时唤醒
+      if (!cancelled && !document.hidden) {
         timer = window.setTimeout(poll, POLL_INTERVAL_MS);
       }
     }
