@@ -35,15 +35,18 @@ function selectedKey(pathname: string) {
   return "selections";
 }
 
-/** 作业类型 → 中文标签（静态查表）。 */
+/**
+ * 作业类型 → 中文标签（静态查表）。
+ * 键取**作业记录里的 job_type**（实测集合见 storage/app.db 的 jobs 表）：
+ * 三种选股入口都会记成 `selection`，行情同步记成 `market_bars_sync`/`market_sync`。
+ */
 const JOB_TYPE_LABELS: Record<string, string> = {
-  selection_latest: "最新选股",
-  selection_single: "单日选股",
-  selection_batch: "批量选股",
+  selection: "选股",
   selection_backtest: "选股回测",
   backtest: "回测",
-  backtest_from_selection: "选股历史回测",
   market_bars_sync: "行情同步",
+  market_sync: "行情同步",
+  market_calendar_sync: "交易日历同步",
   market_backfill_codes: "行情补齐",
 };
 

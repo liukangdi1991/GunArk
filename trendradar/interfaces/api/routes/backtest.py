@@ -267,6 +267,11 @@ def submit_selection_backtest_route(body: SelectionBacktestRequest, request: Fas
     from trendradar.app.services.selection_service import validate_selection_request
 
     req = body.model_dump(exclude_none=True)
+    # 与 /api/executions 保持同一口径：策略既可用 id 也可用中文名（前端下拉传名）
+    from trendradar.domain.strategy.registry import to_strategy_ids
+
+    if req.get("strategies"):
+        req["strategies"] = to_strategy_ids(req["strategies"])
     try:
         validate_selection_request(req, _store(request), _market_store(request))
     except ValueError as e:

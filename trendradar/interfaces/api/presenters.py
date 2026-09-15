@@ -14,6 +14,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+from trendradar.domain.strategy.registry import list_all, to_strategy_ids
 from trendradar.infrastructure.runtime import runtime_root
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,6 @@ def _read_json(path: Path, default=None):
 
 
 def strategy_list_payload() -> dict:
-    from trendradar.domain.strategy.registry import list_all
 
     return {
         "strategies": [
@@ -69,15 +69,6 @@ def strategy_list_payload() -> dict:
             for d in list_all()
         ]
     }
-
-
-def _strategies_names_to_ids(names: list[str] | None) -> list[str] | None:
-    if not names:
-        return None
-    from trendradar.domain.strategy.registry import list_all
-
-    by_name = {d.name: d.strategy_id for d in list_all()}
-    return [by_name.get(n, n) for n in names if by_name.get(n, n)]
 
 
 # ---------------------------------------------------------------------------
@@ -1201,7 +1192,7 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
             "end_date": end,
             "codes": params.get("codes"),
             "groups": params.get("groups"),
-            "strategies": _strategies_names_to_ids(params.get("strategies")),
+            "strategies": to_strategy_ids(params.get("strategies")),
             "boards": params.get("boards"),
         }
         validate_selection_request(sel_params, store, market_store)
@@ -1255,7 +1246,7 @@ def submit_execution_payload(executor, market_store, store, request: dict) -> di
             "start_date": params.get("from") or params.get("start_date"),
             "end_date": params.get("to") or params.get("end_date"),
             "groups": params.get("groups"),
-            "strategies": _strategies_names_to_ids(params.get("strategies")),
+            "strategies": to_strategy_ids(params.get("strategies")),
             "codes": params.get("codes"),
             "boards": params.get("boards"),
             "backtest": {

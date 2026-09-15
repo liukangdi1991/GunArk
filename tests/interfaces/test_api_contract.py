@@ -1524,3 +1524,43 @@ def test_selection_picks_page_sorts_by_joined_columns(client):
     # 反序
     desc = [p["name"] for p in client.get(f"{url}?sort_by=name&sort_dir=desc").json()["items"]]
     assert desc == list(reversed(names))
+
+
+def test_selection_backtest_accepts_strategy_names(client, monkeypatch):
+    """/api/selection-backtest 与 /api/executions 同口径：策略 id 或中文名都收。
+
+    前端两个页面发的都是中文名；原先只有通用入口做了名→id 归一化，这个专用入口会 400，
+    同名参数在两个入口行为不同（E2E 抓到的口径不一致）。
+    """
+    captured: dict = {}
+
+    def _capture(job_type, run_fn, request):
+        captured.update(job_type=job_type, request=request)
+        return "job-sbt-1"
+
+    monkeypatch.setattr(client.app.state.executor, "submit", _capture)
+
+    resp = client.post(
+        "/api/selection-backtest",
+        json={
+            "start_date": "2026-08-20",
+            "end_date": "2026-08-21",
+            "strategies": ["B1战法"],
+            "boards": ["主板"],
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert captured["request"]["strategies"] == ["bbi_kdj_b1"]  # 中文名已归一成 id
+
+    bad = client.post(
+        "/api/selection-backtest",
+        json={
+            "start_date": "2026-08-20",
+            "end_date": "2026-08-21",
+            "strategies": ["不存在的战法"],
+            "boards": ["主板"],
+        },
+    )
+    assert bad.status_code == 400
+    assert "策略不存在" in bad.json()["detail"]
