@@ -301,3 +301,29 @@ def test_warm_indexes_covers_backtests_too(tmp_path):
     assert warm_indexes(root) == 2
     assert (root / "s1" / "selection" / ".index" / "summary.json").is_file()
     assert (root / "b1" / "backtest" / ".index" / "summary.json").is_file()
+
+
+def test_index_write_never_resurrects_deleted_artifact(tmp_path, monkeypatch):
+    """删除与自愈并发时，索引写入不得把已删除的产物目录「复活」。
+
+    `atomic_write` 会 mkdir(parents=True)：构建中途产物被删后照写，会把目录树建回来
+    （实测：bulk_delete_backtest_results 之后目录又出现）。修法 = 拿锁后复核来源签名。
+    这里把「删除」插在构建中途（读源之后、拿锁之前），即真实的交错点。
+    """
+    import shutil
+
+    import trendradar.infrastructure.storage.artifact_index as mod
+
+    bt_dir = tmp_path / "backtest"
+    _write_backtest(bt_dir, trades=[])
+
+    real_summarize = mod.summarize_backtest_result
+
+    def summarize_after_delete(result):
+        shutil.rmtree(bt_dir)  # 模拟：并发删除在构建中途完成
+        return real_summarize(result)
+
+    monkeypatch.setattr(mod, "summarize_backtest_result", summarize_after_delete)
+
+    assert mod.ensure_backtest_index("k1", bt_dir) is None
+    assert not bt_dir.exists(), "索引写入不得复活已删除的产物目录"

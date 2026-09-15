@@ -146,6 +146,11 @@ def ensure_selection_index(
         fields, frame = summarize_signals(signals)
         summary = {"schema_version": INDEX_SCHEMA_VERSION, "source_signature": signature, **fields}
         with INDEX_WRITE_LOCK:
+            # 构建期间产物可能被删（删除与自愈并发）：此时写索引会在已删除的目录里
+            # 「复活」目录树（atomic_write 会 mkdir parents）。拿锁后复核来源签名，变了就不写。
+            if selection_source_signature(selection_dir) != signature:
+                logger.info("selection index skipped for %s: artifact changed during build", execution_key)
+                return None
             atomic_write_parquet(frame, picks_path)
             atomic_write_text(summary_path, json.dumps(summary, ensure_ascii=False))
     except Exception as exc:  # 索引是派生物：任何失败都降级，不影响主功能
@@ -266,6 +271,10 @@ def ensure_backtest_index(
             **summarize_backtest_result(result),
         }
         with INDEX_WRITE_LOCK:
+            # 同选股：拿锁后复核来源签名，产物已被删/已换则不写（否则会把目录复活）
+            if backtest_source_signature(bt_dir) != signature:
+                logger.info("backtest index skipped for %s: artifact changed during build", execution_key)
+                return None
             atomic_write_text(summary_path, json.dumps(summary, ensure_ascii=False))
     except Exception as exc:
         logger.warning("backtest index build failed for %s: %s", execution_key, exc)
