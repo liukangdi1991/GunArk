@@ -309,6 +309,11 @@ M8 之外的同类补全：URL 状态只恢复了排序/筛选/页码，**滚动
 - 为什么不用 react-router 的 `<ScrollRestoration>`：它恢复的是 `window` 滚动，
   本应用的滚动容器是 `.main-content`（AppShell 定高布局），不适用。
 - 恢复后 350ms 内用户手动滚动会被拉回一次——回退后的瞬间用户尚未开始交互，可接受。
+- **前置修复（2026-09-15，History 调用日志实锤）**：滚动恢复曾被「分页被重置回第 1 页」盖住——
+  报告页勾选状态是异步初始化的（报告加载后才 `setSelectedStrategies`），`detailQueryKey` 随之变化，
+  三个分页查询按「筛选变化回第 1 页」的约定被重置，URL 被改写回 `tr_o=0`。
+  修复：queryKey 与勾选框 UI 解耦（`appliedStrategies`，仅在用户操作时变化，`null`=全部），
+  加载/恢复过程不再触发分页重置。
 
 ## §8 运行中任务可见性（P5）
 

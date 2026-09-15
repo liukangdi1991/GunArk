@@ -82,6 +82,12 @@ export function BacktestReportPage() {
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
   const [selectedStrategies, setSelectedStrategies] = useState<string[]>([]);
+  // 查询用的策略集合（与勾选框 UI 解耦）：null = 全部策略。
+  // 若把 queryKey 挂在 selectedStrategies 上，加载完成时的勾选初始化会触发 queryKey 变化
+  // → 分页被重置回第 1 页，URL 恢复的 tr_o 就失效（2026-09-15 用户实测「回退回到第一页」的根因）。
+  const [appliedStrategies, setAppliedStrategies] = useState<string[] | null>(() =>
+    readListParam(initialParams.current, "st"),
+  );
 
   useEffect(() => {
     async function load() {
@@ -140,20 +146,21 @@ export function BacktestReportPage() {
     () => (run?.summary || []).filter((item) => selectedSet.has(item.strategy)),
     [run?.summary, selectedSet],
   );
-  // 明细：服务端分页（筛选/排序/切片都在后端）；勾选变化 → queryKey 变化 → 回第 1 页
-  const detailQueryKey = `${executionKey}|${selectedStrategies.join(",")}`;
+  // 明细：服务端分页（筛选/排序/切片都在后端）；用户改勾选 → queryKey 变化 → 回第 1 页。
+  // queryKey 用 appliedStrategies（仅随用户操作变化），加载期的勾选初始化不影响分页状态。
+  const detailQueryKey = `${executionKey}|${appliedStrategies ? appliedStrategies.join(",") : "(all)"}`;
   const datasetQuery = useCallback(
     <T,>(dataset: BacktestDataset) =>
       ({ offset, limit, sortBy, sortDir, signal }: PagedRequest) =>
-        selectedStrategies.length === 0
+        appliedStrategies !== null && appliedStrategies.length === 0
           ? Promise.resolve({ items: [] as T[], total: 0, offset, limit })
           : getBacktestRows<T>(
               executionKey,
               dataset,
-              { offset, limit, strategies: selectedStrategies, sortBy, sortDir },
+              { offset, limit, strategies: appliedStrategies ?? undefined, sortBy, sortDir },
               signal,
             ),
-    [executionKey, selectedStrategies],
+    [executionKey, appliedStrategies],
   );
   const tradesQuery = usePagedQuery<BacktestTrade>({
     queryKey: detailQueryKey,
@@ -194,6 +201,8 @@ export function BacktestReportPage() {
   const updateSelectedStrategies = useCallback(
     (next: string[]) => {
       setSelectedStrategies(next);
+      // 勾选变化 = 用户操作：查询条件随之更新（queryKey 变化 → 明细回第 1 页，符合预期）
+      setAppliedStrategies(next);
       replaceSearchParams((params) => writeListParam(params, "st", next));
     },
     [],

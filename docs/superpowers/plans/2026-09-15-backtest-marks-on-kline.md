@@ -1007,6 +1007,14 @@ Expected: 干净（无未提交改动；dist 已 gitignore）
      并新增两种文案（「仅勾选策略」标注、「勾选的策略在这只票上没有成交」）；清除时 bt/st 一并摘掉；
    - 后端不动（marks 自带 strategy id）；多策略数据的子集链接分支无真实数据可点，
      由 tsc + 代码走查覆盖，过滤路径用手工 st 参数端到端实测（匹配/不匹配/切周期/清除）。
+6. **「回退回到第一页」的根因（2026-09-15 深夜，History 调用日志实锤）**
+   - 现象：排序 → 翻第 4 页 → 点股票 → 后退，落回第 1 页顶部。
+   - 取证：给 dist/index.html 注入 History 调用记录器（写 DOM，隔离世界可读），
+     抓到回退后有一次 `RS | …tr_o=0&…` 的写入——是回到报告页时勾选状态异步初始化
+     → `detailQueryKey` 变化 → 三个分页查询按约定重置回第 1 页所致（URL 连带被改写）。
+   - 修复：BacktestReportPage 把「勾选框 UI 状态（selectedStrategies）」与
+     「查询条件（appliedStrategies，null=全部，初值取 URL st）」解耦；
+     queryKey 仅随用户操作变化，加载/恢复过程不再触发分页重置。后端不动。
 5. **验证手法的环境约束**（下次直接用这套）：
    - `page.evaluate` 在本 harness 里运行于**隔离世界**：页面里 `window.__x` 的补丁、React fiber、
      画布 `getImageData/toDataURL` 都读不到；`evaluateOnNewDocument` 也不生效。
