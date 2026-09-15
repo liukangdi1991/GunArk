@@ -1,10 +1,13 @@
 import { ArrowLeftOutlined, DownOutlined } from "@ant-design/icons";
 import { Alert, Button, Dropdown, Result, Segmented, Space, Spin, Typography } from "antd";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { formatNumber } from "../../utils/format";
+import type { BacktestMark } from "../../types/backtest";
 import type { AdjustMode, KlineBar, KlinePeriod, StockSnapshot } from "../../types/kline";
+import { getBacktestMarks } from "../../services/backtests";
 import { getStockSnapshot } from "../../services/marketData";
+import { attachMarks, countMarks } from "../../utils/backtestMarks";
 import { currentSearchParams, replaceSearchParams } from "../../utils/urlState";
 import { KlineChart } from "./KlineChart";
 import { useKline } from "./useKline";
@@ -86,6 +89,17 @@ export default function StockKlinePage() {
   const [retryKey, setRetryKey] = useState(0);
   const [snapshot, setSnapshot] = useState<StockSnapshot | null>(null);
 
+  // —— 回测买卖标记（spec M1/M7）：只在 URL 带合法 bt 时拉一次；失败只影响提示条 ——
+  const btKey = useMemo(() => {
+    const raw = initialParams.current.get("bt");
+    return raw && /^[A-Za-z0-9_]{1,128}$/.test(raw) ? raw : null;
+  }, []);
+  const [marks, setMarks] = useState<BacktestMark[] | null>(null);
+  const [marksRev, setMarksRev] = useState(0);
+  const [marksLoading, setMarksLoading] = useState(Boolean(btKey));
+  const [marksError, setMarksError] = useState("");
+  const [btCleared, setBtCleared] = useState(false);
+
   const normalizePeriod = (raw: string | null): KlinePeriod =>
     raw === "weekly" || raw === "monthly" ? raw : "daily"; // 白名单归一（N10）
   const normalizeAdjust = (raw: string | null): AdjustMode => (raw === "none" ? "none" : "qfq");
@@ -107,6 +121,46 @@ export default function StockKlinePage() {
   }, []);
 
   const { payload, loading, error, status } = useKline(code, period, adjust, retryKey);
+
+  useEffect(() => {
+    if (!btKey || !codeValid || btCleared) {
+      setMarksLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    setMarksLoading(true);
+    getBacktestMarks(btKey, code, controller.signal)
+      .then((resp) => {
+        setMarks(resp.items);
+        setMarksRev((n) => n + 1);
+        setMarksError("");
+      })
+      .catch((err: unknown) => {
+        if (err instanceof DOMException && err.name === "AbortError") return; // 静默（切股已接管）
+        setMarks([]);
+        setMarksRev((n) => n + 1);
+        setMarksError(err instanceof Error ? err.message : "加载回测标记失败。");
+      })
+      .finally(() => setMarksLoading(false));
+    return () => controller.abort();
+  }, [btKey, code, codeValid, btCleared]);
+
+  // 标记按日期归并到 bar（纯函数，spec §5.3）；无标记时原样透传
+  const payloadWithMarks = useMemo(
+    () => (payload && marks && marks.length > 0 ? { ...payload, bars: attachMarks(payload.bars, marks) } : payload),
+    [payload, marks],
+  );
+  const markCounts = useMemo(() => countMarks(marks ?? []), [marks]);
+  const clearBt = useCallback(() => {
+    setBtCleared(true);
+    setMarks(null);
+    setMarksRev((n) => n + 1);
+    replaceSearchParams((params) => {
+      const had = params.has("bt");
+      params.delete("bt");
+      return had;
+    });
+  }, []);
   const pct = useMemo(
     () => (payload ? pctChange(payload.bars, adjust) : null),
     [payload, adjust],
@@ -225,6 +279,30 @@ export default function StockKlinePage() {
         />
       )}
 
+      {btKey && !btCleared && (
+        <Alert
+          type={marksError ? "warning" : "info"}
+          showIcon
+          message={
+            marksLoading
+              ? "正在加载回测标记…"
+              : marksError
+                ? `回测标记加载失败：${marksError}`
+                : markCounts.buy + markCounts.sell === 0
+                  ? "该回测在这只票上没有成交"
+                  : `正在显示回测 ${btKey} 的买卖标记（B ${markCounts.buy} / S ${markCounts.sell}）`
+          }
+          action={
+            <Space>
+              <Link to={`/backtests/${encodeURIComponent(btKey)}`}>查看报告</Link>
+              <Button type="link" size="small" onClick={clearBt}>
+                清除
+              </Button>
+            </Space>
+          }
+        />
+      )}
+
       <Space wrap>
         <Segmented
           options={PERIOD_OPTIONS}
@@ -283,8 +361,13 @@ export default function StockKlinePage() {
         />
       )}
 
-      {!loading && !error && payload && (
-        <KlineChart payload={payload} mainOverlays={mainOverlays} subIndicators={subIndicators} />
+      {!loading && !error && payloadWithMarks && (
+        <KlineChart
+          key={`${payloadWithMarks.code}-${payloadWithMarks.period}-${payloadWithMarks.adjust}-${marksRev}`}
+          payload={payloadWithMarks}
+          mainOverlays={mainOverlays}
+          subIndicators={subIndicators}
+        />
       )}
     </div>
   );
