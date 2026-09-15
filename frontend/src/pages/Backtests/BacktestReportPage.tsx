@@ -1,12 +1,12 @@
 import { ArrowLeftOutlined } from "@ant-design/icons";
 import { Alert, Button, Card, Col, Collapse, Row, Space, Statistic, Table, Typography, message } from "antd";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { PagedTable } from "../../components/PagedTable";
 import { ParamsSnapshot, StrategySnapshots } from "../../components/StrategySnapshots";
 import { usePagedQuery } from "../../hooks/usePagedQuery";
 import type { PagedRequest } from "../../hooks/usePagedQuery";
-import { readListParam, writeListParam } from "../../utils/urlState";
+import { currentSearchParams, readListParam, replaceSearchParams, writeListParam } from "../../utils/urlState";
 import { getBacktestReport, getBacktestRows } from "../../services/backtests";
 import type {
   BacktestDataset,
@@ -69,7 +69,8 @@ function toggleStrategy(current: string[], strategy: string) {
 export function BacktestReportPage() {
   const [messageApi, contextHolder] = message.useMessage();
   const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
+  // URL 只当「挂载时的一次性初值」，读取也直接取地址栏（不经路由状态）。
+  const initialParams = useRef(currentSearchParams());
   const { executionKey = "" } = useParams();
   const [report, setReport] = useState<BacktestReportResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -89,7 +90,7 @@ export function BacktestReportPage() {
         setReport(payload);
         // 筛选状态优先取 URL（点进个股日 K 再返回时恢复原样），未知策略 id 忽略
         const known = new Set((payload.result.summary || []).map((item) => item.strategy));
-        const fromUrl = readListParam(searchParams, "st")?.filter((id) => known.has(id));
+        const fromUrl = readListParam(initialParams.current, "st")?.filter((id) => known.has(id));
         setSelectedStrategies(fromUrl?.length ? fromUrl : Array.from(known));
         setErrorMessage("");
       } catch (error) {
@@ -101,7 +102,7 @@ export function BacktestReportPage() {
       }
     }
     void load();
-  }, [messageApi, executionKey, searchParams]);
+  }, [messageApi, executionKey]);
 
   const run = report?.result;
   const selectedSet = useMemo(() => selectedStrategySet(selectedStrategies), [selectedStrategies]);
@@ -146,12 +147,9 @@ export function BacktestReportPage() {
   const updateSelectedStrategies = useCallback(
     (next: string[]) => {
       setSelectedStrategies(next);
-      const params = new URLSearchParams(searchParams);
-      if (writeListParam(params, "st", next)) {
-        setSearchParams(params, { replace: true });
-      }
+      replaceSearchParams((params) => writeListParam(params, "st", next));
     },
-    [searchParams, setSearchParams],
+    [],
   );
   const overviewWinRate = weightedWinRate(selectedSummaries);
   const overviewBestReturn = bestTotalReturn(selectedSummaries);

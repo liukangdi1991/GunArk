@@ -1,15 +1,15 @@
 import { ArrowLeftOutlined } from "@ant-design/icons";
 import { Alert, Button, Card, Col, Row, Space, Statistic, Table, Tag, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { PagedTable } from "../../components/PagedTable";
 import { StrategySnapshots } from "../../components/StrategySnapshots";
 import { usePagedQuery } from "../../hooks/usePagedQuery";
 import { getSelectionResult, getSelectionPicks } from "../../services/selections";
 import type { SelectionPick, SelectionResultDetailResponse, SelectionSummary } from "../../types/selection";
 import { formatDateRange, formatNumber } from "../../utils/format";
-import { readListParam, writeListParam } from "../../utils/urlState";
+import { currentSearchParams, readListParam, replaceSearchParams, writeListParam } from "../../utils/urlState";
 
 /** 勾选补集超过该数量就不写进 URL（批量 run 的摘要行可能几百条）。 */
 const MAX_URL_FILTER_KEYS = 200;
@@ -95,7 +95,8 @@ export function SelectionResultPage() {
   const [messageApi, contextHolder] = message.useMessage();
   const navigate = useNavigate();
   const { executionKey = "" } = useParams();
-  const [searchParams, setSearchParams] = useSearchParams();
+  // 同回测页：URL 读取直接取地址栏，写入走 replaceSearchParams（不触发路由重挂载）
+  const initialParams = useRef(currentSearchParams());
   const [detail, setDetail] = useState<SelectionResultDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
@@ -114,7 +115,7 @@ export function SelectionResultPage() {
         setDetail(payload);
         // 勾选状态优先取 URL（点进个股日 K 再返回时恢复），存的是「未勾选」的补集
         const allKeys = (payload.result.summary || []).map(summaryRowKey);
-        const deselected = new Set(readListParam(searchParams, "xk") || []);
+        const deselected = new Set(readListParam(initialParams.current, "xk") || []);
         setSelectedSummaryKeys(allKeys.filter((key) => !deselected.has(key)));
         setErrorMessage("");
       } catch (error) {
@@ -126,7 +127,7 @@ export function SelectionResultPage() {
       }
     }
     void load();
-  }, [messageApi, executionKey, searchParams]);
+  }, [messageApi, executionKey]);
 
   const run = detail?.result;
   const counts = detail?.counts;
@@ -138,13 +139,12 @@ export function SelectionResultPage() {
       const allKeys = (detail?.result.summary || []).map(summaryRowKey);
       const selected = new Set(next);
       const deselected = allKeys.filter((key) => !selected.has(key));
-      const params = new URLSearchParams(searchParams);
       // 补集超过 200 项就不写 URL（批量 run 可能几百条，塞进查询串不合适）
-      if (writeListParam(params, "xk", deselected.length <= MAX_URL_FILTER_KEYS ? deselected : [])) {
-        setSearchParams(params, { replace: true });
-      }
+      replaceSearchParams((params) =>
+        writeListParam(params, "xk", deselected.length <= MAX_URL_FILTER_KEYS ? deselected : []),
+      );
     },
-    [detail?.result.summary, searchParams, setSearchParams],
+    [detail?.result.summary],
   );
   const selectedSummaries = useMemo(
     () => (run?.summary || []).filter((item) => selectedSet.has(summaryRowKey(item))),

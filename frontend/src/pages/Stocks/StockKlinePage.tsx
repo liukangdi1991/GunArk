@@ -1,10 +1,11 @@
 import { ArrowLeftOutlined, DownOutlined } from "@ant-design/icons";
 import { Alert, Button, Dropdown, Result, Segmented, Space, Spin, Typography } from "antd";
-import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { formatNumber } from "../../utils/format";
 import type { AdjustMode, KlineBar, KlinePeriod, StockSnapshot } from "../../types/kline";
 import { getStockSnapshot } from "../../services/marketData";
+import { currentSearchParams, replaceSearchParams } from "../../utils/urlState";
 import { KlineChart } from "./KlineChart";
 import { useKline } from "./useKline";
 
@@ -76,29 +77,34 @@ function pctChange(bars: KlineBar[], adjust: AdjustMode): number | null {
 export default function StockKlinePage() {
   const navigate = useNavigate();
   const { code = "" } = useParams();
-  const [searchParams, setSearchParams] = useSearchParams();
+  // URL 只当挂载初值 + 单向镜像：写入走 replaceState（不经路由导航），否则每次切周期/复权
+  // 都会重挂载本页——图表重建、数据重取，页面还被打回顶部。
+  const initialParams = useRef(currentSearchParams());
   const initialPrefs = useMemo(loadIndicatorPrefs, []);
   const [mainOverlays, setMainOverlays] = useState<string[]>(initialPrefs.mainOverlays ?? ["MA", "ZX"]);
   const [subIndicators, setSubIndicators] = useState<string[]>(initialPrefs.subIndicators ?? []);
   const [retryKey, setRetryKey] = useState(0);
   const [snapshot, setSnapshot] = useState<StockSnapshot | null>(null);
 
-  const rawPeriod = searchParams.get("period");
-  const rawAdjust = searchParams.get("adjust");
-  const period: KlinePeriod =
-    rawPeriod === "weekly" || rawPeriod === "monthly" ? rawPeriod : "daily"; // 白名单归一（N10）
-  const adjust: AdjustMode = rawAdjust === "none" ? "none" : "qfq";
+  const normalizePeriod = (raw: string | null): KlinePeriod =>
+    raw === "weekly" || raw === "monthly" ? raw : "daily"; // 白名单归一（N10）
+  const normalizeAdjust = (raw: string | null): AdjustMode => (raw === "none" ? "none" : "qfq");
+  const [period, setPeriod] = useState<KlinePeriod>(() => normalizePeriod(initialParams.current.get("period")));
+  const [adjust, setAdjust] = useState<AdjustMode>(() => normalizeAdjust(initialParams.current.get("adjust")));
   const codeValid = /^\d{6}$/.test(code);
 
-  // 归一化后回写 URL（replace），后续刷新/分享不再带脏参数
+  // 挂载时把 URL 里的脏参数归一化写回（本来干净的 URL 不动）
   useEffect(() => {
-    if (rawPeriod == null && rawAdjust == null) return;
-    if (rawPeriod === period && rawAdjust === adjust) return;
-    const next = new URLSearchParams(searchParams);
-    next.set("period", period);
-    next.set("adjust", adjust);
-    setSearchParams(next, { replace: true });
-  }, [rawPeriod, rawAdjust, period, adjust, searchParams, setSearchParams]);
+    const raw = initialParams.current;
+    if (!raw.has("period") && !raw.has("adjust")) return;
+    replaceSearchParams((params) => {
+      if (params.get("period") === period && params.get("adjust") === adjust) return false;
+      params.set("period", period);
+      params.set("adjust", adjust);
+      return true;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const { payload, loading, error, status } = useKline(code, period, adjust, retryKey);
   const pct = useMemo(
@@ -134,9 +140,17 @@ export default function StockKlinePage() {
   }, [codeValid, code]);
 
   const setParam = (key: "period" | "adjust", value: string) => {
-    const next = new URLSearchParams(searchParams);
-    next.set(key, value);
-    setSearchParams(next, { replace: true }); // N18：replace 不刷历史栈，回退由浏览器驱动
+    const nextPeriod = key === "period" ? normalizePeriod(value) : period;
+    const nextAdjust = key === "adjust" ? normalizeAdjust(value) : adjust;
+    setPeriod(nextPeriod);
+    setAdjust(nextAdjust);
+    // N18：只改地址栏、不刷历史栈，也不触发路由重挂载；回退由浏览器驱动
+    replaceSearchParams((params) => {
+      if (params.get("period") === nextPeriod && params.get("adjust") === nextAdjust) return false;
+      params.set("period", nextPeriod);
+      params.set("adjust", nextAdjust);
+      return true;
+    });
   };
 
   const toggleOverlay = (key: string) => {

@@ -280,6 +280,23 @@ unrealized_pnl/窗口日期），展示名与 meta 补全仍在 presenter 完成
 - 请求失败不清空已有行（避免"白屏式失败"）：错误经单条 Alert 呈现（`PagedQuery.error`），不写日志行；
 - 排序状态与后端 `sort_by/sort_dir` 一一对应，前端不做本地排序（避免"页内排序"错觉）。
 
+### 7.1 视图状态进 URL：必须绕开路由导航（bug 修复，2026-09-15）
+
+- **需求**：点进个股日 K 再返回时恢复排序/筛选/页码 → 状态写进地址栏（`<前缀>_o/_l/_sb/_sd`、`st`、`xk`）。
+- **错误实现（初版，已废除）**：`useSearchParams().setSearchParams(next, { replace: true })`。
+  它在 v6 数据路由下会走一次真实导航，**把匹配到的路由元素整棵重挂载**。实测（回测详情页，900×600 窗口）：
+  点一次排序 → `Card loading` 重建 → `/report` 被重取（一次排序一次全量报告）→ 内容高度瞬间塌陷 →
+  滚动容器 `.main-content` 的 `scrollTop` 被夹回顶部。用户的复现路径「滚到交易明细 → 点排序 → 跳回页首」即此。
+- **正确实现**：`frontend/src/utils/urlState.ts` 的 `replaceSearchParams(mutate)` / `currentSearchParams()`
+  ——以 `window.location.search` 为唯一真实来源，合并参数后 `history.replaceState`。
+  不产生历史记录、不触发导航、不重挂载；前进/后退照常（浏览器恢复历史条目 URL，react-router 在 popstate 时重读地址栏）。
+- **同一收口**：`usePagedQuery`、回测报告页（`st`）、选股结果页（`xk`）、个股日 K 页（`period`/`adjust`）
+  全部改为「本地状态为准 + URL 单向镜像」；页面读 URL 只在挂载时一次（用 `useRef(currentSearchParams())` 快照，
+  不能进拉取依赖，否则写 URL 会反过来触发重新拉取）。
+- **实测（修复后，900×600 窗口，连点 5 次排序）**：`scrollTop` 恒为 1940、明细标题距顶恒为 189px、
+  组件零重挂载、`/report` 零重取；排序逐次生效（升序 -7,952.22 → 降序 4,994.64 → 清除 → …）；
+  返回后 URL/请求/首行与离开前逐字一致（`sort_by=profit&sort_dir=desc`）。
+
 ## §8 运行中任务可见性（P5）
 
 - 新端点 `GET /api/executions/active`（读 `jobs` 表，`status IN ('queued','running','cancelling')`，
@@ -379,3 +396,4 @@ recharts 只被报告页引用，懒加载后自然落入其 chunk。
 | 前端分页器成为"又一个抽象层" | 只有两个调用方（picks、trades/skips/open），接口收窄到 props（列 + fetcher + filters），不做插件化 |
 | 明细表排序语义变化（原先本地排序全量） | 排序键白名单与服务端实现，契约测试钉住；前端不再本地排序 |
 | 存量产物首次访问慢 | 由启动预热（§4.2.7）在进程起来时补齐；实测 14 个存量 run 全部自动建好索引，请求路径零自愈 |
+| 后人"顺手"把 URL 状态写回 `setSearchParams` | §7.1 记明代价（路由重挂载 → 详情重取 + 滚动跳顶 + 实测数字）；`urlState.ts` 的注释同源说明，并保留 `replaceSearchParams` 作为唯一写入口 |

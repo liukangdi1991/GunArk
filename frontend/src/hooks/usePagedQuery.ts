@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
 import type { Paged } from "../types/paging";
+import { currentSearchParams, replaceSearchParams } from "../utils/urlState";
 
 export interface PagedRequest {
   offset: number;
@@ -43,13 +43,13 @@ export function usePagedQuery<T>(options: {
   urlParamPrefix?: string;
 }): PagedQuery<T> {
   const { queryKey, fetchPage, initialLimit = 15, urlParamPrefix } = options;
-  const [searchParams, setSearchParams] = useSearchParams();
 
   // 初值只在挂载时取：之后 URL 由本 hook 写，避免与表单状态互相打架
   const initialState = useMemo<QueryState>(() => {
     if (!urlParamPrefix) {
       return { offset: 0, limit: initialLimit, sortDir: "asc" };
     }
+    const searchParams = currentSearchParams();
     const readNumber = (name: string, fallback: number) => {
       const raw = searchParams.get(`${urlParamPrefix}_${name}`);
       if (raw === null || raw === "") {
@@ -114,25 +114,25 @@ export function usePagedQuery<T>(options: {
     return () => controller.abort();
   }, [state, queryKey]);
 
-  // 状态 → URL（replace：翻页/排序不进历史栈；点进个股再返回时由 URL 恢复）
+  // 状态 → 地址栏（replaceState，不经路由导航：避免重挂载导致详情重取与滚动跳顶）
   useEffect(() => {
     if (!urlParamPrefix) {
       return;
     }
-    const next = new URLSearchParams(searchParams);
-    next.set(`${urlParamPrefix}_o`, String(state.offset));
-    next.set(`${urlParamPrefix}_l`, String(state.limit));
-    if (state.sortBy) {
-      next.set(`${urlParamPrefix}_sb`, state.sortBy);
-      next.set(`${urlParamPrefix}_sd`, state.sortDir);
-    } else {
-      next.delete(`${urlParamPrefix}_sb`);
-      next.delete(`${urlParamPrefix}_sd`);
-    }
-    if (next.toString() !== searchParams.toString()) {
-      setSearchParams(next, { replace: true });
-    }
-  }, [state, urlParamPrefix, searchParams, setSearchParams]);
+    replaceSearchParams((params) => {
+      const before = params.toString();
+      params.set(`${urlParamPrefix}_o`, String(state.offset));
+      params.set(`${urlParamPrefix}_l`, String(state.limit));
+      if (state.sortBy) {
+        params.set(`${urlParamPrefix}_sb`, state.sortBy);
+        params.set(`${urlParamPrefix}_sd`, state.sortDir);
+      } else {
+        params.delete(`${urlParamPrefix}_sb`);
+        params.delete(`${urlParamPrefix}_sd`);
+      }
+      return params.toString() !== before;
+    });
+  }, [state, urlParamPrefix]);
 
   const update = useCallback(
     (patch: Partial<QueryState>) => setState((cur) => ({ ...cur, ...patch })),
