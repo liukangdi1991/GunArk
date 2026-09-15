@@ -108,7 +108,8 @@ K 线图默认**前复权**（`apply_qfq`），而回测成交价来自本地行
 | `open_positions` 一行 | 1 条：`buy`（`source="open_position"`） | `buy_date`/`entry_price`/`shares`/`strategy`/`signal_date`；`return_pct` ← `unrealized_return_pct`（浮盈，供弹框显示），`profit` ← `unrealized_pnl` |
 | `skips` | 不产出（未成交没有买卖点） | — |
 
-- `strategy_name` 由既有 `_strategy_display_name(strategy)` 补（策略被删则回落 id，与表格列同规则）；
+- `strategy_name` 由既有 `_strategy_display_name(strategy)` 补：**查不到返回 `None`**（不是回落 id）——
+  与 `/trades` 端点同语义，显示层回落 `strategy_name ?? strategy` 由前端负责（已删除策略的历史报告仍可渲染）；
 - 输出按 `(date, side)` 稳定排序，同序时按 `strategy`、`buy_date` 兜底（全序，便于前端归并）；
 - 该端点**只读**：不建索引、不写盘、不改 `jobs`。
 
@@ -162,9 +163,26 @@ interface BarMark { label: string; count: number; items: BacktestMark[] }
 ```
 
 **接入点**：`StockKlinePage` 里 `payloadWithMarks = useMemo(...)`——有 marks 时
-`{ ...payload, bars: attachMarks(payload.bars, marks) }`，无 marks 时原样透传 `payload`；
-`<KlineChart payload={payloadWithMarks} ...>`。`KlineChart` 与 `useKline` 的既有契约不变（仍是纯展示 /
-纯取数），标记只是 bar 上的附加字段。
+`{ ...payload, bars: attachMarks(payload.bars, marks) }`，无 marks 时原样透传 `payload`。
+
+**图表更新机制（实测现状，实现前必须知道）**：`KlineChart` **只在挂载时读数据**
+（`setDataLoader` 的 `getBars` 由 `init` 触发，文件里没有任何 `resetData`/`updateData` 调用），
+`payload` 变化本身**不会**重画；页面靠 `{!loading && !payload && …}` 的条件渲染在切周期/复权时
+「卸载 → 重建」图表，所以那条路能刷新（实测：`k-line-chart-id` 由 `k_line_chart_1` 变为 `_2`，
+切回日线截图逐字节复原）。
+
+⇒ **marks 若晚于 K 线到达，仅换 `payload` 不会让 B/S 出现**。做法：给图表加数据版本 key，
+数据一变就重挂载（与既有机制同构，不新增生命周期）：
+
+```tsx
+<KlineChart
+  key={`${payloadWithMarks.code}-${payloadWithMarks.period}-${payloadWithMarks.adjust}-${marksRev}`}
+  payload={payloadWithMarks} mainOverlays={mainOverlays} subIndicators={subIndicators}
+/>
+```
+
+`marksRev` 是 marks 状态的递增版本号（无 `bt` 时恒为 0）。正常路径下 marks（1.6ms 过滤 + 本机网络）
+先于 K 线到位 ⇒ 只有一次挂载、用户看不到重建；marks 慢于 K 线时才多一次重建，发生在首屏加载期。
 
 ### 5.4 图表配置
 
@@ -291,4 +309,5 @@ interface BarMark { label: string; count: number; items: BacktestMark[] }
 | 同根多笔/多策略堆叠看不清 | 同向合并为 `B×n`；明细进弹框逐笔列出 |
 | 入口链接污染（URL 变长） | `bt` 单个短参数，不带策略勾选；清除按钮一键还原 |
 | 端点变成第二条读路径 | 复用 `_backtest_dataset_frame`，索引删/坏/缺失三种形态与分页端点同行为 |
-| marks 与 K 线**两次到达** → `resetData` 可能把视图重置回最新一根（用户看到「跳一下」） | 两条请求都在挂载时发起、marks 更快，正常路径下 marks 先到位（单次 `resetData`）；验收含 1b 的截屏比对。若实测确有跳动：把 marks 结果先写 ref、与 payload 合并后再触发一次数据刷新，或改用不重置视图的更新接口（实施时按实测定，不预设） |
+| marks 晚于 K 线到达 → 仅换 `payload` 不重画（图表只在挂载时读数据） | 用数据版本 key 重挂载图表（§5.3）；两条请求同在挂载时发起、marks 更快，正常路径只挂载一次；验收含 1b 的截屏比对 |
+| 图表重挂载丢失用户的缩放/滚动位置 | 标记只在首屏加载期到达；若用户已手动缩放则需要重建才显示标记——用 key 方案时「切周期」本来就会重建（现状如此），故不引入新的体验退化 |
