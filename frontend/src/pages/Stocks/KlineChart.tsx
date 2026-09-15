@@ -26,7 +26,7 @@ const CROSS_DOWN = "#8bc34a"; // DIFF 下穿零轴（COLORLIGREEN）
 const BT_BUY_BG = "#f57075"; // 浅红（买入）
 const BT_SELL_BG = "#66cc8d"; // 浅绿（卖出）
 const BT_TEXT = "#ffffff";
-const BT_OFFSET = 12; // 标记离 K 线沿的像素距离
+const BT_OFFSET = 6; // 标记中心离柱端的像素距离 = 徽章高度一半 → 徽章边缘正好贴住柱端
 
 /** 后端已按周期聚合完毕；此处 Period 仅作 v10 loader 门控与轴刻度形态。 */
 const PERIOD_SETTINGS: Record<KlineResponse["period"], Period> = {
