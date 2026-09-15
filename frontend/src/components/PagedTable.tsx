@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Alert, Table } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { PagedQuery } from "../hooks/usePagedQuery";
@@ -21,6 +22,19 @@ export function PagedTable<T extends object>({
   scrollX,
   emptyText,
 }: PagedTableProps<T>) {
+  // 排序受控：把 query 里的排序状态注入列的 sortOrder。
+  // 否则排序指示器只存在于 antd 表格内部——重挂载（如从个股日K返回）后指示器丢失，
+  // 用户下次翻页时 onChange 带出的 sorter 为空，排序状态就被丢掉了（2026-09-15 用户实测）。
+  const controlledColumns = useMemo(() => {
+    if (!query.sortBy) return columns;
+    const order = query.sortDir === "desc" ? ("descend" as const) : ("ascend" as const);
+    return columns.map((col) => {
+      const meta = col as { key?: string; dataIndex?: unknown };
+      const key = meta.key ?? (typeof meta.dataIndex === "string" ? meta.dataIndex : undefined);
+      return key === query.sortBy ? ({ ...col, sortOrder: order } as typeof col) : col;
+    });
+  }, [columns, query.sortBy, query.sortDir]);
+
   return (
     <>
       {query.error ? (
@@ -34,7 +48,7 @@ export function PagedTable<T extends object>({
       ) : null}
       <Table<T>
         rowKey={rowKey}
-        columns={columns}
+        columns={controlledColumns}
         dataSource={query.items}
         loading={query.loading}
         size="middle"
