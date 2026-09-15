@@ -371,7 +371,8 @@ def list_selection_results_payload(limit: int | None = None) -> dict:
                 continue
             try:
                 results.append(selection_result_payload(exec_dir.name))
-            except Exception:
+            except Exception as exc:
+                logger.warning("skip selection %s in list: %s", exec_dir.name, exc)
                 continue
     return {"results": results}
 
@@ -896,7 +897,9 @@ def list_backtest_results_payload(limit: int | None = None) -> dict:
                 continue
             try:
                 results.append(backtest_result_payload(exec_dir.name))
-            except Exception:
+            except Exception as exc:
+                # 静默跳过会让「历史上少了一条」无从解释：留痕（产物可能损坏/正在被删）
+                logger.warning("skip backtest %s in list: %s", exec_dir.name, exc)
                 continue
     return {"results": results}
 
@@ -1336,14 +1339,11 @@ def active_executions_payload() -> dict:
     """
     import sqlite3
 
-    from trendradar.app.jobs.persistence import JobStore
-    from trendradar.infrastructure.storage.connection import StorageConnection
-
-    store_root = _storage_root()
-    db_path = store_root / "app.db"
+    db_path = _storage_root() / "app.db"
     if not db_path.exists():
         return {"executions": []}
 
+    # 一条连接读全部：徽标每 10 秒轮询一次，别为每个作业各开一条连接
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
@@ -1351,13 +1351,22 @@ def active_executions_payload() -> dict:
             "SELECT job_id, job_type, status, created_at, started_at FROM jobs "
             "WHERE status IN ('queued', 'running', 'cancelling') ORDER BY id DESC"
         ).fetchall()
+        logs_by_job = {
+            row["job_id"]: [
+                r[0]
+                for r in conn.execute(
+                    "SELECT message FROM job_logs WHERE job_id = ? ORDER BY sequence",
+                    (row["job_id"],),
+                )
+            ]
+            for row in rows
+        }
     finally:
         conn.close()
 
-    store = JobStore(StorageConnection(store_root).db_path)
     executions = []
     for row in rows:
-        progress = parse_progress(store.get_logs(row["job_id"]))
+        progress = parse_progress(logs_by_job.get(row["job_id"], []))
         executions.append(
             {
                 "execution_id": row["job_id"],
