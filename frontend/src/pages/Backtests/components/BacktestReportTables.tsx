@@ -104,7 +104,10 @@ export const tradeColumns: ColumnsType<BacktestTrade> = [
     key: "code",
     width: 100,
     render: (_, record) => (
-      <Link to={`/stocks/${record.code}`}>{record.code}</Link>
+      // 带 bt：个股页据此只显示这次回测的买卖标记（spec M1）
+      <Link to={`/stocks/${record.code}?bt=${encodeURIComponent(record.execution_key)}`}>
+        {record.code}
+      </Link>
     ),
   },
   { title: "名称", dataIndex: "name", key: "name", width: 110, render: (value) => value || "-" },
@@ -175,7 +178,10 @@ export const openPositionColumns: ColumnsType<BacktestOpenPosition> = [
     key: "code",
     width: 100,
     render: (_, record) => (
-      <Link to={`/stocks/${record.code}`}>{record.code}</Link>
+      // 带 bt：个股页据此只显示这次回测的买卖标记（spec M1）
+      <Link to={`/stocks/${record.code}?bt=${encodeURIComponent(record.execution_key)}`}>
+        {record.code}
+      </Link>
     ),
   },
   { title: "名称", dataIndex: "name", key: "name", width: 110, render: (value) => value || "-" },
