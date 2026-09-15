@@ -150,3 +150,27 @@ export interface BacktestReportCounts {
 
 /** 明细数据集：与三个分页端点一一对应。 */
 export type BacktestDataset = "trades" | "skips" | "open-positions";
+
+/** 回测在个股上的一次买卖（个股日K B/S 标记的数据源）。 */
+export interface BacktestMark {
+  side: "buy" | "sell";
+  date: string;
+  price: number | null;
+  shares: number | null;
+  strategy: string;
+  /** 注册表查不到已删除策略时为 null，显示层回落 strategy */
+  strategy_name?: string | null;
+  signal_date?: string | null;
+  /** trade=已平仓成交；open_position=期末未平仓（只有买） */
+  source: "trade" | "open_position";
+  /** 买入标记恒为 null；卖出带该笔盈亏 */
+  profit: number | null;
+  /** 买入标记恒为 null；卖出带收益率（百分点），未平仓带浮动收益率 */
+  return_pct: number | null;
+}
+
+export interface BacktestMarksResponse {
+  execution_key: string;
+  code: string;
+  items: BacktestMark[];
+}

@@ -1,6 +1,18 @@
 // Spec: docs/superpowers/specs/2026-09-07-stock-kline-chart-design.md (v2.6)
+import type { BacktestMark } from "./backtest";
+
 export type KlinePeriod = "daily" | "weekly" | "monthly";
 export type AdjustMode = "qfq" | "none";
+
+/** 挂在 bar 上的回测买卖标记（由 utils/backtestMarks.attachMarks 写入）。 */
+export interface BarMark {
+  /** 显示文本：`B`、`S`、`B×2`、`S×3` */
+  label: string;
+  count: number;
+  /** 画图用的 y 值：买入取 bar.low、卖出取 bar.high */
+  value: number | null;
+  items: BacktestMark[];
+}
 
 export interface KlineBar {
   timestamp: number;
@@ -25,6 +37,9 @@ export interface KlineBar {
   xpsig_w20: number | null;
   xpsig_xlong: number | null;
   xpsig_xmid: number | null;
+  /** 回测买卖标记（仅当 URL 带 bt 时由 attachMarks 写入；未标记的 bar 为 null/缺省） */
+  bt_buy?: BarMark | null;
+  bt_sell?: BarMark | null;
 }
 
 export interface KlineResponse {

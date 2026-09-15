@@ -1,6 +1,7 @@
 import { requestJson } from "./apiClient";
 import type {
   BacktestDataset,
+  BacktestMarksResponse,
   BacktestReportResponse,
   BacktestResultsResponse,
 } from "../types/backtest";
@@ -45,6 +46,19 @@ export function getBacktestRows<T>(
   }
   return requestJson<Paged<T>>(
     `/api/backtest-results/${encodeURIComponent(executionKey)}/${dataset}?${params.toString()}`,
+    { signal },
+  );
+}
+
+/** 个股日K上的回测买卖标记（B/S 数据源，不分页）：失败只影响提示条，不影响 K 线。 */
+export function getBacktestMarks(
+  executionKey: string,
+  code: string,
+  signal?: AbortSignal,
+): Promise<BacktestMarksResponse> {
+  const params = new URLSearchParams({ code });
+  return requestJson<BacktestMarksResponse>(
+    `/api/backtest-results/${encodeURIComponent(executionKey)}/marks?${params.toString()}`,
     { signal },
   );
 }
