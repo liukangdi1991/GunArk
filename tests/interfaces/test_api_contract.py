@@ -1564,3 +1564,135 @@ def test_selection_backtest_accepts_strategy_names(client, monkeypatch):
     )
     assert bad.status_code == 400
     assert "策略不存在" in bad.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# backtest marks（个股日K上的买卖标记）
+# ---------------------------------------------------------------------------
+
+BT_MARKS_KEY = "20260820_100100_backtest_c3d4"
+
+
+def _marks_index_dir() -> Path:
+    from trendradar.interfaces.api.presenters import _executions_root
+
+    return _executions_root() / BT_MARKS_KEY / "backtest" / ".index"
+
+
+def test_marks_returns_buy_and_sell_for_trade(client):
+    resp = client.get(f"/api/backtest-results/{BT_MARKS_KEY}/marks?code=000001")
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["execution_key"] == BT_MARKS_KEY and payload["code"] == "000001"
+
+    items = payload["items"]
+    assert [i["side"] for i in items] == ["buy", "sell"]  # 按 (date, side) 升序
+
+    buy, sell = items
+    assert buy["date"] == "2026-08-11" and buy["price"] == 10.0 and buy["shares"] == 4000
+    assert buy["strategy"] == "bbi_kdj_b1" and buy["strategy_name"] == "B1战法"
+    assert buy["source"] == "trade" and buy["profit"] is None and buy["return_pct"] is None
+
+    assert sell["date"] == "2026-08-18" and sell["price"] == 10.8
+    assert sell["profit"] == 3100.0 and sell["return_pct"] == 7.8
+
+
+def test_marks_open_position_yields_buy_only(client):
+    resp = client.get(f"/api/backtest-results/{BT_MARKS_KEY}/marks?code=000002")
+    assert resp.status_code == 200, resp.text
+    items = resp.json()["items"]
+    assert len(items) == 1
+
+    only = items[0]
+    assert only["side"] == "buy" and only["source"] == "open_position"
+    assert only["date"] == "2026-08-11" and only["price"] == 10.0 and only["shares"] == 4000
+    assert only["profit"] == -10810.0 and only["return_pct"] == -27.0
+
+
+def test_marks_empty_for_skipped_code(client):
+    """600519 只出现在 skips 里：没有买卖点，但端点必须 200 空集合（不是 404）。"""
+    resp = client.get(f"/api/backtest-results/{BT_MARKS_KEY}/marks?code=600519")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["items"] == []
+
+
+def test_marks_unknown_execution_key_404(client):
+    resp = client.get("/api/backtest-results/20260101_000000_backtest_zzzz/marks?code=000001")
+    assert resp.status_code == 404
+
+
+@pytest.mark.parametrize("bad_key", ["abc..def", "a%5Cb"])
+def test_marks_rejects_traversal_in_key_400(client, bad_key):
+    resp = client.get(f"/api/backtest-results/{bad_key}/marks?code=000001")
+    assert resp.status_code == 400
+
+
+@pytest.mark.parametrize("bad_code", ["abc123", "00066", "1234567"])
+def test_marks_rejects_bad_code_422(client, bad_code):
+    resp = client.get(f"/api/backtest-results/{BT_MARKS_KEY}/marks?code={bad_code}")
+    assert resp.status_code == 422
+
+
+def test_marks_survives_deleted_index(client):
+    """索引目录是纯衍生加速器：删掉后 marks 仍逐字一致（回落 result.json）。"""
+    import shutil
+
+    url = f"/api/backtest-results/{BT_MARKS_KEY}/marks?code=000001"
+    first = client.get(url).json()
+    index_dir = _marks_index_dir()
+    if index_dir.is_dir():
+        shutil.rmtree(index_dir)
+    assert client.get(url).json() == first
+
+
+def test_marks_is_read_only(client):
+    """纯读端点：不得顺手建索引（建索引是 worker 与启动预热的事）。"""
+    import shutil
+
+    index_dir = _marks_index_dir()
+    if index_dir.is_dir():
+        shutil.rmtree(index_dir)
+    url = f"/api/backtest-results/{BT_MARKS_KEY}/marks?code=000001"
+    assert client.get(url).status_code == 200
+    assert not index_dir.exists()
+
+
+def test_marks_multi_strategy_and_open_position_both_listed(client, tmp_path):
+    """多策略命中同一只票 + trades 与 open_positions 并存 + 顺序稳定（spec §7.1 3b/3c/3d）。"""
+    key = "20260821_090000_backtest_m9n8"
+    bt_dir = tmp_path / "storage" / "objects" / "executions" / key / "backtest"
+    bt_dir.mkdir(parents=True)
+    (bt_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "trades": [
+                    {"strategy": "bbi_kdj_b1", "code": "000001", "signal_date": "2026-08-10",
+                     "buy_date": "2026-08-11", "sell_date": "2026-08-18", "buy_price": 10.0,
+                     "sell_price": 10.8, "shares": 100, "profit": 80.0, "return_pct": 8.0},
+                    {"strategy": "peak_kdj", "code": "000001", "signal_date": "2026-08-10",
+                     "buy_date": "2026-08-11", "sell_date": "2026-08-19", "buy_price": 10.1,
+                     "sell_price": 9.9, "shares": 200, "profit": -40.0, "return_pct": -2.0},
+                ],
+                "open_positions": [
+                    {"strategy": "bbi_kdj_b1", "code": "000001", "signal_date": "2026-08-12",
+                     "buy_date": "2026-08-13", "target_sell_date": "2026-08-20", "shares": 300,
+                     "entry_price": 9.5, "unrealized_pnl": 12.0, "unrealized_return_pct": 4.0},
+                ],
+                "skips": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    url = f"/api/backtest-results/{key}/marks?code=000001"
+    items = client.get(url).json()["items"]
+    assert len(items) == 5  # 2 买 + 2 卖（两策略）+ 1 未平仓买
+    assert [(i["side"], i["source"], i["strategy"]) for i in items] == [
+        ("buy", "trade", "bbi_kdj_b1"),
+        ("buy", "trade", "peak_kdj"),
+        ("buy", "open_position", "bbi_kdj_b1"),
+        ("sell", "trade", "bbi_kdj_b1"),
+        ("sell", "trade", "peak_kdj"),
+    ]
+    assert client.get(url).json() == client.get(url).json()  # 顺序稳定
