@@ -67,6 +67,13 @@ function toBarMark(letter: string, items: BacktestMark[], value: number | null):
   };
 }
 
+/** 按策略 id 白名单过滤标记（null/空 = 不过滤，原样返回）。spec M8：图上只显示勾选的策略。 */
+export function filterMarksByStrategies(marks: BacktestMark[], strategies: readonly string[] | null): BacktestMark[] {
+  if (!strategies || strategies.length === 0) return marks;
+  const allow = new Set(strategies);
+  return marks.filter((mark) => allow.has(mark.strategy));
+}
+
 /** 提示条计数：按**笔数**统计（不是 bar 数）。 */
 export function countMarks(marks: BacktestMark[]): { buy: number; sell: number } {
   let buy = 0;

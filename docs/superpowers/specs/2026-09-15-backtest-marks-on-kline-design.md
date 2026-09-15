@@ -23,6 +23,7 @@
 | M5 | 期末未平仓只出 `B`（引擎口径：有买无卖） | 设计（与 `open_positions` 数据集一致）|
 | M6 | 切周期（日/周/月）、切复权、切指标，标记跟随；刷新/分享 URL 后仍在 | 设计（与既有 URL 状态一致）|
 | M7 | 标记拉取失败**不得影响 K 线渲染** | 设计（既有降级哲学：辅助信息不阻塞主数据）|
+| M8 | 标记**随报告页勾选的策略过滤**：勾选子集时个股链接带 `&st=<ids>`，个股页只显示勾选策略的买卖标记；全选/默认不带 `st`（URL 干净） | 用户 2026-09-15 要求（推翻 §8 初版取舍；实测当时 5 个 run 全单策略、同股多策略 0 例，故此前按简单版落地）|
 
 ## 3. 方案选型（画法）
 
@@ -153,6 +154,7 @@ StockKlinePage（挂载）
 | 同根同向多笔 | 计数显示 `B×2` / `S×3`；明细数组随行，弹框里逐笔列出 |
 | 同根同时有 B 和 S | 各自独立（B 在下沿、S 在上沿），不冲突 |
 | 成交日 > 最后一根 bar | 丢弃（理论上不可达：回测与K线同源） |
+| 带 st（策略白名单） | 先按 `mark.strategy ∈ st` 过滤再归并（`filterMarksByStrategies`，null/空 = 不过滤） |
 | 空 marks / 无 `bt` | 返回原 bars（零字段、零渲染） |
 
 产出字段（挂在 bar 上，随行传递，供 figure 与弹框共用）：
@@ -231,16 +233,19 @@ interface BarMark { label: string; count: number; items: BacktestMark[] }
 |---|---|
 | 加载中 | 「正在加载回测标记…」（不阻塞图表） |
 | 成功且非空 | 上面那条（`查看报告` → `/backtests/{key}`；`清除` → 删 URL 的 `bt` 并清空 marks） |
-| 成功但为空 | 「该回测在这只票上没有成交」（不显示「清除」以外的操作） |
+| 成功但为空（带 st 过滤） | 「勾选的策略在这只票上没有成交」 |
+| 成功但为空（无过滤） | 「该回测在这只票上没有成交」 |
+| 过滤生效且非空 | 计数后追加「，仅勾选策略」 |
 | 失败 | 「回测标记加载失败：{原因}」+ `清除`；**K 线照常渲染** |
 
 ### 5.7 入口改造（M1）
 
 `frontend/src/pages/Backtests/components/BacktestReportTables.tsx`：
 
-- `tradeColumns` 代码列：`Link to={/stocks/${code}?bt=${execution_key}}`（`execution_key` 已在行数据里，无需新 props）；
-- `openPositionColumns` 代码列：同上（保证至少有一个 B）；
-- `skipColumns`：**不带** `bt`（未成交 ⇒ 无买卖点）；
+- `tradeColumns` / `openPositionColumns` 改为工厂 `buildXxx(strategyFilter)`（页面按勾选状态 memo 传入），
+  代码列链接经 `stockHref(record, strategyFilter)` 构造：恒带 `bt`；**勾选为子集时**再带 `&st=<ids>`
+  （全选时不带——URL 干净，语义也等价）；
+- `skipColumns`：**不带** `bt`/`st`（未成交 ⇒ 无买卖点）；
 - 选股结果页的代码/名称链接不动。
 
 ## 6. 错误处理
@@ -301,6 +306,7 @@ interface BarMark { label: string; count: number; items: BacktestMark[] }
 | 切周期/复权 | URL 保持 `bt`、计数不变（`?bt=…&period=monthly&adjust=qfq`）✓ |
 | 清除 | 徽章消失（视觉确认）、提示条消失、URL 只去掉 `bt`（保留 period/adjust）、页面不重挂载 ✓ |
 | 负例 | 无成交票 → 「该回测在这只票上没有成交」；不存在 key → 一行失败说明且 **K 线照常渲染**；非法 `bt` → 视为无标记并从地址栏清掉 ✓ |
+| st 过滤（M8） | 报告默认链接不带 st ✓；`?bt=…&st=single_needle_down_20` → `（B 1 / S 1，仅勾选策略）` ✓；`st=peak_kdj`（不在该 run）→ 「勾选的策略在这只票上没有成交」✓；切周期保留 `bt+st` ✓；清除一并摘掉 ✓ |
 | 未覆盖 | 悬停触发弹框的**实拍**（无头隐藏页 rAF 被节流，绘制帧概率性缺失）——弹框内容改由纯函数 + 真实数据断言；周/月线徽章位置由映射单测 + 切换态断言覆盖，非像素级实拍 |
 
 ### 7.4 验收标准
@@ -315,8 +321,8 @@ interface BarMark { label: string; count: number; items: BacktestMark[] }
 
 - 不做悬停浮层/自建 tooltip（M2 已定：字母 + 十字光标弹框）;
 - 不做跨回测汇总、不做「最近一次回测」常驻标记（M1 已定）；
-- 标记**不随报告页的策略勾选过滤**（个股页只有一只票，标记应回答「这次回测在这只票上做了什么」；
-  跟着勾选走会让链接带一长串 `st`，清除与分享逻辑变复杂）。弹框里逐笔带策略名，足够消除歧义；
+- ~~标记不随报告页的策略勾选过滤~~ → **2026-09-15 用户要求改为随勾选过滤（M8）**：勾选子集时
+  链接带 `st`、个股页用 `filterMarksByStrategies` 过滤；全选不带 `st`，URL 仍干净；后端不动；
 - 不做日 K 之外的周期专有标记（周/月线按规则合并即可）；
 - 不复活 `anchor=` 定位参数（2026-09-11 已撤销）;
 - 不动回测引擎、不动分页契约、不改 `jobs` 表、不加缓存层。

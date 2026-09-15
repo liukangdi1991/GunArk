@@ -1000,7 +1000,14 @@ Expected: 干净（无未提交改动；dist 已 gitignore）
    （原计划放在 KlineChart 内部），这样可用真实数据直接断言，不依赖无头环境的绘制帧。
 3. **非法 `bt` 要在挂载时从地址栏清掉**（spec §5.1 已写、初版漏做）：`?bt=bad key!` → 地址栏留下
    `?period=daily&adjust=qfq`，不产生会 404 的可分享脏参数。
-4. **验证手法的环境约束**（下次直接用这套）：
+4. **M8（用户追加，2026-09-15）：标记随报告页勾选的策略过滤**
+   - `buildTradeColumns/buildOpenPositionColumns` 改为工厂（页面按勾选状态 memo 传入），
+     勾选为**子集**时个股链接带 `&st=<ids>`（全选不带，URL 干净）；`skipColumns` 仍不带任何参数；
+   - 个股页 `filterMarksByStrategies(marks, st)` 过滤后再归并；提示条计数用过滤后的标记，
+     并新增两种文案（「仅勾选策略」标注、「勾选的策略在这只票上没有成交」）；清除时 bt/st 一并摘掉；
+   - 后端不动（marks 自带 strategy id）；多策略数据的子集链接分支无真实数据可点，
+     由 tsc + 代码走查覆盖，过滤路径用手工 st 参数端到端实测（匹配/不匹配/切周期/清除）。
+5. **验证手法的环境约束**（下次直接用这套）：
    - `page.evaluate` 在本 harness 里运行于**隔离世界**：页面里 `window.__x` 的补丁、React fiber、
      画布 `getImageData/toDataURL` 都读不到；`evaluateOnNewDocument` 也不生效。
    - 无头隐藏页的 **rAF 被节流**（探针从不触发）⇒ 依赖「下一帧」的绘制不可靠；

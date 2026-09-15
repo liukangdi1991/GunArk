@@ -18,7 +18,12 @@ import type {
 } from "../../types/backtest";
 import { formatDateRange, formatPercent, parseFiniteNumber } from "../../utils/format";
 import { formatPlainPercent } from "./components/BacktestSignedValue";
-import { buildSummaryColumns, openPositionColumns, skipColumns, tradeColumns } from "./components/BacktestReportTables";
+import {
+  buildOpenPositionColumns,
+  buildSummaryColumns,
+  buildTradeColumns,
+  skipColumns,
+} from "./components/BacktestReportTables";
 import { TradeReturnTrendCards } from "./components/TradeReturnTrendCards";
 
 const { Paragraph, Text, Title } = Typography;
@@ -151,6 +156,23 @@ export function BacktestReportPage() {
     },
     [],
   );
+  // M8：勾选了策略子集时，个股链接带 st（个股页只显示勾选策略的买卖标记）；全选时不带
+  const allStrategies = useMemo(() => (run?.summary ?? []).map((item) => item.strategy), [run]);
+  const marksStrategyFilter = useMemo(
+    () =>
+      allStrategies.length > 0 &&
+      selectedStrategies.length > 0 &&
+      selectedStrategies.length < allStrategies.length
+        ? selectedStrategies
+        : null,
+    [allStrategies, selectedStrategies],
+  );
+  const tradeColumns = useMemo(() => buildTradeColumns(marksStrategyFilter), [marksStrategyFilter]);
+  const openPositionColumns = useMemo(
+    () => buildOpenPositionColumns(marksStrategyFilter),
+    [marksStrategyFilter],
+  );
+
   const overviewWinRate = weightedWinRate(selectedSummaries);
   const overviewBestReturn = bestTotalReturn(selectedSummaries);
   const overviewTrades = totalTrades(selectedSummaries);

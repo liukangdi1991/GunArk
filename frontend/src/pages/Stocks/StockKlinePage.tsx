@@ -7,8 +7,8 @@ import type { BacktestMark } from "../../types/backtest";
 import type { AdjustMode, KlineBar, KlinePeriod, StockSnapshot } from "../../types/kline";
 import { getBacktestMarks } from "../../services/backtests";
 import { getStockSnapshot } from "../../services/marketData";
-import { attachMarks, countMarks } from "../../utils/backtestMarks";
-import { currentSearchParams, replaceSearchParams } from "../../utils/urlState";
+import { attachMarks, countMarks, filterMarksByStrategies } from "../../utils/backtestMarks";
+import { currentSearchParams, readListParam, replaceSearchParams } from "../../utils/urlState";
 import { KlineChart } from "./KlineChart";
 import { useKline } from "./useKline";
 
@@ -101,6 +101,11 @@ export default function StockKlinePage() {
   const [marksLoading, setMarksLoading] = useState(Boolean(btKey));
   const [marksError, setMarksError] = useState("");
   const [btCleared, setBtCleared] = useState(false);
+  // M8：报告页勾选了策略子集时链接带 st → 只显示这些策略的买卖标记
+  const marksStrategyFilter = useMemo(() => {
+    const list = readListParam(initialParams.current, "st");
+    return list && list.length > 0 ? list : null;
+  }, []);
 
   const normalizePeriod = (raw: string | null): KlinePeriod =>
     raw === "weekly" || raw === "monthly" ? raw : "daily"; // 白名单归一（N10）
@@ -158,18 +163,26 @@ export default function StockKlinePage() {
   }, [btKey, code, codeValid, btCleared]);
 
   // 标记按日期归并到 bar（纯函数，spec §5.3）；无标记时原样透传
-  const payloadWithMarks = useMemo(
-    () => (payload && marks && marks.length > 0 ? { ...payload, bars: attachMarks(payload.bars, marks) } : payload),
-    [payload, marks],
+  const visibleMarks = useMemo(
+    () => filterMarksByStrategies(marks ?? [], marksStrategyFilter),
+    [marks, marksStrategyFilter],
   );
-  const markCounts = useMemo(() => countMarks(marks ?? []), [marks]);
+  const payloadWithMarks = useMemo(
+    () =>
+      payload && visibleMarks && visibleMarks.length > 0
+        ? { ...payload, bars: attachMarks(payload.bars, visibleMarks) }
+        : payload,
+    [payload, visibleMarks],
+  );
+  const markCounts = useMemo(() => countMarks(visibleMarks), [visibleMarks]);
   const clearBt = useCallback(() => {
     setBtCleared(true);
     setMarks(null);
     setMarksRev((n) => n + 1);
     replaceSearchParams((params) => {
-      const had = params.has("bt");
+      const had = params.has("bt") || params.has("st");
       params.delete("bt");
+      params.delete("st");
       return had;
     });
   }, []);
@@ -301,8 +314,12 @@ export default function StockKlinePage() {
               : marksError
                 ? `回测标记加载失败：${marksError}`
                 : markCounts.buy + markCounts.sell === 0
-                  ? "该回测在这只票上没有成交"
-                  : `正在显示回测 ${btKey} 的买卖标记（B ${markCounts.buy} / S ${markCounts.sell}）`
+                  ? marks && marks.length > 0 && marksStrategyFilter
+                    ? "勾选的策略在这只票上没有成交"
+                    : "该回测在这只票上没有成交"
+                  : `正在显示回测 ${btKey} 的买卖标记（B ${markCounts.buy} / S ${markCounts.sell}${
+                      marksStrategyFilter ? "，仅勾选策略" : ""
+                    }）`
           }
           action={
             <Space>

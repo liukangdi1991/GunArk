@@ -12,6 +12,13 @@ import { formatPlainPercent, SignedValue, winRateClassName } from "./BacktestSig
 
 const { Text } = Typography;
 
+/** 个股链接：勾选了策略子集时带 st，个股页只显示勾选策略的买卖标记（spec M8）；全选时不带（URL 干净）。 */
+function stockHref(record: { code: string; execution_key: string }, strategyFilter: readonly string[] | null): string {
+  const params = new URLSearchParams({ bt: record.execution_key });
+  if (strategyFilter && strategyFilter.length > 0) params.set("st", strategyFilter.join(","));
+  return `/stocks/${record.code}?${params.toString()}`;
+}
+
 /** 策略列显示中文名；`strategy`（id）继续当 rowKey 与筛选键，不随改名漂移。 */
 function strategyLabel(record: { strategy: string; strategy_name?: string | null }) {
   return record.strategy_name || record.strategy;
@@ -96,7 +103,8 @@ export function buildSummaryColumns(capitalMode?: string): ColumnsType<BacktestS
   return [...summaryBaseColumns, ...summaryMoneyColumns, ...(tracksNav ? summaryNavColumns : [])];
 }
 
-export const tradeColumns: ColumnsType<BacktestTrade> = [
+export function buildTradeColumns(strategyFilter: readonly string[] | null = null): ColumnsType<BacktestTrade> {
+  return [
   { title: "策略", dataIndex: "strategy", key: "strategy", width: 170, render: (_, record) => strategyLabel(record) },
   {
     title: "代码",
@@ -104,10 +112,8 @@ export const tradeColumns: ColumnsType<BacktestTrade> = [
     key: "code",
     width: 100,
     render: (_, record) => (
-      // 带 bt：个股页据此只显示这次回测的买卖标记（spec M1）
-      <Link to={`/stocks/${record.code}?bt=${encodeURIComponent(record.execution_key)}`}>
-        {record.code}
-      </Link>
+      // 带 bt（该次回测的标记）；勾选子集时再带 st（只显示勾选策略的标记，spec M8）
+      <Link to={stockHref(record, strategyFilter)}>{record.code}</Link>
     ),
   },
   { title: "名称", dataIndex: "name", key: "name", width: 110, render: (value) => value || "-" },
@@ -142,7 +148,8 @@ export const tradeColumns: ColumnsType<BacktestTrade> = [
   { title: "卖出价", dataIndex: "sell_price", key: "sell_price", width: 100, render: (value) => formatNumber(value, 3) },
   { title: "股数", dataIndex: "shares", key: "shares", width: 90 },
   { title: "延期", dataIndex: "sell_postpone_days", key: "sell_postpone_days", width: 80 },
-];
+  ];
+}
 
 export const skipColumns: ColumnsType<BacktestSkip> = [
   { title: "策略", dataIndex: "strategy", key: "strategy", width: 170, render: (_, record) => strategyLabel(record) },
@@ -170,7 +177,8 @@ export const skipColumns: ColumnsType<BacktestSkip> = [
   { title: "原因", dataIndex: "reason", key: "reason", width: 220 },
 ];
 
-export const openPositionColumns: ColumnsType<BacktestOpenPosition> = [
+export function buildOpenPositionColumns(strategyFilter: readonly string[] | null = null): ColumnsType<BacktestOpenPosition> {
+  return [
   { title: "策略", dataIndex: "strategy", key: "strategy", width: 170, render: (_, record) => strategyLabel(record) },
   {
     title: "代码",
@@ -178,10 +186,8 @@ export const openPositionColumns: ColumnsType<BacktestOpenPosition> = [
     key: "code",
     width: 100,
     render: (_, record) => (
-      // 带 bt：个股页据此只显示这次回测的买卖标记（spec M1）
-      <Link to={`/stocks/${record.code}?bt=${encodeURIComponent(record.execution_key)}`}>
-        {record.code}
-      </Link>
+      // 带 bt（该次回测的标记）；勾选子集时再带 st（只显示勾选策略的标记，spec M8）
+      <Link to={stockHref(record, strategyFilter)}>{record.code}</Link>
     ),
   },
   { title: "名称", dataIndex: "name", key: "name", width: 110, render: (value) => value || "-" },
@@ -242,3 +248,4 @@ export const openPositionColumns: ColumnsType<BacktestOpenPosition> = [
     sorter: true,
   },
 ];
+}
