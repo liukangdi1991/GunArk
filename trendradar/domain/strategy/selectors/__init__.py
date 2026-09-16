@@ -14,6 +14,7 @@ from trendradar.domain.strategy.selectors.single_needle_down_20 import SingleNee
 from trendradar.domain.strategy.selectors.brick_chart import BrickChartSelector
 from trendradar.domain.strategy.selectors.oversold_bottom_fishing import OversoldBottomFishingSelector
 from trendradar.domain.strategy.selectors.ultimate_brick_chart import UltimateBrickChartSelector
+from trendradar.domain.strategy.selectors.duo_kong_trend_balance import DuoKongTrendBalanceSelector
 
 
 def register_all():
@@ -121,4 +122,12 @@ def register_all():
         description="MA34/55/144/233 粘合（短间距2-6% + 长线多头）+ 收盘在MA55-MA144间 + MACD DIF>0 + 流通市值>50亿",
         selector_class=MacdMaConvergenceSelector,
         default_params={"mv_min_yi": 50},
+    ))
+
+    register(StrategyDefinition(
+        strategy_id="duo_kong_trend_balance", name="多空趋势平衡",
+        description="多空线收敛：近10日内≥5日 短期线贴多空线(偏离<0.3%) + 流通市值≥50亿",
+        selector_class=DuoKongTrendBalanceSelector,
+        default_params={"analysis_window": 10, "min_balance_days": 5,
+                        "balance_threshold": 0.003, "circ_mv_min_yi": 50},
     ))
