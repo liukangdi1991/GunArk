@@ -24,7 +24,7 @@ const { Text, Title } = Typography;
 
 function resultMessage(execution: Execution): string {
   if (execution.status === "success") {
-    return execution.result_url ? "执行完成，2 秒后自动打开结果页。" : "执行完成。";
+    return execution.result_url ? "执行完成。可点击下方按钮查看结果，运行日志保留在本页。" : "执行完成。";
   }
   if (execution.status === "cancelled") {
     return "任务已停止。";
@@ -43,7 +43,6 @@ function splitConsoleText(pendingText: string, text: string) {
 
 export function ExecutionConsolePage() {
   const { executionId = "" } = useParams();
-  const navigate = useNavigate();
   const [execution, setExecution] = useState<Execution | null>(null);
   const [lines, setLines] = useState<string[]>([]);
   const [pendingText, setPendingText] = useState("");
@@ -51,7 +50,6 @@ export function ExecutionConsolePage() {
   const [errorMessage, setErrorMessage] = useState("");
   const [cancelErrorMessage, setCancelErrorMessage] = useState("");
   const [cancelSubmitting, setCancelSubmitting] = useState(false);
-  const redirectedRef = useRef(false);
   const consoleRef = useRef<HTMLDivElement | null>(null);
   const offsetRef = useRef(0);
   const pendingTextRef = useRef("");
@@ -149,18 +147,9 @@ export function ExecutionConsolePage() {
     }
   }, [autoScroll, lines]);
 
-  useEffect(() => {
-    if (!execution || execution.status !== "success" || !execution.result_url || redirectedRef.current) {
-      return;
-    }
-
-    redirectedRef.current = true;
-    const timer = window.setTimeout(() => {
-      navigate(execution.result_url || "/"); // SPA 内跳转：控制台已在主框架内（P5）
-    }, 2000);
-
-    return () => window.clearTimeout(timer);
-  }, [execution, navigate]);
+  // 运行日志是本页的主体：作业完成后**停留在本页**供回看，
+  // 结果入口用底部结果面板的「立即查看结果」按钮（不再自动跳转——
+  // 用户想在结束后阅读运行日志，2 秒后被甩到结果页会什么都看不到，2026-09-15 反馈）。
 
   const renderedLines = pendingText ? lines.concat(pendingText) : lines;
 
