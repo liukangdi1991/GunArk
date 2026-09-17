@@ -4,7 +4,7 @@ TDX 语义:
   C1 = MT 振荡器转升（当日 MT > 昨日 MT，且此前在回落，反弹力度 ≥ 前期跌幅）
   C2 = DD2 = C - 2*REF(C,1) + REF(C,2) > 0 且 DD2 = HHV(DD2,5)
   C3 = ZXK < DKK（双线下方）
-  NEW = 近 6 个交易日中，前 5 个交易日的 MT 逐日下行（绿柱），当日 MT 回升（红柱）
+  NEW = 近 6 根 MT 砖（compute_mt_brick 着色）：前 5 根绿砖（MT 下行），当日红/橙砖（MT 上行）
   选股 = C1 AND C2 AND C3 AND NEW
 
 未包含 C4（收盘 < ZXK）和 C5（MACD DIF 拐头）。
@@ -16,7 +16,7 @@ import time
 
 import polars as pl
 
-from trendradar.domain.strategy.formulas.mt_oscillator import compute_mt
+from trendradar.domain.strategy.formulas.mt_oscillator import compute_mt_brick
 from trendradar.domain.strategy.protocol import (
     SelectionStrategy, SelectionContext, SelectionResult, WarmupResult,
 )
@@ -48,7 +48,7 @@ class OversoldReboundSelector(SelectionStrategy):
         parts = []
         for g in market_data.partition_by("code"):
             close = g["close"]
-            mt = compute_mt(
+            brick = compute_mt_brick(
                 g["high"], g["low"], close,
                 n=p.get("n", 4), m=p.get("m", 6), t=p.get("t", 4),
             )
@@ -57,7 +57,8 @@ class OversoldReboundSelector(SelectionStrategy):
                     - close.ewm_mean(alpha=2.0 / (diff_slow + 1), adjust=False))
             dd2 = close - 2 * close.shift(1) + close.shift(2)
             parts.append(g.with_columns([
-                mt, zxk.alias("zxk"), diff.alias("diff"), dd2.alias("dd2"),
+                brick["mt"], brick["mt_prev"], brick["mt_color"],
+                zxk.alias("zxk"), diff.alias("diff"), dd2.alias("dd2"),
             ]))
         df = pl.concat(parts).with_columns([dkk.alias("dkk")])
         grouped = {g["code"][0]: g for g in df.partition_by("code")}
@@ -95,13 +96,15 @@ class OversoldReboundSelector(SelectionStrategy):
             if not (latest["zxk"] < latest["dkk"]):
                 continue
 
-            # NEW：近 6 日中，前 5 天 MT 逐日下行（绿柱），当日 MT 回升（红柱）
-            # MT 值序列（最近 6 根）：v0 ≥ v1 ≥ … ≥ v4 且 v5 > v4
-            mt_6 = mt[-6:]
-            if len(mt_6) < 6:
+            # NEW：近 6 根 MT 砖，前 5 根绿砖（MT 下行），当日红砖或橙砖（MT 上行反弹；
+            # 橙 = 绿后红且力度更强，与 C1 力度条件同义，故一并接受）
+            colors = hist["mt_color"].to_list()[-6:]
+            if len(colors) < 6:
                 continue
-            if not all(mt_6[i] > mt_6[i + 1] for i in range(5)):
-                continue  # 不满足绿柱序列
+            if not all(c == "green" for c in colors[:5]):
+                continue
+            if colors[5] not in ("red", "orange"):
+                continue
 
             selected.append(code)
         return SelectionResult(
