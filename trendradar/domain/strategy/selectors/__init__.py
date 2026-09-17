@@ -13,6 +13,7 @@ from trendradar.domain.strategy.selectors.macd_ma_convergence import MacdMaConve
 from trendradar.domain.strategy.selectors.single_needle_down_20 import SingleNeedleDown20Selector
 from trendradar.domain.strategy.selectors.brick_chart import BrickChartSelector
 from trendradar.domain.strategy.selectors.oversold_bottom_fishing import OversoldBottomFishingSelector
+from trendradar.domain.strategy.selectors.oversold_rebound import OversoldReboundSelector
 from trendradar.domain.strategy.selectors.ultimate_brick_chart import UltimateBrickChartSelector
 from trendradar.domain.strategy.selectors.duo_kong_trend_balance import DuoKongTrendBalanceSelector
 
@@ -125,9 +126,18 @@ def register_all():
     ))
 
     register(StrategyDefinition(
+        strategy_id="oversold_rebound", name="超跌反弹",
+        description="MT 连续5日绿柱后当日转红 + 收盘二阶差分新高 + 双线下方",
+        selector_class=OversoldReboundSelector,
+        default_params={"n": 4, "m": 6, "t": 4,
+                        "m1": 14, "m2": 28, "m3": 57, "m4": 114,
+                        "ema1": 10, "dif_fast": 12, "dif_slow": 26,
+                        "dd2_window": 5},
+    ))
+    register(StrategyDefinition(
         strategy_id="duo_kong_trend_balance", name="多空趋势平衡",
         description="多空线收敛：近10日内≥5日 短期线贴多空线(偏离<0.3%) + 流通市值≥50亿",
         selector_class=DuoKongTrendBalanceSelector,
-        default_params={"analysis_window": 10, "min_balance_days": 5,
-                        "balance_threshold": 0.003, "circ_mv_min_yi": 50},
+        default_params={"analysis_window": 7,
+                        "balance_threshold": 0.008, "circ_mv_min_yi": 50},
     ))

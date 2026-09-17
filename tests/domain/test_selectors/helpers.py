@@ -29,6 +29,7 @@ make_perfect_b1_defn = lambda: get_defn("perfect_b1_v2")
 make_big_bullish_volume_defn = lambda: get_defn("big_bullish_volume")
 make_volume_spike_balance_defn = lambda: get_defn("volume_spike_balance")
 make_duo_kong_trend_balance_defn = lambda: get_defn("duo_kong_trend_balance")
+make_oversold_rebound_defn = lambda: get_defn("oversold_rebound")
 
 
 def make_empty_df():
