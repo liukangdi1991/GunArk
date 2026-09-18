@@ -1784,3 +1784,45 @@ def test_marks_multi_strategy_and_open_position_both_listed(client, tmp_path):
         ("sell", "trade", "peak_kdj"),
     ]
     assert client.get(url).json() == client.get(url).json()  # 顺序稳定
+
+
+def test_console_payload_no_new_lines_returns_empty_text(tmp_path, monkeypatch):
+    """无新日志时 text 必须是空串，不得返回孤立换行符。
+
+    控制台页每秒轮询一次；旧实现 `join([]) + "\\n"` 会给每次空轮询返回 "\\n"，
+    前端切分后往日志数组累积一个空行——批量选股静默期（预热/逐日处理）每秒
+    一个，几分钟后控制台全是空行（2026-09-18 用户报告）。
+    """
+    monkeypatch.setenv("TREND_RADAR_RUNTIME_ROOT", str(tmp_path))
+    from trendradar.app.jobs.persistence import JobStore
+    from trendradar.infrastructure.storage.connection import StorageConnection
+    from trendradar.infrastructure.storage.schema import init_schema
+
+    sc = StorageConnection(tmp_path / "storage")
+    sc.storage_root.mkdir(parents=True, exist_ok=True)
+    init_schema(sc.connect())
+    store = JobStore(sc.db_path)
+    job_id = store.create_job("batch_selection", {})
+    for i in range(3):
+        store.append_log(job_id, i + 1, "INFO", f"line {i + 1}")
+
+    class FakeExecutor:
+        def get_state(self, job_id):
+            return {"status": "running", "job_type": "batch_selection"}
+
+    from trendradar.interfaces.api.presenters import console_payload
+
+    executor = FakeExecutor()
+    first = console_payload(executor, job_id, offset=0)
+    assert [l for l in first["text"].split("\n") if l] == ["line 1", "line 2", "line 3"]
+    assert first["offset"] == 3
+
+    # 追踪到已读位置：无新日志 → text 必须为空串（旧实现返回 "\n"）
+    second = console_payload(executor, job_id, offset=first["offset"])
+    assert second["text"] == ""
+
+    # 追加一行后再轮询：只返回新行，旧内容不重复
+    store.append_log(job_id, 4, "INFO", "line 4")
+    third = console_payload(executor, job_id, offset=first["offset"])
+    assert [l for l in third["text"].split("\n") if l] == ["line 4"]
+    assert third["offset"] == 4
