@@ -63,6 +63,33 @@ export function getBacktestMarks(
   );
 }
 
+/** 个股页「上一只/下一只」导航：按交易明细当前排序去重取股票有序列表。 */
+export interface TradeCodeEntry {
+  code: string;
+  name?: string | null;
+}
+
+export interface TradeCodesResponse {
+  codes: TradeCodeEntry[];
+  total: number;
+}
+
+export function getBacktestTradeCodes(
+  executionKey: string,
+  query: { sortBy?: string; sortDir?: "asc" | "desc"; strategies?: string[] },
+  signal?: AbortSignal,
+): Promise<TradeCodesResponse> {
+  const params = new URLSearchParams();
+  if (query.sortBy) params.set("sort_by", query.sortBy);
+  if (query.sortDir) params.set("sort_dir", query.sortDir);
+  for (const strategy of query.strategies ?? []) params.append("strategies", strategy);
+  const qs = params.toString();
+  return requestJson<TradeCodesResponse>(
+    `/api/backtest-results/${encodeURIComponent(executionKey)}/trade-codes${qs ? `?${qs}` : ""}`,
+    { signal },
+  );
+}
+
 export function deleteBacktestResults(executionKeys?: string[]): Promise<DeleteResultsResponse> {
   return requestJson<DeleteResultsResponse>("/api/backtest-results", {
     method: "DELETE",

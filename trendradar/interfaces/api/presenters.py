@@ -688,6 +688,56 @@ def _backtest_dataset_frame(key: str, dataset: str, bt_dir: Path):
     return pl.DataFrame(rows, infer_schema_length=None).lazy().with_row_index("_row")
 
 
+def backtest_trade_codes(
+    key: str,
+    sort_by: str | None = None,
+    sort_dir: str = "asc",
+    strategies: list[str] | None = None,
+) -> dict | None:
+    """个股页「上一只/下一只」导航用：按交易明细当前排序去重取股票有序列表。
+
+    与 trades 端点共用同一套排序键（BACKTEST_SORT_KEYS + `_row` 全序兜底），
+    保证顺序与用户在报告页看到的表格行序完全一致。同一股票多笔交易只占
+    一个名次——取排序后首次出现的位置（该股票在当前排序下最优的一笔）。
+    返回 None 表示该 key 没有回测产物（路由据此 404）。
+    """
+    import polars as pl
+
+    bt_dir = _executions_root() / key / "backtest"
+    frame = _backtest_dataset_frame(key, "trades", bt_dir)
+    if frame is None:
+        if not (bt_dir / "result.json").is_file():
+            return None
+        return {"codes": [], "total": 0}
+
+    if strategies:
+        frame = frame.filter(pl.col("strategy").is_in(strategies))
+
+    meta_frame = _stock_meta_frame()
+    sort_keys = BACKTEST_SORT_KEYS["trades"].get(sort_by)
+    if sort_by == "industry" and meta_frame is not None:
+        frame = frame.join(meta_frame.lazy(), on="code", how="left")
+
+    keys = [*(sort_keys or ()), "_row"]
+    codes = (
+        frame.sort(keys, descending=[sort_dir == "desc"] + [False] * (len(keys) - 1), nulls_last=True)
+        .select("code")
+        .unique(maintain_order=True)
+        .collect()["code"]
+        .to_list()
+    )
+
+    name_by_code: dict[str, str | None] = {}
+    if meta_frame is not None and codes:
+        mf = meta_frame.select(["code", "name"]).filter(pl.col("code").is_in(codes))
+        name_by_code = dict(zip(mf["code"].to_list(), mf["name"].to_list()))
+
+    return {
+        "codes": [{"code": c, "name": name_by_code.get(c)} for c in codes],
+        "total": len(codes),
+    }
+
+
 def backtest_rows_page(
     key: str,
     dataset: str,

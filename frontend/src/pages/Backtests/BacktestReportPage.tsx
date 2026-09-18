@@ -218,7 +218,10 @@ export function BacktestReportPage() {
         : null,
     [allStrategies, selectedStrategies],
   );
-  const tradeColumns = useMemo(() => buildTradeColumns(marksStrategyFilter), [marksStrategyFilter]);
+  const tradeColumns = useMemo(
+    () => buildTradeColumns(marksStrategyFilter, tradesQuery.sortBy, tradesQuery.sortDir),
+    [marksStrategyFilter, tradesQuery.sortBy, tradesQuery.sortDir],
+  );
   const openPositionColumns = useMemo(
     () => buildOpenPositionColumns(marksStrategyFilter),
     [marksStrategyFilter],

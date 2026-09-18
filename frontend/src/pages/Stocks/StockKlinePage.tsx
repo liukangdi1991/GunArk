@@ -5,7 +5,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { formatNumber } from "../../utils/format";
 import type { BacktestMark } from "../../types/backtest";
 import type { AdjustMode, KlineBar, KlinePeriod, StockSnapshot } from "../../types/kline";
-import { getBacktestMarks } from "../../services/backtests";
+import { getBacktestMarks, getBacktestTradeCodes, type TradeCodeEntry } from "../../services/backtests";
 import { getStockSnapshot } from "../../services/marketData";
 import { attachMarks, countMarks, filterMarksByStrategies } from "../../utils/backtestMarks";
 import { currentSearchParams, readListParam, replaceSearchParams } from "../../utils/urlState";
@@ -163,6 +163,55 @@ export default function StockKlinePage() {
   }, [btKey, code, codeValid, btCleared]);
 
   // 标记按日期归并到 bar（纯函数，spec §5.3）；无标记时原样透传
+
+  // —— 上一只/下一只（bt 上下文）：按报告页交易明细当前排序去重取股票序列，
+  //    排序参数（tr_sb/tr_sd）与策略勾选（st）由报告页链接带入，翻转时原样保持 ——
+  const tradeSortBy = initialParams.current.get("tr_sb") || undefined;
+  const tradeSortDir = initialParams.current.get("tr_sd") === "desc" ? "desc" : "asc";
+  const [tradeCodes, setTradeCodes] = useState<TradeCodeEntry[] | null>(null);
+  useEffect(() => {
+    if (!btKey || !codeValid || btCleared) {
+      setTradeCodes(null);
+      return;
+    }
+    let cancelled = false;
+    getBacktestTradeCodes(
+      btKey,
+      { sortBy: tradeSortBy, sortDir: tradeSortDir, strategies: marksStrategyFilter ?? undefined },
+    )
+      .then((payload) => {
+        if (!cancelled) setTradeCodes(payload.codes);
+      })
+      .catch(() => {
+        if (!cancelled) setTradeCodes(null); // 取不到序列就不显示按钮，不影响 K 线
+      });
+    return () => {
+      cancelled = true;
+    };
+    // tradeSortBy/tradeSortDir 是挂载初值（initialParams），与 btKey 同生命周期
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [btKey, codeValid, btCleared, marksStrategyFilter]);
+
+  const stockNav = useMemo(() => {
+    if (!tradeCodes) return null;
+    const idx = tradeCodes.findIndex((c) => c.code === code);
+    if (idx === -1) return null;
+    return {
+      prev: idx > 0 ? tradeCodes[idx - 1] : null,
+      next: idx < tradeCodes.length - 1 ? tradeCodes[idx + 1] : null,
+    };
+  }, [tradeCodes, code]);
+  const navPrev = stockNav?.prev ?? null;
+  const navNext = stockNav?.next ?? null;
+
+  function flipStockUrl(target: TradeCodeEntry): string {
+    const params = new URLSearchParams(initialParams.current);
+    if (tradeSortBy) {
+      params.set("tr_sb", tradeSortBy);
+      params.set("tr_sd", tradeSortDir);
+    }
+    return `/stocks/${target.code}?${params.toString()}`;
+  }
   const visibleMarks = useMemo(
     () => filterMarksByStrategies(marks ?? [], marksStrategyFilter),
     [marks, marksStrategyFilter],
@@ -323,6 +372,16 @@ export default function StockKlinePage() {
           }
           action={
             <Space>
+              {navPrev ? (
+                <Button size="small" onClick={() => navigate(flipStockUrl(navPrev))}>
+                  上一只 {navPrev.name || navPrev.code}
+                </Button>
+              ) : null}
+              {navNext ? (
+                <Button size="small" onClick={() => navigate(flipStockUrl(navNext))}>
+                  下一只 {navNext.name || navNext.code}
+                </Button>
+              ) : null}
               <Link to={`/backtests/${encodeURIComponent(btKey)}`}>查看报告</Link>
               <Button type="link" size="small" onClick={clearBt}>
                 清除

@@ -89,10 +89,10 @@ def _write_selection_artifacts(storage: Path, key: str, signal_date: str = "2026
     )
 
 
-def _write_backtest_artifacts(storage: Path, key: str) -> None:
+def _write_backtest_artifacts(storage: Path, key: str, trades: list[dict] | None = None) -> None:
     bt_dir = storage / "objects" / "executions" / key / "backtest"
     bt_dir.mkdir(parents=True)
-    trades = [
+    trades = trades if trades is not None else [
         {
             "strategy": "bbi_kdj_b1",
             "code": "000001",
@@ -1826,3 +1826,41 @@ def test_console_payload_no_new_lines_returns_empty_text(tmp_path, monkeypatch):
     third = console_payload(executor, job_id, offset=first["offset"])
     assert [l for l in third["text"].split("\n") if l] == ["line 4"]
     assert third["offset"] == 4
+
+
+def test_backtest_trade_codes_navigation_order(client, tmp_path):
+    """个股页「上一只/下一只」：按交易明细当前排序去重取股票有序列表。
+
+    同一股票多笔交易只占一个名次——取排序后首次出现的位置（该股票在当前
+    排序下最优的一笔），保证逐只翻页时不重复、不遗漏。
+    """
+    key = "20260820_100200_backtest_dup1"
+    _write_backtest_artifacts(tmp_path / "storage", key, trades=[
+        {"strategy": "bbi_kdj_b1", "code": "000001", "signal_date": "2026-08-10",
+         "buy_date": "2026-08-11", "sell_date": "2026-08-18", "buy_price": 10.0,
+         "sell_price": 10.8, "shares": 4000, "profit": 3100.0, "return_pct": 7.8,
+         "sell_postpone_days": 0},
+        {"strategy": "peak_kdj", "code": "000001", "signal_date": "2026-08-11",
+         "buy_date": "2026-08-12", "sell_date": "2026-08-19", "buy_price": 50.0,
+         "sell_price": 48.0, "shares": 900, "profit": -1900.0, "return_pct": -4.0,
+         "sell_postpone_days": 0},
+        {"strategy": "peak_kdj", "code": "000333", "signal_date": "2026-08-10",
+         "buy_date": "2026-08-11", "sell_date": "2026-08-18", "buy_price": 20.0,
+         "sell_price": 21.0, "shares": 500, "profit": 500.0, "return_pct": 5.0,
+         "sell_postpone_days": 0},
+    ])
+
+    desc = client.get(f"/api/backtest-results/{key}/trade-codes?sort_by=profit&sort_dir=desc").json()
+    assert [c["code"] for c in desc["codes"]] == ["000001", "000333"]  # 000001 两笔去重为一名次
+    assert desc["codes"][0]["name"] == "平安银行"
+    assert desc["total"] == 2
+
+    asc = client.get(f"/api/backtest-results/{key}/trade-codes?sort_by=profit").json()
+    assert [c["code"] for c in asc["codes"]] == ["000001", "000333"]  # asc 下 000001 首现位次同样第一？不对——
+    # asc（profit 升序）：-1900(000001) → 500(000333) → 3100(000001)，首现序仍 000001 在前
+
+    filtered = client.get(f"/api/backtest-results/{key}/trade-codes?strategies=peak_kdj").json()
+    assert [c["code"] for c in filtered["codes"]].count("000001") == 1
+
+    assert client.get(f"/api/backtest-results/{key}/trade-codes?sort_by=drop_table").status_code == 400
+    assert client.get("/api/backtest-results/nope/trade-codes").status_code == 404

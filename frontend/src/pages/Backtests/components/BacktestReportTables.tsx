@@ -12,10 +12,20 @@ import { formatPlainPercent, SignedValue, winRateClassName } from "./BacktestSig
 
 const { Text } = Typography;
 
-/** 个股链接：勾选了策略子集时带 st，个股页只显示勾选策略的买卖标记（spec M8）；全选时不带（URL 干净）。 */
-function stockHref(record: { code: string; execution_key: string }, strategyFilter: readonly string[] | null): string {
+/** 个股链接：勾选了策略子集时带 st，个股页只显示勾选策略的买卖标记（spec M8）；全选时不带（URL 干净）。
+ *  交易明细链接再带当前排序（tr_sb/tr_sd）——个股页「上一只/下一只」按同一顺序翻页。 */
+function stockHref(
+  record: { code: string; execution_key: string },
+  strategyFilter: readonly string[] | null,
+  sortBy?: string,
+  sortDir?: "asc" | "desc",
+): string {
   const params = new URLSearchParams({ bt: record.execution_key });
   if (strategyFilter && strategyFilter.length > 0) params.set("st", strategyFilter.join(","));
+  if (sortBy) {
+    params.set("tr_sb", sortBy);
+    params.set("tr_sd", sortDir || "asc");
+  }
   return `/stocks/${record.code}?${params.toString()}`;
 }
 
@@ -103,7 +113,11 @@ export function buildSummaryColumns(capitalMode?: string): ColumnsType<BacktestS
   return [...summaryBaseColumns, ...summaryMoneyColumns, ...(tracksNav ? summaryNavColumns : [])];
 }
 
-export function buildTradeColumns(strategyFilter: readonly string[] | null = null): ColumnsType<BacktestTrade> {
+export function buildTradeColumns(
+  strategyFilter: readonly string[] | null = null,
+  sortBy?: string,
+  sortDir?: "asc" | "desc",
+): ColumnsType<BacktestTrade> {
   return [
   { title: "策略", dataIndex: "strategy", key: "strategy", width: 170, render: (_, record) => strategyLabel(record) },
   {
@@ -112,8 +126,9 @@ export function buildTradeColumns(strategyFilter: readonly string[] | null = nul
     key: "code",
     width: 100,
     render: (_, record) => (
-      // 带 bt（该次回测的标记）；勾选子集时再带 st（只显示勾选策略的标记，spec M8）
-      <Link to={stockHref(record, strategyFilter)}>{record.code}</Link>
+      // 带 bt（该次回测的标记）；勾选子集时再带 st（只显示勾选策略的标记，spec M8）；
+      // 再带当前排序——个股页上一只/下一只按它翻页
+      <Link to={stockHref(record, strategyFilter, sortBy, sortDir)}>{record.code}</Link>
     ),
   },
   { title: "名称", dataIndex: "name", key: "name", width: 110, render: (value) => value || "-" },

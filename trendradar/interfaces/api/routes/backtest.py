@@ -127,6 +127,39 @@ def get_backtest_open_positions(
     )
 
 
+@router.get("/backtest-results/{execution_key}/trade-codes")
+def get_backtest_trade_codes(
+    execution_key: str,
+    request: FastAPIRequest,
+    strategies: list[str] | None = Query(default=None),
+    sort_by: str | None = Query(default=None),
+    sort_dir: str = Query(default="asc", pattern="^(asc|desc)$"),
+):
+    """个股页「上一只/下一只」导航：按当前排序去重取股票有序列表。"""
+    from trendradar.interfaces.api.presenters import (
+        BACKTEST_SORT_KEYS,
+        BacktestSourceUnreadable,
+        backtest_trade_codes,
+    )
+
+    if "/" in execution_key or "\\" in execution_key or ".." in execution_key:
+        raise HTTPException(status_code=400, detail="Invalid execution_key")
+    if sort_by is not None and sort_by not in BACKTEST_SORT_KEYS["trades"]:
+        raise HTTPException(status_code=400, detail=f"非法 sort_by: {sort_by}")
+
+    try:
+        payload = backtest_trade_codes(
+            execution_key, sort_by=sort_by, sort_dir=sort_dir, strategies=strategies,
+        )
+    except BacktestSourceUnreadable as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    if payload is None:
+        raise HTTPException(
+            status_code=404, detail=f"Backtest result not found for '{execution_key}'"
+        )
+    return payload
+
+
 @router.get("/backtest-results/{execution_key}/marks")
 def get_backtest_marks(
     execution_key: str,
