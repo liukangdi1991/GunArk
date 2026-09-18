@@ -170,12 +170,29 @@ def list_strategies() -> list[dict]:
     ]
 
 
-def ensure_default_group(store) -> None:
-    """Bootstrap the default strategy group with all registered strategies.
+# 默认策略组：按「指标域」划分（2026-09-18 用户确认的分组方案）。
+# 每个策略按主触发指标归入唯一组；新增策略默认不进组（前端落「其他」桶）。
+DEFAULT_STRATEGY_GROUPS: list[tuple[str, str, list[str]]] = [
+    ("mt_brick", "MT 砖型图",
+     ["brick_chart", "ultimate_brick_chart", "oversold_bottom_fishing", "oversold_rebound"]),
+    ("zx_line", "多空线",
+     ["super_b1", "zxdkx_balance", "volume_spike_balance", "duo_kong_trend_balance"]),
+    ("kdj", "KDJ 超卖",
+     ["bbi_kdj_b1", "perfect_b1_v2", "peak_kdj", "single_needle_down_20"]),
+    ("ma_macd", "均线·MACD",
+     ["bbi_short_long", "macd_ma_convergence", "ma60_volume_wave"]),
+    ("volume_price", "量价形态",
+     ["big_bullish_volume"]),
+]
 
-    Runs once when the 'default' group does not exist yet: creates the group,
-    adds every registered strategy as a member, and seeds strategy settings
-    with the registry default parameters. Idempotent.
+
+def ensure_default_groups(store) -> None:
+    """按指标域播种默认策略组（幂等，语义见 tests/app/test_default_groups_seeding.py）。
+
+    - 分组表为空 → 播种五个指标域组
+    - 仅有旧版平铺 default 组（初版引导痕迹，无分组信息）→ 迁移为五组
+    - 存在其他任何组 → 用户已定制，分组数据一律不碰
+    同时为全部注册策略补齐 strategy_settings 兜底行（与分组无关，始终执行）。
     """
     import json
 
@@ -185,24 +202,32 @@ def ensure_default_group(store) -> None:
 
     conn = store.connect()
     try:
-        if conn.execute(
-            "SELECT 1 FROM strategy_groups WHERE id = 'default'"
-        ).fetchone():
-            return
-
         now = _now_iso()
-        conn.execute(
-            "INSERT INTO strategy_groups "
-            "(id, name, description, enabled, sort_order, created_at, updated_at) "
-            "VALUES ('default', '默认组', '系统默认策略组', 1, 0, ?, ?)",
-            (now, now),
-        )
-        for i, defn in enumerate(list_all()):
-            conn.execute(
-                "INSERT OR IGNORE INTO strategy_group_members "
-                "(group_id, strategy_id, sort_order) VALUES ('default', ?, ?)",
-                (defn.strategy_id, i),
-            )
+        group_ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM strategy_groups ORDER BY sort_order, id"
+        ).fetchall()]
+        if group_ids == ["default"]:
+            conn.execute("DELETE FROM strategy_group_members WHERE group_id = 'default'")
+            conn.execute("DELETE FROM strategy_groups WHERE id = 'default'")
+            group_ids = []
+        if not group_ids:
+            registered_ids = {d.strategy_id for d in list_all()}
+            for gi, (gid, gname, member_ids) in enumerate(DEFAULT_STRATEGY_GROUPS):
+                conn.execute(
+                    "INSERT OR IGNORE INTO strategy_groups "
+                    "(id, name, description, enabled, sort_order, created_at, updated_at) "
+                    "VALUES (?, ?, '', 1, ?, ?, ?)",
+                    (gid, gname, gi, now, now),
+                )
+                for mi, sid in enumerate(member_ids):
+                    if sid not in registered_ids:
+                        continue
+                    conn.execute(
+                        "INSERT OR IGNORE INTO strategy_group_members "
+                        "(group_id, strategy_id, sort_order) VALUES (?, ?, ?)",
+                        (gid, sid, mi),
+                    )
+        for defn in list_all():
             conn.execute(
                 "INSERT OR IGNORE INTO strategy_settings "
                 "(strategy_id, enabled, params_json, updated_at) VALUES (?, 1, ?, ?)",

@@ -1,4 +1,5 @@
 export interface Strategy {
+  strategy_id: string;
   name: string;
   class: string;
   description: string;

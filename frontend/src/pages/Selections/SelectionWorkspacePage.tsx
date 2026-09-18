@@ -8,12 +8,13 @@ import { EditableHistoryCard } from "../../components/EditableHistoryCard";
 import { submitExecution } from "../../services/executions";
 import { listTradingDates } from "../../services/marketData";
 import { deleteSelectionResults, listSelectionResults } from "../../services/selections";
-import { listStrategies } from "../../services/strategies";
+import { listStrategyGroups, listStrategies } from "../../services/strategies";
 import type { ExecutionRequestType } from "../../types/execution";
 import type { SelectionResult } from "../../types/selection";
-import type { Strategy } from "../../types/strategy";
+import type { Strategy, StrategyGroup } from "../../types/strategy";
 import { makeDisabledNonTradingDate, formatPickerDate, firstTradingDateOfLatestMonth, latestTradingDate, toDayjs } from "../../utils/date";
 import { compactStrategyNames, formatDateRange } from "../../utils/format";
+import { strategySelectOptions } from "../../utils/strategyOptions";
 
 const { Paragraph, Text, Title } = Typography;
 
@@ -43,6 +44,7 @@ export function SelectionWorkspacePage() {
   const [batchForm] = Form.useForm<SelectionFormValues>();
   const navigate = useNavigate();
   const [strategies, setStrategies] = useState<Strategy[]>([]);
+  const [strategyGroups, setStrategyGroups] = useState<StrategyGroup[] | null>(null);
   const [runs, setRuns] = useState<SelectionResult[]>([]);
   const [tradingDates, setTradingDates] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -54,10 +56,8 @@ export function SelectionWorkspacePage() {
   const [errorMessage, setErrorMessage] = useState("");
 
   const strategyOptions = useMemo(
-    () => strategies
-      .map((strategy) => ({ label: strategy.name, value: strategy.name }))
-      .sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN")),
-    [strategies],
+    () => strategySelectOptions(strategies, strategyGroups),
+    [strategies, strategyGroups],
   );
   const disabledNonTradingDate = useMemo(
     () => makeDisabledNonTradingDate(tradingDates),
@@ -84,13 +84,15 @@ export function SelectionWorkspacePage() {
   async function loadPage() {
     setLoading(true);
     try {
-      const [strategyPayload, runsPayload, tradingDatePayload] = await Promise.all([
+      const [strategyPayload, runsPayload, tradingDatePayload, groupsPayload] = await Promise.all([
         listStrategies(),
         listSelectionResults(),
         listTradingDates(),
+        listStrategyGroups().catch(() => null),
       ]);
       const dates = tradingDatePayload.dates || [];
       setStrategies(strategyPayload.strategies || []);
+      setStrategyGroups(groupsPayload);
       setRuns(runsPayload.results || []);
       setSelectedRunIds([]);
       setTradingDates(dates);

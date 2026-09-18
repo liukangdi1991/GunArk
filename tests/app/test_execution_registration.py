@@ -203,9 +203,9 @@ def test_selection_with_seeded_settings_and_default_group(tmp_path, monkeypatch)
 
     sc = _init_storage(tmp_path)
 
-    from trendradar.app.services.strategy_service import ensure_default_group
+    from trendradar.app.services.strategy_service import ensure_default_groups
 
-    ensure_default_group(sc)
+    ensure_default_groups(sc)
 
     executor = JobExecutor(JobStore(sc.db_path))
 

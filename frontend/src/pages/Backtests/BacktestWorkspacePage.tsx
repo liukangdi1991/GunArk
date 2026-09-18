@@ -9,13 +9,14 @@ import { deleteBacktestResults, listBacktestResults } from "../../services/backt
 import { submitExecution } from "../../services/executions";
 import { listTradingDates } from "../../services/marketData";
 import { listSelectionResults } from "../../services/selections";
-import { listStrategies } from "../../services/strategies";
+import { listStrategyGroups, listStrategies } from "../../services/strategies";
 import type { BacktestResult } from "../../types/backtest";
 import type { SelectionResult } from "../../types/selection";
-import type { Strategy } from "../../types/strategy";
+import type { Strategy, StrategyGroup } from "../../types/strategy";
 import { CAPITAL_MODE_OPTIONS, capitalModeLabel } from "../../utils/capital";
 import { firstTradingDateOfLatestMonth, formatPickerDate, latestTradingDate, makeDisabledNonTradingDate, toDayjs } from "../../utils/date";
 import { compactStrategyNames, formatDateRange, formatPercent, parseFiniteNumber, signedClassName } from "../../utils/format";
+import { strategySelectOptions } from "../../utils/strategyOptions";
 import { TRADE_STRATEGY_OPTIONS, tradeStrategyLabel } from "../../utils/tradeStrategy";
 
 const { Paragraph, Text, Title } = Typography;
@@ -85,6 +86,7 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
   const [selectionBacktestForm] = Form.useForm<BacktestFormValues>();
   const navigate = useNavigate();
   const [strategies, setStrategies] = useState<Strategy[]>([]);
+  const [strategyGroups, setStrategyGroups] = useState<StrategyGroup[] | null>(null);
   const [runs, setRuns] = useState<BacktestResult[]>([]);
   const [selectionResults, setSelectionResults] = useState<SelectionResult[]>([]);
   const [tradingDates, setTradingDates] = useState<string[]>([]);
@@ -98,10 +100,8 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
   const [errorMessage, setErrorMessage] = useState("");
 
   const strategyOptions = useMemo(
-    () => strategies
-      .map((strategy) => ({ label: strategy.name, value: strategy.name }))
-      .sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN")),
-    [strategies],
+    () => strategySelectOptions(strategies, strategyGroups),
+    [strategies, strategyGroups],
   );
   const disabledNonTradingDate = useMemo(
     () => makeDisabledNonTradingDate(tradingDates),
@@ -210,14 +210,16 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
   async function loadPage() {
     setLoading(true);
     try {
-      const [strategyPayload, runsPayload, tradingDatePayload] = await Promise.all([
+      const [strategyPayload, runsPayload, tradingDatePayload, groupsPayload] = await Promise.all([
         listStrategies(),
         listBacktestResults(),
         listTradingDates(),
+        listStrategyGroups().catch(() => null),
       ]);
       const selectionPayload = await listSelectionResults(200);
       const dates = tradingDatePayload.dates || [];
       setStrategies(strategyPayload.strategies || []);
+      setStrategyGroups(groupsPayload);
       setRuns(runsPayload.results || []);
       setSelectionResults(selectionPayload.results || []);
       setSelectedRunIds([]);

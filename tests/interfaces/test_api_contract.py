@@ -258,7 +258,14 @@ def test_strategies_response_shape(client):
     assert "strategies" in payload
     assert len(payload["strategies"]) == 16
     for s in payload["strategies"]:
-        assert {"name", "class", "description", "params"} <= set(s)
+        assert {"strategy_id", "name", "class", "description", "params"} <= set(s)
+
+    # 分组：lifespan 播种五个指标域组，端点返回带成员的组列表
+    groups = client.get("/api/strategy-groups").json()
+    assert isinstance(groups, list) and len(groups) == 5
+    member_ids = {m["strategy_id"] for g in groups for m in g["members"]}
+    ids = {s["strategy_id"] for s in payload["strategies"]}
+    assert member_ids == ids
 
 
 # ---------------------------------------------------------------------------

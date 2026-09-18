@@ -77,9 +77,9 @@ async def _lifespan(app: FastAPI):
     )
     conn.commit()
 
-    from trendradar.app.services.strategy_service import ensure_default_group
+    from trendradar.app.services.strategy_service import ensure_default_groups
 
-    ensure_default_group(store)
+    ensure_default_groups(store)
 
     # 启动预热：后台补齐存量产物索引（幂等、有界、失败静默），
     # 把存量自愈成本移出请求路径（spec §4.2.7）

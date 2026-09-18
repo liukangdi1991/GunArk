@@ -61,6 +61,7 @@ def strategy_list_payload() -> dict:
     return {
         "strategies": [
             {
+                "strategy_id": d.strategy_id,
                 "name": d.name,
                 "class": d.selector_class.__name__,
                 "description": d.description,
