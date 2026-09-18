@@ -256,7 +256,7 @@ def test_strategies_response_shape(client):
     payload = resp.json()
     assert isinstance(payload, dict)
     assert "strategies" in payload
-    assert len(payload["strategies"]) == 14
+    assert len(payload["strategies"]) == 16
     for s in payload["strategies"]:
         assert {"name", "class", "description", "params"} <= set(s)
 
@@ -1382,9 +1382,11 @@ def test_ultra_short_trade_strategy_maps_to_execution():
         "entry_on_signal_day": True, "entry_at_close": True, "fixed_hold_n_days": 1,
     }
     assert _trade_strategy_execution("long_term_bull_bear_stop") == {
+        "entry_on_signal_day": True, "entry_at_close": True,
         "force_sell_on_two_day_close_below_long_term_bull_bear_line": True,
     }
     assert _trade_strategy_execution("ten_day_low_stop") == {
+        "entry_on_signal_day": True, "entry_at_close": True,
         "close_below_recent_low_stop_window": 10,
     }
     assert _trade_strategy_execution(None) == {}
