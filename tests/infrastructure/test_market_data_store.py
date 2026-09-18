@@ -254,6 +254,48 @@ def test_get_calendar_cache_replaces_instead_of_writing_in_place(tmp_path):
     assert pl.read_parquet(snapshot)["date"].to_list() == old_dates
 
 
+def test_readback_calendar_refreshes_shared_cache(tmp_path):
+    """同步自检 readback 之后必须把共享日历缓存续上。
+
+    口径：同步结束时会重写 bar 文件（mtime 晚于 calendar.parquet），若自检
+    不续缓存，同步后首次打开 /market-data 就要再付一次全库扫描（实测量
+    5,817 文件 ≈ 16s）。
+
+    - refresh_cache=True：写 calendar.parquet，后续 get_calendar 走快路径
+      （缓存被篡改成假日期仍被采信——证明没有重新全库扫描）
+    - refresh_cache=False（默认）：不写缓存；缓存 mtime 拨旧后 get_calendar
+      失效重扫，仍能扫出真实日期
+    """
+    import os
+    import time
+
+    from trendradar.infrastructure.tushare.writer import readback_calendar
+
+    bars_dir = tmp_path / "bars"
+    _make_bars_file(bars_dir / "000001.parquet", "000001", [date(2024, 1, 5), date(2024, 1, 8)])
+    _make_bars_file(bars_dir / "000002.parquet", "000002", [date(2024, 1, 8), date(2024, 1, 10)])
+    cache_path = tmp_path / "calendar.parquet"
+    real = [date(2024, 1, 5), date(2024, 1, 8), date(2024, 1, 10)]
+    store = LocalParquetMarketStore(bars_dir)
+
+    got = readback_calendar(bars_dir, refresh_cache=True)
+    assert got == set(real)
+    assert cache_path.exists()
+
+    # 缓存被判有效 → 被采信（篡改成假日期也不重扫 = 走了快路径）
+    pl.DataFrame({"date": [date(1999, 1, 1)]}).with_columns(
+        pl.col("date").cast(pl.Date)
+    ).write_parquet(cache_path)
+    assert store.get_calendar() == [date(1999, 1, 1)]
+
+    # 默认不写缓存：缓存 mtime 拨旧 → 失效重扫出真实日期
+    got2 = readback_calendar(bars_dir)
+    assert got2 == set(real)
+    old = time.time() - 3600
+    os.utime(cache_path, (old, old))
+    assert store.get_calendar() == real
+
+
 def test_get_row_returns_single_row_dict(tmp_path):
     bars_dir = tmp_path / "bars"
     _make_bars_file(

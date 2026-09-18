@@ -264,7 +264,7 @@ def _run_incremental(ctx, pro, store, effective, exclude_boards, plan,
 
     # ⑤ 读回校验：增量路径 new_done == claimed，断言②④同为 claimed ⊆ readback
     # （全量路径两者分母不同，仍分开查）
-    readback = readback_calendar(bars_dir)
+    readback = readback_calendar(bars_dir, refresh_cache=True)
     claimed = set(res.claimed_days)
     if not ledger_subset_ok(claimed, readback):
         store.set_ledger_suspect(True)

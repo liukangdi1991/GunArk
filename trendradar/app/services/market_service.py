@@ -39,7 +39,7 @@ def confirm_doubtful_days() -> dict:
     doubtful = store.doubtful_days()
     if not doubtful:
         return {"status": "noop", "confirmed": []}
-    readback = readback_calendar(root / "market" / "bars")
+    readback = readback_calendar(root / "market" / "bars", refresh_cache=True)
     missing = [d for d in doubtful if d not in readback]
     if missing:
         raise ValueError(

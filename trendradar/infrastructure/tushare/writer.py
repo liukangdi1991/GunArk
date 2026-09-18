@@ -51,8 +51,15 @@ def flush_by_code(all_days: pl.DataFrame, bars_dir: Path) -> list[str]:
     return written
 
 
-def readback_calendar(bars_dir: Path) -> set[date]:
-    """scan 全库实测日历（所有文件的日期并集）。"""
+def readback_calendar(bars_dir: Path, refresh_cache: bool = False) -> set[date]:
+    """scan 全库实测日历（所有文件的日期并集）。
+
+    refresh_cache=True 时把结果写入共享缓存 calendar.parquet（与
+    LocalParquetMarketStore.get_calendar 同一份）：同步结束会重写 bar 文件
+    使该缓存失效，自检既然已经全量扫描过，就顺手续上，否则同步后首次
+    打开 /market-data 要再付一次全库扫描（5,817 文件实测 ≈ 16s）。
+    只对真实 bars 目录开启；staging 目录的扫描不得写真实缓存。
+    """
     files = sorted(Path(bars_dir).glob("*.parquet"))
     if not files:
         return set()
@@ -62,7 +69,15 @@ def readback_calendar(bars_dir: Path) -> set[date]:
         .unique()
         .collect()
     )
-    return set(s["date"].to_list())
+    dates = set(s["date"].to_list())
+    if refresh_cache:
+        try:
+            from trendradar.domain.market.data_store import write_calendar_cache
+
+            write_calendar_cache(Path(bars_dir), sorted(dates))
+        except Exception:
+            pass  # 缓存写失败不影响自检语义（下次访问走全量重建兜底）
+    return dates
 
 
 def _try_exchange(a: Path, b: Path) -> bool:

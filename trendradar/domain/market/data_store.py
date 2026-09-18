@@ -14,6 +14,17 @@ import polars as pl
 _calendar_lock = __import__("threading").Lock()
 
 
+def write_calendar_cache(bars_dir: Path, dates: list[date]) -> None:
+    """把实测日历写入共享缓存 calendar.parquet（原子换名落盘）。
+
+    供 get_calendar 重建与同步自检（readback_calendar）共同使用：
+    两边写的是同一份、同 schema（单 date 列），任一方写入后另一方
+    的 mtime 校验即可命中快路径。
+    """
+    cache_path = Path(bars_dir).parent / "calendar.parquet"
+    _atomic_write_calendar_cache(cache_path, sorted(dates))
+
+
 def _atomic_write_calendar_cache(cache_path: Path, dates: list[date]) -> None:
     """临时文件 + 换名落盘：原地写会截断共享同一 inode 的副本，中断时还留半截文件。"""
     fd, tmp = tempfile.mkstemp(dir=cache_path.parent, suffix=".tmp")
@@ -221,6 +232,19 @@ class LocalParquetMarketStore(MarketDataStore):
     # helpers
     # ------------------------------------------------------------------
 
+    def _cached_calendar_if_valid(self, cache_path: Path) -> list[date] | None:
+        """缓存存在且新于全部 bar 文件时返回缓存日历，否则 None。"""
+        newest_bar = 0.0
+        for p in self.bars_dir.glob("*.parquet"):
+            m = p.stat().st_mtime
+            if m > newest_bar:
+                newest_bar = m
+        if newest_bar <= cache_path.stat().st_mtime:
+            cached = pl.read_parquet(cache_path)
+            if not cached.is_empty():
+                return sorted(cached["date"].unique().to_list())
+        return None
+
     def _collect_dates(self) -> list[date]:
         """Scan all parquet files and return sorted unique dates.
 
@@ -230,20 +254,22 @@ class LocalParquetMarketStore(MarketDataStore):
         """
         cache_path = self.bars_dir.parent / "calendar.parquet"
         try:
-            if cache_path.exists():
-                newest_bar = 0.0
-                for p in self.bars_dir.glob("*.parquet"):
-                    m = p.stat().st_mtime
-                    if m > newest_bar:
-                        newest_bar = m
-                if newest_bar <= cache_path.stat().st_mtime:
-                    cached = pl.read_parquet(cache_path)
-                    if not cached.is_empty():
-                        return sorted(cached["date"].unique().to_list())
+            cached = self._cached_calendar_if_valid(cache_path)
+            if cached is not None:
+                return cached
         except Exception:
             pass
 
         with _calendar_lock:
+            # 双检：排队等锁期间可能已被先到者重建，命中则不必再全库扫描
+            # （全库 date 列扫描 5,817 文件实测 ≈ 16s，并发请求各扫一遍就是翻倍）。
+            try:
+                cached = self._cached_calendar_if_valid(cache_path)
+                if cached is not None:
+                    return cached
+            except Exception:
+                pass
+
             all_paths = sorted(self.bars_dir.glob("*.parquet"))
             if not all_paths:
                 return []
