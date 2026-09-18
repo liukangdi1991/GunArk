@@ -14,6 +14,7 @@ export interface GroupedStrategyOption {
 
 /**
  * 按指标域组构建下拉项：组按 sort_order、组内按成员 sort_order；
+ * enabled=false 的组不作为分组展示（口径 A：其独占成员落「其他」，仍可选）；
  * 未入组的策略落「其他」桶；无组数据（接口失败或用户清空）回落为单个平铺组。
  */
 export function strategySelectOptions(
@@ -21,7 +22,8 @@ export function strategySelectOptions(
   groups: StrategyGroup[] | null,
 ): GroupedStrategyOption[] {
   const byId = new Map(strategies.map((s) => [s.strategy_id, s]));
-  if (!groups || groups.length === 0) {
+  const visible = (groups ?? []).filter((g) => g.enabled !== false);
+  if (visible.length === 0) {
     return [
       {
         label: "全部策略",
@@ -33,7 +35,7 @@ export function strategySelectOptions(
   }
   const groupedNames = new Set<string>();
   const grouped: GroupedStrategyOption[] = [];
-  for (const group of groups) {
+  for (const group of visible) {
     const options: StrategyOption[] = [];
     for (const member of group.members) {
       const strategy = byId.get(member.strategy_id);

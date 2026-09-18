@@ -16,10 +16,10 @@ export function createStrategyGroup(body: { name: string; description?: string }
   });
 }
 
-/** name/description/members 均为可选；members 为整组替换（按数组顺序作为组内排序）。 */
+/** name/description/enabled/members 均为可选；members 为整组替换（按数组顺序作为组内排序）。 */
 export function updateStrategyGroup(
   groupId: string,
-  body: { name?: string; description?: string; members?: string[] },
+  body: { name?: string; description?: string; enabled?: boolean; members?: string[] },
 ): Promise<StrategyGroup> {
   return requestJson<StrategyGroup>(
     `/api/strategy-groups/${encodeURIComponent(groupId)}`,

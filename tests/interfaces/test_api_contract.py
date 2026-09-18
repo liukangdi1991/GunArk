@@ -293,6 +293,21 @@ def test_reset_strategy_groups_to_defaults(client):
     assert len(client.get("/api/strategy-groups").json()) == len(DEFAULT_STRATEGY_GROUPS)
 
 
+def test_strategy_group_enabled_toggle_round_trip(client):
+    """分组 enabled 开关可往返：前端「下拉显示」开关依赖此语义。"""
+    created = client.post("/api/strategy-groups", json={"name": "临时隐藏组"})
+    gid = created.json()["id"]
+    assert created.json()["enabled"] is True
+
+    off = client.patch(f"/api/strategy-groups/{gid}", json={"enabled": False})
+    assert off.status_code == 200 and off.json()["enabled"] is False
+
+    on = client.patch(f"/api/strategy-groups/{gid}", json={"enabled": True})
+    assert on.status_code == 200 and on.json()["enabled"] is True
+
+    client.delete(f"/api/strategy-groups/{gid}")
+
+
 def test_delete_group_orphans_strategies_without_ghost_default(client):
     """删除组后，独占成员变为未分组——不产生指向已废弃 default 组的幽灵行。"""
     # 先把 brick_chart 从播种的 mt_brick 组里拿出来，成为临时组的独占成员

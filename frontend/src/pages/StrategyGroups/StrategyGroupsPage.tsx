@@ -17,6 +17,7 @@ import {
   Select,
   Space,
   Spin,
+  Switch,
   Tag,
   Typography,
   message,
@@ -150,14 +151,30 @@ export function StrategyGroupsPage() {
           return (
             <Col xs={24} lg={12} key={group.id}>
               <Card
+                style={group.enabled === false ? { opacity: 0.55 } : undefined}
                 title={
                   <Space>
                     {group.name}
                     <Text type="secondary">{memberIds.length} 个</Text>
+                    {group.enabled === false ? <Tag>已隐藏</Tag> : null}
                   </Space>
                 }
                 extra={
                   <Space>
+                    <Space size={4}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>下拉显示</Text>
+                      <Switch
+                        size="small"
+                        checked={group.enabled !== false}
+                        loading={busy}
+                        onChange={(checked) =>
+                          run(
+                            () => updateStrategyGroup(group.id, { enabled: checked }),
+                            checked ? "已显示该分组" : "已隐藏该分组",
+                          )
+                        }
+                      />
+                    </Space>
                     <Button
                       size="small"
                       type="text"
