@@ -470,7 +470,7 @@ export function BacktestWorkspacePage({ mode }: BacktestWorkspacePageProps) {
                   <Select options={TRADE_STRATEGY_OPTIONS} />
                 </Form.Item>
                 <Form.Item label="选股策略" name="strategies">
-                  <Select allowClear mode="multiple" options={strategyOptions} placeholder="不选择则按默认策略选股并回测" />
+                  <Select allowClear mode="multiple" virtual={false} options={strategyOptions} placeholder="不选择则按默认策略选股并回测" />
                 </Form.Item>
                 <Button block type="primary" htmlType="submit" icon={<PlayCircleOutlined />} loading={submitting === "selection_backtest"}>
                   先选股再回测

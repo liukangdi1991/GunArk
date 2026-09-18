@@ -227,7 +227,7 @@ export function SelectionWorkspacePage() {
                   onFinish={(values) => runSelection("latest", "selection_latest", values)}
                 >
                   <Form.Item label="选股策略" name="strategies">
-                    <Select allowClear mode="multiple" options={strategyOptions} placeholder="不选择则按默认策略执行" />
+                    <Select allowClear mode="multiple" virtual={false} options={strategyOptions} placeholder="不选择则按默认策略执行" />
                   </Form.Item>
                   <Form.Item label="板块" name="boards" initialValue={BOARD_OPTIONS.map((o) => o.value)}>
                     <Select mode="multiple" options={BOARD_OPTIONS} allowClear placeholder="默认全选四板块；取消北交所可做 A/B 对比" />
@@ -249,7 +249,7 @@ export function SelectionWorkspacePage() {
                     <DatePicker className="full-width" disabledDate={disabledNonTradingDate} format="YYYY-MM-DD" placeholder="选择交易日" />
                   </Form.Item>
                   <Form.Item label="选股策略" name="strategies">
-                    <Select allowClear mode="multiple" options={strategyOptions} placeholder="不选择则按默认策略执行" />
+                    <Select allowClear mode="multiple" virtual={false} options={strategyOptions} placeholder="不选择则按默认策略执行" />
                   </Form.Item>
                   <Form.Item label="板块" name="boards" initialValue={BOARD_OPTIONS.map((o) => o.value)}>
                     <Select mode="multiple" options={BOARD_OPTIONS} allowClear placeholder="默认全选四板块；取消北交所可做 A/B 对比" />
@@ -299,7 +299,7 @@ export function SelectionWorkspacePage() {
                     </Col>
                   </Row>
                   <Form.Item label="选股策略" name="strategies">
-                    <Select allowClear mode="multiple" options={strategyOptions} placeholder="不选择则按默认策略执行" />
+                    <Select allowClear mode="multiple" virtual={false} options={strategyOptions} placeholder="不选择则按默认策略执行" />
                   </Form.Item>
                   <Form.Item label="板块" name="boards" initialValue={BOARD_OPTIONS.map((o) => o.value)}>
                     <Select mode="multiple" options={BOARD_OPTIONS} allowClear placeholder="默认全选四板块；取消北交所可做 A/B 对比" />
