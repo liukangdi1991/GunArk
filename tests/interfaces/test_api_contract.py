@@ -1463,6 +1463,18 @@ def test_ultra_short_trade_strategy_maps_to_execution():
         "entry_on_signal_day": True, "entry_at_close": True,
         "close_below_recent_low_stop_window": 10,
     }
+    assert _trade_strategy_execution("stop_3pct") == {
+        "entry_on_signal_day": True, "entry_at_close": True,
+        "stop_loss_pct": 0.03, "fixed_hold_n_days": 5,
+    }
+    assert _trade_strategy_execution("buy_day_low_stop") == {
+        "entry_on_signal_day": True, "entry_at_close": True,
+        "stop_loss_at_buy_day_low": True, "fixed_hold_n_days": 5,
+    }
+    assert _trade_strategy_execution("green_brick_stop") == {
+        "entry_on_signal_day": True, "entry_at_close": True,
+        "exit_on_green_brick": True, "unlimited_hold": True,
+    }
     assert _trade_strategy_execution(None) == {}
 
 

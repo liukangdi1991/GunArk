@@ -1225,6 +1225,25 @@ _TRADE_STRATEGY_EXECUTION = {
         "entry_at_close": True,
         "close_below_recent_low_stop_window": 10,
     },
+    # 2026-09-18 三种新交易策略（2026-09-18-trade-strategy-stops-design.md）
+    "stop_3pct": {
+        "entry_on_signal_day": True,
+        "entry_at_close": True,
+        "stop_loss_pct": 0.03,
+        "fixed_hold_n_days": 5,
+    },
+    "buy_day_low_stop": {
+        "entry_on_signal_day": True,
+        "entry_at_close": True,
+        "stop_loss_at_buy_day_low": True,
+        "fixed_hold_n_days": 5,
+    },
+    "green_brick_stop": {
+        "entry_on_signal_day": True,
+        "entry_at_close": True,
+        "exit_on_green_brick": True,
+        "unlimited_hold": True,
+    },
     "ultra_short": {
         "entry_on_signal_day": True,
         "entry_at_close": True,

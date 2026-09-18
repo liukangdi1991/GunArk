@@ -44,6 +44,7 @@ class BacktestResult:
 class BacktestEngine:
     def __init__(self, config: BacktestConfig) -> None:
         self.config = config
+        self._brick_colors: dict[str, dict[date, bool]] = {}
 
     def run(
         self,
@@ -124,10 +125,13 @@ class BacktestEngine:
         entry_on_signal_day), target sell at buy+N close. All indices are
         trading-day indices. Signals whose buy or target date falls beyond the
         calendar are skipped.
+        unlimited_hold（绿砖止损）没有计划卖出日：只要买入日在窗口内就交易，
+        target_sell_date 置 None，持有到触发或窗口结束（未平仓）。
         """
         cal_index = {d: i for i, d in enumerate(calendar)}
         hold = self.config.execution.fixed_hold_n_days
         entry_offset = 0 if self.config.execution.entry_on_signal_day else 1
+        unlimited = self.config.execution.unlimited_hold
         result: dict[date, list[dict]] = {}
         for sig in signal_set.signals:
             if sig.signal_date is None or not sig.codes:
@@ -136,11 +140,16 @@ class BacktestEngine:
             if sig_idx is None:
                 continue
             buy_idx = sig_idx + entry_offset
-            sell_idx = buy_idx + hold
-            if buy_idx >= len(calendar) or sell_idx >= len(calendar):
+            if buy_idx >= len(calendar):
                 continue
+            if unlimited:
+                target_sell_date = None
+            else:
+                sell_idx = buy_idx + hold
+                if sell_idx >= len(calendar):
+                    continue
+                target_sell_date = calendar[sell_idx]
             buy_date = calendar[buy_idx]
-            target_sell_date = calendar[sell_idx]
             for code in sig.codes:
                 result.setdefault(buy_date, []).append(
                     {
@@ -361,6 +370,13 @@ class BacktestEngine:
                 entry_price=buy_fill.price,
                 shares=shares,
                 entry_cost=cash_needed,
+                stop_price=(
+                    buy_fill.price * (1.0 - self.config.execution.stop_loss_pct)
+                    if self.config.execution.stop_loss_pct is not None else None
+                ),
+                stop_base_low=(
+                    float(row["low"]) if self.config.execution.stop_loss_at_buy_day_low else None
+                ),
             )
             state.open_position(code, strategy, position, cash_needed)
             opened += 1
@@ -403,17 +419,26 @@ class BacktestEngine:
             if row is None:
                 # 没有当日行情就无从判断触发条件。只有"本来就该卖了"（已到计划卖出日，
                 # 或已在顺延中）才算卖不掉，否则只是还没到该卖的时候。
-                if cur_date >= pos.target_sell_date or pos.blocked_since:
+                if (pos.target_sell_date is not None and cur_date >= pos.target_sell_date) or pos.blocked_since:
                     self._mark_blocked(pos, cur_date, "停牌无行情")
                 continue
-            trigger_by_hold = cur_date >= pos.target_sell_date
+            trigger_by_hold = (
+                pos.target_sell_date is not None and cur_date >= pos.target_sell_date
+            )
             trigger_by_zx = (
                 self.config.execution.force_sell_on_two_day_close_below_long_term_bull_bear_line
                 and self._is_two_day_close_below_long_term_bull_bear_line(
                     market_store, code, cur_date, calendar, cal_index)
             )
             trigger_by_recent_low = self._is_close_below_recent_low_stop(market_store, code, cur_date, pos)
-            if not (trigger_by_hold or trigger_by_zx or trigger_by_recent_low):
+            trigger_by_price_stop = self._is_price_stop_hit(pos, row, cur_date)
+            trigger_by_green_brick = (
+                self.config.execution.exit_on_green_brick
+                and cur_date > pos.entry_date
+                and self._is_green_brick(market_store, code, cur_date, calendar)
+            )
+            if not (trigger_by_hold or trigger_by_zx or trigger_by_recent_low
+                    or trigger_by_price_stop or trigger_by_green_brick):
                 pos.blocked_since = None      # 卖出意图解除 → 顺延状态归零，下次从头算
                 pos.blocked_reason = ""
                 continue
@@ -440,7 +465,10 @@ class BacktestEngine:
             total_fee = (pos.entry_cost - pos.entry_price * pos.shares) + sell_fill.fee
             profit = cash_back - pos.entry_cost
             return_pct = (profit / pos.entry_cost * 100.0) if pos.entry_cost > 0 else 0.0
-            postpone_days = max(0, cal_index[cur_date] - cal_index[pos.target_sell_date])
+            postpone_days = (
+                max(0, cal_index[cur_date] - cal_index[pos.target_sell_date])
+                if pos.target_sell_date is not None else 0
+            )
             trades.append(
                 TradeRecord(
                     strategy=pos.strategy,
@@ -524,6 +552,46 @@ class BacktestEngine:
 
         recent_low = float(min(r["low"] for r in holding_rows[-window:]))
         return today_close < recent_low
+
+    def _is_price_stop_hit(self, pos: Position, row: dict, cur_date: date) -> bool:
+        """3%止损 / 买入日最低价止损：T+1 次日起，收盘价跌破止损位即触发（盘中触及不算）。"""
+        if cur_date <= pos.entry_date:
+            return False
+        close = float(row.get("close", 0))
+        if pos.stop_price is not None and close < pos.stop_price:
+            return True
+        if pos.stop_base_low is not None and close < pos.stop_base_low:
+            return True
+        return False
+
+    def _is_green_brick(
+        self, market_store: MarketDataStore, code: str, cur_date: date, calendar: list[date]
+    ) -> bool:
+        """砖形图当日是否绿砖（mt_color == green）。橙砖=回升，不算绿。"""
+        colors = self._brick_colors.get(code)
+        if colors is None:
+            colors = self._compute_brick_colors(market_store, code, calendar)
+            self._brick_colors[code] = colors
+        return colors.get(cur_date) is True
+
+    def _compute_brick_colors(
+        self, market_store: MarketDataStore, code: str, calendar: list[date]
+    ) -> dict[date, bool]:
+        """整段历史一次性算砖色（标准 MT 参数 n4/m6/t4，与图表、砖系选股同参）。"""
+        from trendradar.domain.strategy.formulas.mt_oscillator import compute_mt_brick
+
+        rows = self._to_rows(market_store.get_rows(code, calendar[0], calendar[-1]))
+        if len(rows) < 10:
+            return {}
+        df = pl.DataFrame({
+            "high": [float(r["high"]) for r in rows],
+            "low": [float(r["low"]) for r in rows],
+            "close": [float(r["close"]) for r in rows],
+        })
+        brick = compute_mt_brick(df["high"], df["low"], df["close"], n=4, m=6, t=4)
+        colors = brick["mt_color"].to_list()
+        dates = [r["date"] for r in rows]
+        return {d: (c == "green") for d, c in zip(dates, colors)}
 
     def _compute_metrics(
         self,

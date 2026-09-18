@@ -1071,3 +1071,186 @@ class TestZxForceSellCalendarCost:
 
 
 
+
+
+class TestStopLossTradeStrategies:
+    """三种新交易策略：3%止损 / 买入日最低价止损 / 绿砖止损。
+
+    语义（2026-09-18 spec：2026-09-18-trade-strategy-stops-design.md）：
+    信号日收盘买入（T+1 次日起判止损、只看收盘价）、触发日收盘卖出；
+    3%止损与买入日最低价止损无触发时持满 5 日；绿砖无限持有。
+    零费用零滑点 → 断言里价格即原始收盘价。
+    """
+
+    @staticmethod
+    def _zero_cost(**execution) -> BacktestConfig:
+        return _make_config(
+            execution={
+                "entry_on_signal_day": True,
+                "entry_at_close": True,
+                **execution,
+            },
+            costs={
+                "commission_rate": 0.0, "commission_min": 0.0,
+                "stamp_duty_rate_sell": 0.0, "transfer_fee_rate": 0.0,
+                "slippage_buy_bp": 0.0, "slippage_sell_bp": 0.0,
+            },
+        )
+
+    @staticmethod
+    def _flat_bars(code: str, days: int, close: float = 10.0) -> List[dict]:
+        d0 = date(2026, 7, 1)
+        return [
+            {"date": d0 + timedelta(days=i), "code": code,
+             "open": close, "close": close, "high": close + 0.05, "low": close - 0.05,
+             "volume": 1000.0}
+            for i in range(days)
+        ]
+
+    def test_stop_3pct_sells_on_breach_day_close(self):
+        d0 = date(2026, 7, 1)
+        days = [d0 + timedelta(days=i) for i in range(30)]
+        rows = self._flat_bars("A", 30)
+        # day20 = 信号日/买入日（收盘 10.0，止损位 9.7）；day21 9.9 未破；day22 9.6 破位
+        rows[20]["close"] = rows[20]["open"] = 10.0
+        rows[21]["close"] = rows[21]["open"] = 9.9
+        rows[22]["close"] = rows[22]["open"] = 9.6
+        store = FakeMarketStore({"A": rows})
+        sig = _make_signal_set("s", "S", {days[20]: ["A"]})
+        result = BacktestEngine(self._zero_cost(stop_loss_pct=0.03, fixed_hold_n_days=5)).run(sig, store)
+
+        assert len(result.trades) == 1
+        trade = result.trades[0]
+        assert trade.buy_date == days[20]
+        assert trade.buy_price == 10.0
+        assert trade.sell_date == days[22]      # 止损触发日，不等到 day25
+        assert trade.sell_price == 9.6
+
+    def test_stop_3pct_without_breach_holds_full_5_days(self):
+        d0 = date(2026, 7, 1)
+        days = [d0 + timedelta(days=i) for i in range(30)]
+        rows = self._flat_bars("A", 30)
+        rows[20]["close"] = rows[20]["open"] = 10.0   # 止损位 9.7
+        rows[21]["close"] = rows[21]["open"] = 9.8    # 未破
+        for i in range(22, 26):
+            rows[i]["close"] = rows[i]["open"] = 10.0
+        store = FakeMarketStore({"A": rows})
+        sig = _make_signal_set("s", "S", {days[20]: ["A"]})
+        result = BacktestEngine(self._zero_cost(stop_loss_pct=0.03, fixed_hold_n_days=5)).run(sig, store)
+
+        assert len(result.trades) == 1
+        assert result.trades[0].sell_date == days[25]   # D+5 收盘
+        assert result.trades[0].sell_price == 10.0
+
+    def test_buy_day_low_stop_sells_on_close_below_buy_day_low(self):
+        d0 = date(2026, 7, 1)
+        days = [d0 + timedelta(days=i) for i in range(30)]
+        rows = self._flat_bars("A", 30)
+        # day20 买入：收盘 10.0、最低 9.5 → 止损位 9.5
+        rows[20]["close"] = rows[20]["open"] = 10.0
+        rows[20]["low"] = 9.5
+        # day21 盘中破位（low 9.4）但收盘 9.8 ≥ 9.5 → 不触发
+        rows[21]["close"] = rows[21]["open"] = 9.8
+        rows[21]["low"] = 9.4
+        # day22 收盘 9.45 < 9.5 → 卖出
+        rows[22]["close"] = rows[22]["open"] = 9.45
+        store = FakeMarketStore({"A": rows})
+        sig = _make_signal_set("s", "S", {days[20]: ["A"]})
+        result = BacktestEngine(self._zero_cost(stop_loss_at_buy_day_low=True, fixed_hold_n_days=5)).run(sig, store)
+
+        assert len(result.trades) == 1
+        assert result.trades[0].sell_date == days[22]
+        assert result.trades[0].sell_price == 9.45
+
+    def test_buy_day_low_stop_intraday_touch_alone_does_not_trigger(self):
+        d0 = date(2026, 7, 1)
+        days = [d0 + timedelta(days=i) for i in range(30)]
+        rows = self._flat_bars("A", 30)
+        rows[20]["close"] = rows[20]["open"] = 10.0
+        rows[20]["low"] = 9.5
+        # day21..25 盘中破位、收盘始终 ≥ 9.5 → 不触发，持满 5 日
+        for i in range(21, 26):
+            rows[i]["close"] = rows[i]["open"] = 9.6
+            rows[i]["low"] = 9.0
+        store = FakeMarketStore({"A": rows})
+        sig = _make_signal_set("s", "S", {days[20]: ["A"]})
+        result = BacktestEngine(self._zero_cost(stop_loss_at_buy_day_low=True, fixed_hold_n_days=5)).run(sig, store)
+
+        assert len(result.trades) == 1
+        assert result.trades[0].sell_date == days[25]
+        assert result.trades[0].sell_price == 9.6
+
+    @staticmethod
+    def _trend_bars(code: str, n: int, rise: int, step: float = 0.2, fall_step: float = 0.3) -> List[dict]:
+        d0 = date(2026, 7, 1)
+        closes = [10.0]
+        for i in range(1, n):
+            prev = closes[-1]
+            closes.append(prev + step if i <= rise else prev - fall_step)
+        rows = []
+        for i, c in enumerate(closes):
+            rows.append({"date": d0 + timedelta(days=i), "code": code,
+                         "open": c, "close": c, "high": c + 0.05, "low": c - 0.05,
+                         "volume": 1000.0})
+        return rows
+
+    @staticmethod
+    def _first_green_after(bars: List[dict], entry_idx: int) -> Optional[int]:
+        import polars as pl
+        from trendradar.domain.strategy.formulas.mt_oscillator import compute_mt_brick
+        df = pl.DataFrame({
+            "high": [b["high"] for b in bars],
+            "low": [b["low"] for b in bars],
+            "close": [b["close"] for b in bars],
+        })
+        colors = compute_mt_brick(df["high"], df["low"], df["close"], n=4, m=6, t=4)["mt_color"].to_list()
+        for i in range(entry_idx + 1, len(bars)):
+            if colors[i] == "green":
+                return i
+        return None
+
+    def test_green_brick_exits_on_first_green_day_close(self):
+        d0 = date(2026, 7, 1)
+        bars = self._trend_bars("A", 30, rise=21, step=0.2, fall_step=0.3)
+        days = [b["date"] for b in bars]
+        entry_idx = 20
+        green_idx = self._first_green_after(bars, entry_idx)
+        assert green_idx is not None, "测试数据构造失败：窗口内没有绿砖"
+
+        store = FakeMarketStore({"A": bars})
+        sig = _make_signal_set("s", "S", {days[entry_idx]: ["A"]})
+        result = BacktestEngine(self._zero_cost(exit_on_green_brick=True, unlimited_hold=True)).run(sig, store)
+
+        assert len(result.trades) == 1
+        trade = result.trades[0]
+        assert trade.sell_date == days[green_idx]        # 首个绿砖日收盘卖出
+        assert trade.sell_price == bars[green_idx]["close"]
+        # 绿砖前不因持有时长卖出（验证无限持有，而非 5 天兜底）
+        assert trade.sell_date > days[entry_idx + 5] if green_idx > entry_idx + 5 else True
+
+    def test_green_brick_without_green_holds_to_window_end_as_open_position(self):
+        d0 = date(2026, 7, 1)
+        bars = self._trend_bars("A", 30, rise=29, step=0.2)   # 一路上行：全程红砖
+        days = [b["date"] for b in bars]
+        assert self._first_green_after(bars, 20) is None
+
+        store = FakeMarketStore({"A": bars})
+        sig = _make_signal_set("s", "S", {days[20]: ["A"]})
+        result = BacktestEngine(self._zero_cost(exit_on_green_brick=True, unlimited_hold=True)).run(sig, store)
+
+        assert result.trades == []
+        assert len(result.open_positions) == 1
+        assert result.open_positions[0].buy_date == days[20]
+
+    def test_unlimited_hold_does_not_drop_signals_near_window_end(self):
+        """fixed-hold 会把「买入日 + 5 越界」的信号整笔丢弃；绿砖不应丢。"""
+        d0 = date(2026, 7, 1)
+        bars = self._trend_bars("A", 30, rise=29, step=0.2)   # 无绿砖
+        days = [b["date"] for b in bars]
+        store = FakeMarketStore({"A": bars})
+        sig = _make_signal_set("s", "S", {days[27]: ["A"]})   # 27+5=31 越界
+        result = BacktestEngine(self._zero_cost(exit_on_green_brick=True, unlimited_hold=True)).run(sig, store)
+
+        assert len(result.open_positions) == 1
+        assert result.open_positions[0].buy_date == days[27]
+        assert result.trades == []

@@ -20,10 +20,12 @@ class Position:
     code: str
     signal_date: date
     entry_date: date
-    target_sell_date: date
+    target_sell_date: Optional[date]   # 无固定持有期（绿砖止损）时为 None
     entry_price: float
     shares: int
     entry_cost: float
+    stop_price: Optional[float] = None      # 3%止损位（入场时按成交价固化）
+    stop_base_low: Optional[float] = None   # 买入日最低价止损位
     # 顺延中的状态只用于展示，不参与"能不能卖"的判定
     blocked_since: Optional[date] = None
     blocked_reason: str = ""
@@ -39,7 +41,7 @@ class OpenPositionRecord:
     code: str
     signal_date: date
     buy_date: date
-    target_sell_date: date
+    target_sell_date: Optional[date]
     shares: int
     entry_price: float
     entry_cost: float

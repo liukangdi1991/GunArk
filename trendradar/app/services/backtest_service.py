@@ -96,6 +96,10 @@ def _build_config(request: dict) -> BacktestConfig:
         close_below_recent_low_stop_window=exe.get("close_below_recent_low_stop_window"),
         entry_on_signal_day=exe.get("entry_on_signal_day", False),
         entry_at_close=exe.get("entry_at_close", False),
+        stop_loss_pct=exe.get("stop_loss_pct"),
+        stop_loss_at_buy_day_low=exe.get("stop_loss_at_buy_day_low", False),
+        exit_on_green_brick=exe.get("exit_on_green_brick", False),
+        unlimited_hold=exe.get("unlimited_hold", False),
     )
     costs = CostConfig(
         commission_rate=cost.get("commission_rate", 0.0003),

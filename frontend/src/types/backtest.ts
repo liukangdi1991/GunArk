@@ -97,7 +97,7 @@ export interface BacktestOpenPosition {
   industry?: string;
   signal_date: string;
   buy_date: string;
-  target_sell_date: string;
+  target_sell_date: string | null;  // 绿砖止损（无限持有）无计划卖出日
   shares: number;
   entry_price: number;
   entry_cost: number;

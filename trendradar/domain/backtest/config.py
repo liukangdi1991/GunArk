@@ -23,6 +23,11 @@ class ExecutionConfig:
     close_below_recent_low_stop_window: Optional[int] = None
     entry_on_signal_day: bool = False   # 信号日当日入场（默认 T+1 入场）——超短线
     entry_at_close: bool = False        # 入场价用收盘价（默认开盘价）——超短线
+    # —— 2026-09-18 三种新交易策略（2026-09-18-trade-strategy-stops-design.md）——
+    stop_loss_pct: Optional[float] = None        # 3%止损：成交价×(1-pct) 为止损位，收盘跌破卖出
+    stop_loss_at_buy_day_low: bool = False       # 买入日最低价止损：收盘跌破买入日 low 卖出
+    exit_on_green_brick: bool = False            # 绿砖止损：砖形图变绿砖当日收盘卖出
+    unlimited_hold: bool = False                 # 无固定持有期（绿砖）：持有到触发或窗口结束（未平仓）
 
 
 @dataclass(frozen=True)
