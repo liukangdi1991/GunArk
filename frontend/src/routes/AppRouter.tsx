@@ -29,6 +29,11 @@ const BacktestReportPage = lazy(() =>
     default: m.BacktestReportPage,
   })),
 );
+const StrategyGroupsPage = lazy(() =>
+  import("../pages/StrategyGroups/StrategyGroupsPage").then((m) => ({
+    default: m.StrategyGroupsPage,
+  })),
+);
 const MarketDataPage = lazy(() =>
   import("../pages/MarketData/MarketDataPage").then((m) => ({ default: m.MarketDataPage })),
 );
@@ -79,6 +84,10 @@ const router = createBrowserRouter([
       {
         path: "backtests/:executionKey",
         element: page(<BacktestReportPage />),
+      },
+      {
+        path: "strategy-groups",
+        element: page(<StrategyGroupsPage />),
       },
       {
         path: "market-data",

@@ -1,4 +1,5 @@
 import {
+  AppstoreOutlined,
   BarChartOutlined,
   DatabaseOutlined,
   LineChartOutlined,
@@ -25,6 +26,9 @@ function selectedKey(pathname: string) {
   }
   if (pathname.startsWith("/market-data")) {
     return "market-data";
+  }
+  if (pathname.startsWith("/strategy-groups")) {
+    return "strategy-groups";
   }
   if (pathname.startsWith("/stocks")) {
     return ""; // 个股K线页不归属任何菜单（N11），不高亮「选股」
@@ -153,6 +157,11 @@ export function AppShell() {
               key: "market-data",
               icon: <DatabaseOutlined />,
               label: "行情数据",
+            },
+            {
+              key: "strategy-groups",
+              icon: <AppstoreOutlined />,
+              label: "策略分组",
             },
           ]}
         />

@@ -122,8 +122,6 @@ def update_strategy_group(store, group_id: str, updates: dict) -> dict:
 
 
 def delete_strategy_group(store, group_id: str) -> dict:
-    if group_id == "default":
-        raise ValueError("Cannot delete the default strategy group")
     with store.connection() as conn:
         existing = conn.execute(
             "SELECT * FROM strategy_groups WHERE id = ?", (group_id,)
@@ -132,28 +130,52 @@ def delete_strategy_group(store, group_id: str) -> dict:
             raise ValueError(f"Strategy group '{group_id}' not found")
 
         result = _dict_from_row(existing)
-        _migrate_orphan_strategies(conn, group_id)
         conn.execute("DELETE FROM strategy_group_members WHERE group_id = ?", (group_id,))
         conn.execute("DELETE FROM strategy_groups WHERE id = ?", (group_id,))
         conn.commit()
         return result
 
 
-def _migrate_orphan_strategies(conn, group_id: str) -> None:
-    """Move strategies that only belong to the deleted group back to default."""
-    orphan = conn.execute(
-        "SELECT strategy_id FROM strategy_group_members WHERE group_id = ? "
-        "AND strategy_id NOT IN (SELECT strategy_id FROM strategy_group_members WHERE group_id != ?)",
-        (group_id, group_id),
-    ).fetchall()
-    max_sort = conn.execute(
-        "SELECT COALESCE(MAX(sort_order), -1) FROM strategy_group_members WHERE group_id = 'default'"
-    ).fetchone()[0]
-    for i, row in enumerate(orphan):
-        conn.execute(
-            "INSERT OR IGNORE INTO strategy_group_members (group_id, strategy_id, sort_order) VALUES (?, ?, ?)",
-            ("default", row["strategy_id"], max_sort + 1 + i),
-        )
+
+
+def reset_strategy_groups_to_defaults(store) -> list[dict]:
+    """清空全部分组并重播五个指标域默认组（「恢复默认分组」语义），返回新组列表。"""
+    import json
+
+    from trendradar.domain.strategy.selectors import register_all
+
+    register_all()
+
+    conn = store.connect()
+    try:
+        now = _now_iso()
+        conn.execute("DELETE FROM strategy_group_members")
+        conn.execute("DELETE FROM strategy_groups")
+        for gi, (gid, gname, member_ids) in enumerate(DEFAULT_STRATEGY_GROUPS):
+            conn.execute(
+                "INSERT INTO strategy_groups "
+                "(id, name, description, enabled, sort_order, created_at, updated_at) "
+                "VALUES (?, ?, '', 1, ?, ?, ?)",
+                (gid, gname, gi, now, now),
+            )
+            for mi, sid in enumerate(member_ids):
+                registered = {d.strategy_id for d in list_all()}
+                if sid not in registered:
+                    continue
+                conn.execute(
+                    "INSERT INTO strategy_group_members (group_id, strategy_id, sort_order) VALUES (?, ?, ?)",
+                    (gid, sid, mi),
+                )
+        for defn in list_all():
+            conn.execute(
+                "INSERT OR IGNORE INTO strategy_settings "
+                "(strategy_id, enabled, params_json, updated_at) VALUES (?, 1, ?, ?)",
+                (defn.strategy_id, json.dumps(defn.default_params, ensure_ascii=False), now),
+            )
+        conn.commit()
+        return list_strategy_groups(store)
+    finally:
+        conn.close()
 
 
 def list_strategies() -> list[dict]:

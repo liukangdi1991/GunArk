@@ -268,6 +268,58 @@ def test_strategies_response_shape(client):
     assert member_ids == ids
 
 
+def test_reset_strategy_groups_to_defaults(client):
+    """恢复默认分组：清空现有组并重播五个指标域组。"""
+    from trendradar.app.services.strategy_service import DEFAULT_STRATEGY_GROUPS
+
+    # 用户自定义：建组并挂成员
+    created = client.post("/api/strategy-groups", json={"name": "我的组"})
+    assert created.status_code == 201
+    gid = created.json()["id"]
+    added = client.post(f"/api/strategy-groups/{gid}/members", json={"strategy_id": "brick_chart"})
+    assert added.status_code == 200
+
+    resp = client.post("/api/strategy-groups/reset-defaults")
+    assert resp.status_code == 200
+
+    groups = client.get("/api/strategy-groups").json()
+    assert [g["id"] for g in groups] == [g[0] for g in DEFAULT_STRATEGY_GROUPS]
+    by_id = {g["id"]: {m["strategy_id"] for m in g["members"]} for g in groups}
+    for gid_, _, members in DEFAULT_STRATEGY_GROUPS:
+        assert by_id[gid_] == set(members)
+    assert "我的组" not in {g["name"] for g in groups}
+    # 幂等：再 reset 一次结果一致
+    assert client.post("/api/strategy-groups/reset-defaults").status_code == 200
+    assert len(client.get("/api/strategy-groups").json()) == len(DEFAULT_STRATEGY_GROUPS)
+
+
+def test_delete_group_orphans_strategies_without_ghost_default(client):
+    """删除组后，独占成员变为未分组——不产生指向已废弃 default 组的幽灵行。"""
+    # 先把 brick_chart 从播种的 mt_brick 组里拿出来，成为临时组的独占成员
+    resp = client.patch("/api/strategy-groups/mt_brick",
+                        json={"members": ["ultimate_brick_chart", "oversold_bottom_fishing", "oversold_rebound"]})
+    assert resp.status_code == 200
+    created = client.post("/api/strategy-groups", json={"name": "临时组"})
+    gid = created.json()["id"]
+    assert client.post(f"/api/strategy-groups/{gid}/members",
+                       json={"strategy_id": "brick_chart"}).status_code == 200
+    assert client.delete(f"/api/strategy-groups/{gid}").status_code == 200
+
+    groups = client.get("/api/strategy-groups").json()
+    assigned = {m["strategy_id"] for g in groups for m in g["members"]}
+    assert "brick_chart" not in assigned  # 落「未分组」，等用户手动归组
+
+    # 幽灵行检查：成员表里不应存在任何指向不存在组的行
+    import sqlite3
+    conn = sqlite3.connect(str(client.app.state.store.db_path))
+    ghost = conn.execute(
+        "SELECT COUNT(*) FROM strategy_group_members "
+        "WHERE group_id NOT IN (SELECT id FROM strategy_groups)"
+    ).fetchone()[0]
+    conn.close()
+    assert ghost == 0
+
+
 # ---------------------------------------------------------------------------
 # selection results
 # ---------------------------------------------------------------------------

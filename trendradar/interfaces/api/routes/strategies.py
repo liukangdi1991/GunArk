@@ -38,6 +38,13 @@ def create_strategy_group(body: StrategyGroupCreate, request: FastAPIRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/strategy-groups/reset-defaults", response_model=list[StrategyGroupResponse])
+def reset_strategy_groups(request: FastAPIRequest):
+    """清空分组并恢复五个指标域默认组。"""
+    from trendradar.app.services.strategy_service import reset_strategy_groups_to_defaults
+    return reset_strategy_groups_to_defaults(_store(request))
+
+
 @router.patch("/strategy-groups/{group_id}", response_model=StrategyGroupResponse)
 def update_strategy_group(group_id: str, body: StrategyGroupUpdate, request: FastAPIRequest):
     from trendradar.app.services.strategy_service import update_strategy_group
