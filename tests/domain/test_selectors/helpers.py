@@ -30,6 +30,8 @@ make_big_bullish_volume_defn = lambda: get_defn("big_bullish_volume")
 make_volume_spike_balance_defn = lambda: get_defn("volume_spike_balance")
 make_duo_kong_trend_balance_defn = lambda: get_defn("duo_kong_trend_balance")
 make_oversold_rebound_defn = lambda: get_defn("oversold_rebound")
+make_volume_pullback_trend_defn = lambda: get_defn("volume_pullback_trend")
+make_volume_pullback_bullbear_defn = lambda: get_defn("volume_pullback_bullbear")
 
 
 def make_empty_df():

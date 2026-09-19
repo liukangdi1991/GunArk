@@ -14,6 +14,10 @@ from trendradar.domain.strategy.selectors.single_needle_down_20 import SingleNee
 from trendradar.domain.strategy.selectors.brick_chart import BrickChartSelector
 from trendradar.domain.strategy.selectors.oversold_bottom_fishing import OversoldBottomFishingSelector
 from trendradar.domain.strategy.selectors.oversold_rebound import OversoldReboundSelector
+from trendradar.domain.strategy.selectors.volume_pullback import (
+    VolumePullbackBullBearSelector,
+    VolumePullbackTrendSelector,
+)
 from trendradar.domain.strategy.selectors.ultimate_brick_chart import UltimateBrickChartSelector
 from trendradar.domain.strategy.selectors.duo_kong_trend_balance import DuoKongTrendBalanceSelector
 
@@ -133,6 +137,18 @@ def register_all():
                         "m1": 14, "m2": 28, "m3": 57, "m4": 114,
                         "ema1": 10, "dif_fast": 12, "dif_slow": 26,
                         "dd2_window": 5},
+    ))
+    register(StrategyDefinition(
+        strategy_id="volume_pullback_trend", name="放量回踩趋势线",
+        description="流通市值≥50亿 + 短期线>多空线 + 20日内倍量柱 + 收盘贴短期趋势线(偏差<2%)且收盘≥短期趋势线",
+        selector_class=VolumePullbackTrendSelector,
+        default_params={"m1": 14, "m2": 28, "m3": 57, "m4": 114, "mv_min_yi": 50},
+    ))
+    register(StrategyDefinition(
+        strategy_id="volume_pullback_bullbear", name="放量回踩多空线",
+        description="流通市值≥50亿 + 短期线>多空线 + 20日内倍量柱 + 收盘贴多空线(偏差<2%)且收盘≥多空线",
+        selector_class=VolumePullbackBullBearSelector,
+        default_params={"m1": 14, "m2": 28, "m3": 57, "m4": 114, "mv_min_yi": 50},
     ))
     register(StrategyDefinition(
         strategy_id="duo_kong_trend_balance", name="多空趋势平衡",

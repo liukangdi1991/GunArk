@@ -119,4 +119,12 @@ def _compute_one(g: pl.DataFrame, m_windows: tuple[int, int, int, int]) -> pl.Da
 
     b1 = (j_ok & zhen_fu_ok & zhang_fu_ok & zhang_fu_lower_ok
           & c_gt_ma60 & blz_exist & required & close_ge_duo_kong)
-    return g.with_columns(b1.fill_null(False).alias("_b1_signal"))
+    # 中间量供衍生策略复用（放量回踩系列：贴短期线/多空线判定）。
+    # close_qfq 与两条线同口径（前复权），倍量柱为 20 日内存在标志。
+    return g.with_columns(
+        b1.fill_null(False).alias("_b1_signal"),
+        duan_qi.alias("_b1_duan_qi"),
+        duo_kong.alias("_b1_duo_kong"),
+        cq.alias("_b1_close_qfq"),
+        blz_exist.alias("_b1_blz_exist"),
+    )

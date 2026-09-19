@@ -256,7 +256,7 @@ def test_strategies_response_shape(client):
     payload = resp.json()
     assert isinstance(payload, dict)
     assert "strategies" in payload
-    assert len(payload["strategies"]) == 16
+    assert len(payload["strategies"]) == 18
     for s in payload["strategies"]:
         assert {"strategy_id", "name", "class", "description", "params"} <= set(s)
 
@@ -265,7 +265,7 @@ def test_strategies_response_shape(client):
     assert isinstance(groups, list) and len(groups) == 5
     member_ids = {m["strategy_id"] for g in groups for m in g["members"]}
     ids = {s["strategy_id"] for s in payload["strategies"]}
-    assert member_ids == ids
+    assert member_ids <= ids  # 新策略默认不入组（下拉落「其他」），分组可后配
 
 
 def test_reset_strategy_groups_to_defaults(client):
