@@ -7,6 +7,7 @@ export const TRADE_STRATEGY_OPTIONS = [
   { label: "3%止损", value: "stop_3pct" },
   { label: "买入日最低价止损", value: "buy_day_low_stop" },
   { label: "绿砖止损", value: "green_brick_stop" },
+  { label: "不限资金 + 趋势线止损", value: "trend_line_stop" },
 ];
 
 export function tradeStrategyLabel(value?: string | null) {

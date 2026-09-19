@@ -21,6 +21,7 @@ class ExecutionConfig:
     postpone_if_limit_down_on_sell: bool = True
     force_sell_on_two_day_close_below_long_term_bull_bear_line: bool = False
     close_below_recent_low_stop_window: Optional[int] = None
+    force_sell_on_close_below_short_term_trend_line: bool = False  # 收盘跌破短期趋势线(DUAN_QI)当日卖出
     entry_on_signal_day: bool = False   # 信号日当日入场（默认 T+1 入场）——超短线
     entry_at_close: bool = False        # 入场价用收盘价（默认开盘价）——超短线
     # —— 2026-09-18 三种新交易策略（2026-09-18-trade-strategy-stops-design.md）——

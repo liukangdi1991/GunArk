@@ -1475,6 +1475,10 @@ def test_ultra_short_trade_strategy_maps_to_execution():
         "entry_on_signal_day": True, "entry_at_close": True,
         "exit_on_green_brick": True, "unlimited_hold": True,
     }
+    assert _trade_strategy_execution("trend_line_stop") == {
+        "entry_on_signal_day": True, "entry_at_close": True,
+        "force_sell_on_close_below_short_term_trend_line": True,
+    }
     assert _trade_strategy_execution(None) == {}
 
 

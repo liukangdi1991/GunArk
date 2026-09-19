@@ -1294,6 +1294,13 @@ _TRADE_STRATEGY_EXECUTION = {
         "exit_on_green_brick": True,
         "unlimited_hold": True,
     },
+    # 趋势线止损：机制与多空线止损同构，仅止损线换为短期趋势线（DUAN_QI），
+    # 且单日收盘跌破即触发（多空线版要求连续两日）；fixed_hold 默认 5 也同。
+    "trend_line_stop": {
+        "entry_on_signal_day": True,
+        "entry_at_close": True,
+        "force_sell_on_close_below_short_term_trend_line": True,
+    },
     "ultra_short": {
         "entry_on_signal_day": True,
         "entry_at_close": True,

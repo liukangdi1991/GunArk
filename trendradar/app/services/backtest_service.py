@@ -94,6 +94,9 @@ def _build_config(request: dict) -> BacktestConfig:
             "force_sell_on_two_day_close_below_long_term_bull_bear_line", False
         ),
         close_below_recent_low_stop_window=exe.get("close_below_recent_low_stop_window"),
+        force_sell_on_close_below_short_term_trend_line=exe.get(
+            "force_sell_on_close_below_short_term_trend_line", False
+        ),
         entry_on_signal_day=exe.get("entry_on_signal_day", False),
         entry_at_close=exe.get("entry_at_close", False),
         stop_loss_pct=exe.get("stop_loss_pct"),

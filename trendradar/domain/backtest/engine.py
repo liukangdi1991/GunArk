@@ -45,6 +45,7 @@ class BacktestEngine:
     def __init__(self, config: BacktestConfig) -> None:
         self.config = config
         self._brick_colors: dict[str, dict[date, bool]] = {}
+        self._duan_qi_lines: dict[str, dict[date, float]] = {}
 
     def run(
         self,
@@ -431,6 +432,10 @@ class BacktestEngine:
                     market_store, code, cur_date, calendar, cal_index)
             )
             trigger_by_recent_low = self._is_close_below_recent_low_stop(market_store, code, cur_date, pos)
+            trigger_by_trend_stop = (
+                self.config.execution.force_sell_on_close_below_short_term_trend_line
+                and self._is_close_below_short_term_trend_line(market_store, code, cur_date, calendar)
+            )
             trigger_by_price_stop = self._is_price_stop_hit(pos, row, cur_date)
             trigger_by_green_brick = (
                 self.config.execution.exit_on_green_brick
@@ -438,7 +443,7 @@ class BacktestEngine:
                 and self._is_green_brick(market_store, code, cur_date, calendar)
             )
             if not (trigger_by_hold or trigger_by_zx or trigger_by_recent_low
-                    or trigger_by_price_stop or trigger_by_green_brick):
+                    or trigger_by_trend_stop or trigger_by_price_stop or trigger_by_green_brick):
                 pos.blocked_since = None      # 卖出意图解除 → 顺延状态归零，下次从头算
                 pos.blocked_reason = ""
                 continue
@@ -552,6 +557,35 @@ class BacktestEngine:
 
         recent_low = float(min(r["low"] for r in holding_rows[-window:]))
         return today_close < recent_low
+
+    def _is_close_below_short_term_trend_line(
+        self, market_store: MarketDataStore, code: str, cur_date: date, calendar: list[date]
+    ) -> bool:
+        """收盘跌破短期趋势线（DUAN_QI=EMA(EMA(C,10),10)）→ 当日卖出。单日触发。"""
+        line = self._duan_qi_value(market_store, code, cur_date, calendar)
+        if line is None:
+            return False
+        row = market_store.get_row(code, cur_date)
+        if row is None:
+            return False
+        return float(row.get("close", 0)) < line
+
+    def _duan_qi_value(
+        self, market_store: MarketDataStore, code: str, cur_date: date, calendar: list[date]
+    ) -> Optional[float]:
+        """整段历史一次算 DUAN_QI 序列并缓存（与选股公式同参：EMA², alpha=2/11，首值=首根收盘）。"""
+        series = self._duan_qi_lines.get(code)
+        if series is None:
+            rows = self._to_rows(market_store.get_rows(code, calendar[0], calendar[-1]))
+            closes = [float(r["close"]) for r in rows]
+            a = 2 / 11
+            y = closes[0] if closes else 0.0
+            series = {}
+            for r, c in zip(rows, closes):
+                y = a * c + (1 - a) * y
+                series[r["date"]] = y
+            self._duan_qi_lines[code] = series
+        return series.get(cur_date)
 
     def _is_price_stop_hit(self, pos: Position, row: dict, cur_date: date) -> bool:
         """3%止损 / 买入日最低价止损：T+1 次日起，收盘价跌破止损位即触发（盘中触及不算）。"""
