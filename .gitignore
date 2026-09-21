@@ -34,3 +34,4 @@ select_results.log
 trendradar.egg-info/
 .fk-scratch/
 .qoder/
+.run/
