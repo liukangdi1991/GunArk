@@ -88,7 +88,7 @@ def _compute_one(g: pl.DataFrame, m_windows: tuple[int, int, int, int]) -> pl.Da
     else:
         cq, hq, lq = c, h, lo
 
-    # DUAN_QI := EMA(EMA(C,10),10)；DUO_KONG := (MA14+MA28+MA56+MA114)/4
+    # DUAN_QI := EMA(EMA(C,10),10)；DUO_KONG := (MA14+MA28+MA57+MA114)/4
     duan_qi = cq.ewm_mean(alpha=2 / 11, adjust=False).ewm_mean(alpha=2 / 11, adjust=False)
     duo_kong = sum(cq.rolling_mean(w, min_samples=1) for w in m_windows) / 4
     required = duan_qi > duo_kong
