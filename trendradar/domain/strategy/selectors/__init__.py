@@ -140,13 +140,13 @@ def register_all():
     ))
     register(StrategyDefinition(
         strategy_id="volume_pullback_trend", name="放量回踩趋势线",
-        description="流通市值≥50亿 + 短期线>多空线 + 20日内倍量柱 + 收盘贴短期趋势线(偏差<2%)且收盘≥短期趋势线",
+        description="流通市值≥50亿 + 短期线>多空线 + 20日内倍量柱 + 收盘∈[短期趋势线, 短期趋势线×1.01]",
         selector_class=VolumePullbackTrendSelector,
         default_params={"m1": 14, "m2": 28, "m3": 57, "m4": 114, "mv_min_yi": 50},
     ))
     register(StrategyDefinition(
         strategy_id="volume_pullback_bullbear", name="放量回踩多空线",
-        description="流通市值≥50亿 + 短期线>多空线 + 20日内倍量柱 + 收盘贴多空线(偏差<2%)且收盘≥多空线",
+        description="流通市值≥50亿 + 短期线>多空线 + 20日内倍量柱 + 收盘贴多空线（|收盘−多空线|/多空线≤2%，线上线下皆可）",
         selector_class=VolumePullbackBullBearSelector,
         default_params={"m1": 14, "m2": 28, "m3": 57, "m4": 114, "mv_min_yi": 50},
     ))

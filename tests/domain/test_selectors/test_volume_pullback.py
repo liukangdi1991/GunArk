@@ -9,12 +9,14 @@
 用 compute_b1_columns 实测 DUAN/DUO 后再定位最后一根收盘，保证「贴线/远离」
 判据确定性成立。
 
-另覆盖（边界与口径）：
+另覆盖（边界与口径，2026-11-04 价格规则拆分后）：
+- 趋势线版价格带 [短期趋势线, ×1.01]：线上 1bp / 高 0.99% 选中，
+  线下 1bp / 高 1.01% 排除（无下浮，破线即排除；恰等线/恰 1% 浮点不可判定不测）
+- 多空线版对称贴线带 |收盘−多空线|/多空线 ≤ 2%：线上线下皆可（轻微破线入选）、
+  ±2% 边界（恰好 2.0% 处于浮点不可判定区不测，实现按含等于处理）
 - 除权（adj_factor）前复权贴线：raw×adj/最新adj 复原纯 qfq 序列，无 adj 时
   多空线混入除权前高价 → 结构反转不选（原 bug 形态）
 - 倍量柱 20 日窗口边界：倒数第 20 根（窗口内）/第 21 根（窗口外）
-- 贴线阈值带：偏离 1.8% 选中、2.2% 不选（恰好 2.0% 处于浮点不可判定区，不测）
-- 贴线但收盘略低于目标线：贴线满足仍被「收在线上」排除
 """
 
 from datetime import date, timedelta
@@ -129,20 +131,21 @@ def test_trend_only_when_close_hugs_duan_but_far_above_duo():
     assert _run("volume_pullback_trend", df2, {"A": 60 * 10000.0}) == []
 
 
-def test_not_selected_when_close_far_above_lines():
-    """尾盘拉升 6%：两线都远离（偏差>2%）→ 都不选。"""
+def test_close_far_above_line_both_miss():
+    """尾盘拉升 6%：趋势线版高于线 >1% → 不选；多空线版偏离 ≈7.6% > 2% → 不选。"""
     df = _with_volume_spike(_bars("A", last_close=10.6))
     cap = {"A": 60 * 10000.0}
     assert _run("volume_pullback_trend", df, cap) == []
     assert _run("volume_pullback_bullbear", df, cap) == []
 
 
-def test_not_selected_when_close_below_lines():
-    """收盘跌破目标线 → 不选（回踩必须收在线上）。"""
+def test_close_below_lines_trend_misses_bullbear_hugs():
+    """收盘 9.7（多空线下方 ≈1.3%）：趋势线版破短期线 → 不选；
+    多空线版对称带（破线 ≤2% 也算贴线）→ 选中。"""
     df = _with_volume_spike(_bars("A", last_close=9.7))
     cap = {"A": 60 * 10000.0}
     assert _run("volume_pullback_trend", df, cap) == []
-    assert _run("volume_pullback_bullbear", df, cap) == []
+    assert _run("volume_pullback_bullbear", df, cap) == ["A"]
 
 
 def test_not_selected_without_volume_spike():
@@ -195,28 +198,43 @@ def test_volume_spike_window_boundary():
     assert _run("volume_pullback_bullbear", df_out, cap) == []
 
 
-def test_hug_threshold_band():
-    """贴线阈值带：偏离目标线 1.8% 选中、2.2% 不选（恰好 2.0% 为浮点不可判定区，不测）。
-
-    用 DUAN−DUO 差 >3% 的陡涨短平盘几何，两策略各自对目标线验证，两带不重叠。
-    """
+def test_trend_price_rule_boundary():
+    """趋势线版价格带 [短期趋势线, ×1.01]：线上 1bp / 高 0.99% 选中，
+    线下 1bp / 高 1.01% 排除（恰等线、恰 +1% 浮点不可判定不测，实现按含等于）。"""
     cap = {"A": 60 * 10000.0}
     base_closes = _closes(n=115, rise_bars=100, base=5.0, top=10.0)
     duan, duo = _duan_duo(_df_from_closes(base_closes))
     assert duan - duo > 0.03 * duo, f"测试数据构造失败：DUAN/DUO 价差不足 ({duan:.3f}/{duo:.3f})"
 
-    for sid, line_idx in (("volume_pullback_trend", 0), ("volume_pullback_bullbear", 1)):
-        for dev, expect in ((0.018, ["A"]), (0.022, [])):
-            closes = _solve_last_close(base_closes, line_idx, dev)
-            df = _df_from_closes(closes, volumes=_spiked_volumes(115))
-            line = _duan_duo(df)[line_idx]
-            actual = abs(df["close"][-1] - line) / line
-            assert abs(actual - dev) < 5e-4, f"构造 guard 失败：dev={actual:.5f} ≠ {dev}"
-            assert _run(sid, df, cap) == expect
+    for dev, expect in ((0.0001, ["A"]), (-0.0001, []), (0.0099, ["A"]), (0.0101, [])):
+        closes = _solve_last_close(base_closes, line_idx=0, dev=dev)
+        df = _df_from_closes(closes, volumes=_spiked_volumes(115))
+        line = _duan_duo(df)[0]
+        actual = df["close"][-1] - line
+        assert abs(actual - line * dev) < 5e-4 * line, f"构造 guard 失败：dev={actual / line:.5f}"
+        assert _run("volume_pullback_trend", df, cap) == expect
 
 
-def test_close_just_below_line_misses():
-    """贴线满足（偏离 0.5%）但收盘略低于目标线 → 不选——排除只能来自「收在线上」。"""
+def test_bullbear_symmetric_band():
+    """多空线版对称贴线带 |收盘−多空线|/多空线 ≤ 2%：上下两侧 1.99% 皆选中、
+    2.01% 皆排除（恰好 2.0% 浮点不可判定不测，实现按含等于处理）。"""
+    cap = {"A": 60 * 10000.0}
+    base_closes = _closes(n=115, rise_bars=100, base=5.0, top=10.0)
+    duan, duo = _duan_duo(_df_from_closes(base_closes))
+    assert duan - duo > 0.03 * duo, f"测试数据构造失败：DUAN/DUO 价差不足 ({duan:.3f}/{duo:.3f})"
+
+    for dev, expect in ((0.0199, ["A"]), (0.0201, []), (-0.0199, ["A"]), (-0.0201, [])):
+        closes = _solve_last_close(base_closes, line_idx=1, dev=dev)
+        df = _df_from_closes(closes, volumes=_spiked_volumes(115))
+        line = _duan_duo(df)[1]
+        actual = abs(df["close"][-1] - line) / line
+        assert abs(actual - abs(dev)) < 5e-4, f"构造 guard 失败：dev={actual:.5f} ≠ {abs(dev)}"
+        assert _run("volume_pullback_bullbear", df, cap) == expect
+
+
+def test_close_slightly_below_line_bullbear_selects_trend_misses():
+    """收盘低于多空线 0.5%（贴线满足、破线）：多空线版对称带 → 选中；
+    趋势线版破短期线 → 不选。"""
     cap = {"A": 60 * 10000.0}
     base_closes = _closes(n=115, rise_bars=100, base=5.0, top=10.0)
     closes = _solve_last_close(base_closes, line_idx=1, dev=-0.005)
@@ -225,7 +243,7 @@ def test_close_just_below_line_misses():
     close = df["close"][-1]
     assert close < duo, "构造 guard 失败：收盘应低于多空线"
     assert abs(close - duo) / duo < 0.02, "构造 guard 失败：贴线判据应满足（偏离<2%）"
-    assert _run("volume_pullback_bullbear", df, cap) == []
+    assert _run("volume_pullback_bullbear", df, cap) == ["A"]
     assert _run("volume_pullback_trend", df, cap) == []
 
 
